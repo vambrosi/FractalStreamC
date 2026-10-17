@@ -80,6 +80,15 @@ Program *program_load(const char *source, const char *path) {
             }
         }
         interp_free(&I);
+        /* projective viewers start with the view that shows `center` +- `radius` */
+        for (int v = 0; v < p->nviewers; v++) {
+            Section *s = p->viewers[v];
+            if (!s->mobius) continue;
+            u32 *m = p->initial_state + s->mobius->slot;
+            float r = wf(p->initial_state[s->radius->slot]) / PROJ_EDGE;
+            float m8[8] = {r, 0, wf(p->initial_state[s->center->slot]), wf(p->initial_state[s->center->slot + 1]), 0, 0, 1, 0};
+            for (int k = 0; k < 8; k++) m[k] = fw(m8[k]);
+        }
     }
     return p;
 }

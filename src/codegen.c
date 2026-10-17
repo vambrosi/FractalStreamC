@@ -987,6 +987,7 @@ void codegen_viewer_deps(Program *p, Section *v, bool *used) {
     for (int i = 0; i < p->globals.len; i++) p->globals.data[i]->used = false;
     mark_block(&G, &v->body);
     v->center->used = v->radius->used = true;
+    if (v->mobius) v->mobius->used = true;
     for (int i = 0; i < p->globals.len; i++) used[i] = p->globals.data[i]->used;
     vec_free(G.visited);
 }
@@ -1012,6 +1013,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
     mark_block(g, &v->body);
     p->s_max_iter->used = p->s_epsilon->used = p->s_escape->used = true;
     v->center->used = v->radius->used = true;
+    if (v->mobius) v->mobius->used = true;
 
     /* state buffer: struct of every global (layout from check.c) */
     int nmem = 0;
@@ -1085,14 +1087,29 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         u32 scale = op2(g, SpvOpFDiv, f, global_value(g, v->radius), m);
         u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
         u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
-        u32 c = global_value(g, v->center);
-        u32 re = op2(g, SpvOpFAdd, f, extract(g, f, c, 0), op2(g, SpvOpFMul, f, scale, dx));
-        u32 im = op2(g, SpvOpFAdd, f, extract(g, f, c, 1), op2(g, SpvOpFMul, f, scale, dy));
-        if (v->coord) {
-            u32 z = vec2(g, re, im);
-            if (v->coord->type == t_quat) z = convert_g(g, t_complex, t_quat, z);
-            store(g, v->coord->spv_var, z);
+        u32 z;
+        if (v->mobius) {
+            /* see proj_pixel_to_plane in interp.c */
+            u32 T = cf(g, 1.19175359f);
+            u32 x = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dx, m), T);
+            u32 y = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dy, m), T);
+            u32 r2 = op2(g, SpvOpFAdd, f, op2(g, SpvOpFAdd, f, op2(g, SpvOpFMul, f, x, x), op2(g, SpvOpFMul, f, y, y)), cf(g, 1));
+            u32 n = op2(g, SpvOpFDiv, f, cf(g, 1), ext1(g, f, GLSLSqrt, r2));
+            u32 u = vec2(g, op2(g, SpvOpFMul, f, x, n), op2(g, SpvOpFMul, f, y, n));
+            u32 vv = vec2(g, op2(g, SpvOpFAdd, f, cf(g, 1), n), cf(g, 0));
+            u32 mv = global_value(g, v->mobius);
+            u32 ma = extract(g, g->tvec2, mv, 0), mb = extract(g, g->tvec2, mv, 1);
+            u32 mc = extract(g, g->tvec2, mv, 2), md = extract(g, g->tvec2, mv, 3);
+            u32 num = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, ma, u), g_cmul(g, mb, vv));
+            u32 den = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, mc, u), g_cmul(g, md, vv));
+            z = g_cdiv(g, num, den);
+        } else {
+            u32 c = global_value(g, v->center);
+            u32 re = op2(g, SpvOpFAdd, f, extract(g, f, c, 0), op2(g, SpvOpFMul, f, scale, dx));
+            u32 im = op2(g, SpvOpFAdd, f, extract(g, f, c, 1), op2(g, SpvOpFMul, f, scale, dy));
+            z = vec2(g, re, im);
         }
+        if (v->coord) store(g, v->coord->spv_var, z);
     }
     g->fn = NULL;
     g->dead = false;

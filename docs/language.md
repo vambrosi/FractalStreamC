@@ -36,6 +36,11 @@ end
 - Every viewer `NAME` with variable `VAR` adds three state variables: `.VAR` (the last point picked
   in it, see *Pick point* below), `NAME.center` and `NAME.radius` (the view: `NAME.radius` is the
   radius of the largest disk around the centre that fits in the view; defaults 0 and 2).
+- Adding `projective` at the end of a viewer header shows the whole **Riemann sphere**, seen from
+  its centre: `@viewer sphere z "Riemann sphere" "Ctrl + 3" projective`. The variable is still a
+  complex number (it can be huge near infinity). Dragging rotates the sphere, the wheel zooms around
+  the point under the mouse (a hyperbolic Möbius map fixing it and its antipode). `NAME.center` and
+  `NAME.radius` set the initial view; the current view is the Möbius map `NAME.mobius`.
 - Shortcuts are written like `"Ctrl + 1"`, `"Shift + P"`, `"O"`. On macOS, Ctrl means Cmd.
   Viewers without a shortcut get Ctrl + 1, Ctrl + 2, ... in order.
 

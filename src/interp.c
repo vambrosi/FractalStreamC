@@ -835,9 +835,42 @@ void state_set_defaults(Program *p, u32 *state) {
     }
 }
 
+/* Projective viewers look at the unit sphere from its centre: the ray through a pixel hits the sphere at
+ * P = (X, Y, Z) (the view direction is -Z, the field of view is 100 degrees across the smaller side),
+ * stereographic projection from the north pole gives w = (X + iY) / (1 - Z), and the view map
+ * z = (a w + b) / (c w + d) is kept in NAME.mobius.  Computed in homogeneous coordinates
+ * [X + iY : 1 - Z] so that w = infinity needs no special case.  codegen.c does the same on the GPU. */
+#define PROJ_T 1.19175359f /* tan(50 degrees) */
+#define PROJ_EDGE 0.46630766f /* tan(25 degrees): |w| at the edge of the smaller side */
+
+static void proj_pixel_to_plane(const float *m8, float w, float h, float px, float py, float *re, float *im) {
+    float m = 0.5f * FS_MIN(w, h);
+    float x = (px - 0.5f * w) / m * PROJ_T, y = (0.5f * h - py) / m * PROJ_T;
+    float n = 1.0f / sqrtf(x * x + y * y + 1.0f);
+    float u[2] = {x * n, y * n}, v[2] = {1.0f + n, 0.0f};
+    float t1[2], t2[2], num[2], den[2], z[2];
+    cmul(m8 + 0, u, t1);
+    cmul(m8 + 2, v, t2);
+    num[0] = t1[0] + t2[0];
+    num[1] = t1[1] + t2[1];
+    cmul(m8 + 4, u, t1);
+    cmul(m8 + 6, v, t2);
+    den[0] = t1[0] + t2[0];
+    den[1] = t1[1] + t2[1];
+    cdiv(num, den, z);
+    *re = z[0];
+    *im = z[1];
+}
+
 /* Map pixel (px, py) of a w x h tile to the plane, exactly like the shader. */
 void viewer_pixel_to_plane(const Program *p, const u32 *state, const Section *v, float w, float h, float px, float py,
                            float *re, float *im) {
+    if (v->mobius) {
+        float m8[8];
+        for (int k = 0; k < 8; k++) m8[k] = wf(state[v->mobius->slot + k]);
+        proj_pixel_to_plane(m8, w, h, px, py, re, im);
+        return;
+    }
     float cx = wf(state[v->center->slot]), cy = wf(state[v->center->slot + 1]);
     float r = wf(state[v->radius->slot]);
     float scale = r / (0.5f * FS_MIN(w, h));

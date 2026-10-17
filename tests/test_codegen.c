@@ -151,6 +151,11 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "r := root t -> t^2 - z with seed 1\n"
      "d := derivative t -> exp(t) * sin(z t) at z\n"
      "color = [0.5 + 0.4 sin(re(w) + im(r)), 0.5 + 0.4 cos(re(d) * 0.1), 0.5]\n", 0.03},
+    {"projective",
+     "@config\nsphere.radius = 2\nsphere.center = 0.5i\n"
+     "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
+     "w := (z^2 - 1) / (z^2 + 1)\n"
+     "color = [0.5 + 0.4 sin(re(w) * 3), 0.5 + 0.4 cos(im(w) * 3), 0.5 + 0.4 sin(|z|)]\n", 0.01},
     {"mandelbrot",
      "@config\n.maxIterations = 200\nplane.center = -0.5\nplane.radius = 1.5\n"
      "@viewer plane c\n"

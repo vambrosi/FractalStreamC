@@ -376,7 +376,7 @@ static void setup_internals(Checker *c) {
         if (!s->name || !s->var) continue;
         Sym *picked = scope_find_local(&c->internals, s->var);
         if (!picked) {
-            picked = add_internal(c, arena_strndup(&p->arena, s->var, strlen(s->var)), s->projective ? t_quat : t_complex,
+            picked = add_internal(c, arena_strndup(&p->arena, s->var, strlen(s->var)), t_complex,
                                   SYM_GLOBAL, "last point picked in the viewer");
             picked->viewer_index = v;
         } else if (picked->viewer_index < 0) {
@@ -391,6 +391,13 @@ static void setup_internals(Checker *c) {
         s->radius->doc = "radius of the largest disk around the centre that fits in the view";
         vec_push(p->globals, s->center);
         vec_push(p->globals, s->radius);
+        if (s->projective) { /* view of the Riemann sphere: Mobius map (a w + b) / (c w + d) */
+            s->mobius = new_sym(c, arena_printf(&p->arena, "%s.mobius", s->name), type_vec(t_complex, 4), SYM_GLOBAL, s->line, 1);
+            s->mobius->viewer_index = v;
+            s->mobius->is_internal = true;
+            s->mobius->doc = "current view of the sphere";
+            vec_push(p->globals, s->mobius);
+        }
     }
 }
 
@@ -1669,7 +1676,7 @@ static void check_section(Checker *c, Section *s) {
         Expr at = {0};
         at.line = s->line;
         at.col = 1;
-        if (s->var) s->coord = declare(c, &at, s->var, s->projective ? t_quat : t_complex);
+        if (s->var) s->coord = declare(c, &at, s->var, t_complex);
         s->color = declare(c, &at, "color", t_color);
     }
     if (s->kind == SEC_TOOL) extract_tool_settings(c, s);

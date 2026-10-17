@@ -242,6 +242,7 @@ struct Section {
     Sym *color;         /* viewer output */
     Sym *picked;        /* viewer: .var (picked point) */
     Sym *center, *radius; /* viewer properties */
+    Sym *mobius;        /* projective viewers: view map, C^4 (a, b, c, d) */
     bool panning, hover; /* tool settings */
     bool uses_time, uses_mouse; /* viewer depends on .time / .mouse */
     bool implicit;      /* the whole file was this (default) viewer */

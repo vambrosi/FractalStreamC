@@ -153,12 +153,76 @@ static long long file_mtime(const char *path) {
     return (long long)st.st_mtime;
 }
 
+/* ---- Riemann sphere views (projective viewers) --------------------------------
+ * A view is a Mobius map M (2x2 complex matrix, 8 floats a b c d) from the camera's
+ * sphere coordinate w to the plane: z = (a w + b) / (c w + d).  See interp.c. */
+typedef struct Cx { float re, im; } Cx;
+static Cx cx(float re, float im) { Cx z = {re, im}; return z; }
+static Cx cx_mul(Cx a, Cx b) { return cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re); }
+static Cx cx_add(Cx a, Cx b) { return cx(a.re + b.re, a.im + b.im); }
+static Cx cx_div(Cx a, Cx b) {
+    float d = b.re * b.re + b.im * b.im;
+    return cx((a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d);
+}
+typedef struct Mob { Cx a, b, c, d; } Mob;
+static Mob mob_mul(Mob x, Mob y) {
+    Mob r = {cx_add(cx_mul(x.a, y.a), cx_mul(x.b, y.c)), cx_add(cx_mul(x.a, y.b), cx_mul(x.b, y.d)),
+             cx_add(cx_mul(x.c, y.a), cx_mul(x.d, y.c)), cx_add(cx_mul(x.c, y.b), cx_mul(x.d, y.d))};
+    return r;
+}
+static Mob mob_inv(Mob x) {
+    Mob r = {x.d, cx(-x.b.re, -x.b.im), cx(-x.c.re, -x.c.im), x.a};
+    return r;
+}
+static Cx mob_apply(Mob m, Cx w) { return cx_div(cx_add(cx_mul(m.a, w), m.b), cx_add(cx_mul(m.c, w), m.d)); }
+/* the sphere rotation taking p to 0 */
+static Mob mob_to_zero(Cx p) {
+    Mob r = {cx(1, 0), cx(-p.re, -p.im), cx(p.re, -p.im), cx(1, 0)};
+    return r;
+}
+static Mob mob_get(Sym *s) {
+    float m[8];
+    for (int k = 0; k < 8; k++) m[k] = wf(A.state[s->slot + k]);
+    Mob r = {cx(m[0], m[1]), cx(m[2], m[3]), cx(m[4], m[5]), cx(m[6], m[7])};
+    return r;
+}
+static void mob_set(Sym *s, Mob x) {
+    float n = 0;
+    Cx e[4] = {x.a, x.b, x.c, x.d};
+    for (int k = 0; k < 4; k++) n += e[k].re * e[k].re + e[k].im * e[k].im;
+    n = 1.0f / sqrtf(n * 0.5f); /* keep the entries of moderate size (the map is unchanged by scaling) */
+    for (int k = 0; k < 4; k++) {
+        A.state[s->slot + 2 * k] = fw(e[k].re * n);
+        A.state[s->slot + 2 * k + 1] = fw(e[k].im * n);
+    }
+}
+#define APP_PROJ_T 1.19175359f
+static Cx screen_to_w(Rect r, float x, float y) {
+    float m = 0.5f * FS_MIN(r.w, r.h);
+    float sx = (x - r.x - 0.5f * r.w) / m * APP_PROJ_T, sy = (0.5f * r.h - (y - r.y)) / m * APP_PROJ_T;
+    float n = 1.0f / sqrtf(sx * sx + sy * sy + 1.0f);
+    return cx(sx * n / (1 + n), sy * n / (1 + n));
+}
+static bool w_to_screen(Rect r, Cx w, float *x, float *y) {
+    float s2 = w.re * w.re + w.im * w.im;
+    if (!(s2 < 1.0f)) return false; /* behind the camera */
+    float X = 2 * w.re / (1 + s2), Y = 2 * w.im / (1 + s2), Z = (s2 - 1) / (s2 + 1);
+    float m = 0.5f * FS_MIN(r.w, r.h);
+    *x = r.x + 0.5f * r.w + X / -Z / APP_PROJ_T * m;
+    *y = r.y + 0.5f * r.h - Y / -Z / APP_PROJ_T * m;
+    return true;
+}
+
 static void plane_of(int v, Rect r, float x, float y, float *re, float *im) {
     viewer_pixel_to_plane(A.prog, A.state, A.prog->viewers[v], r.w, r.h, x - r.x, y - r.y, re, im);
 }
 
 static void pixel_of(int v, Rect r, float re, float im, float *x, float *y) {
     Section *s = A.prog->viewers[v];
+    if (s->mobius) {
+        if (!w_to_screen(r, mob_apply(mob_inv(mob_get(s->mobius)), cx(re, im)), x, y)) *x = *y = 1e9f;
+        return;
+    }
     float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
     float scale = wf(A.state[s->radius->slot]) / (0.5f * FS_MIN(r.w, r.h));
     *x = r.x + 0.5f * r.w + (re - cx) / scale;
@@ -478,6 +542,7 @@ static bool load_source(const char *src, bool reset_layout) {
             remap[ov] = v;
             memcpy(state + s->center->slot, A.state + os->center->slot, 8);
             memcpy(state + s->radius->slot, A.state + os->radius->slot, 4);
+            if (s->mobius && os->mobius) memcpy(state + s->mobius->slot, A.state + os->mobius->slot, 32);
             if (s->picked && os->picked && s->picked->type == os->picked->type && A.vrt[ov].picked) {
                 memcpy(state + s->picked->slot, A.state + os->picked->slot, sizeof(u32) * (size_t)s->picked->type->size);
                 vrt[v].picked = true;
@@ -607,6 +672,12 @@ static void pick(int viewer, float re, float im) {
 
 static void zoom_at(int v, Rect r, float x, float y, float factor) {
     Section *s = A.prog->viewers[v];
+    if (s->mobius) { /* hyperbolic map fixing the point under the mouse and its antipode */
+        Cx p = screen_to_w(r, x, y);
+        Mob t = mob_to_zero(p), k = {cx(factor, 0), cx(0, 0), cx(0, 0), cx(1, 0)};
+        mob_set(s->mobius, mob_mul(mob_get(s->mobius), mob_mul(mob_inv(t), mob_mul(k, t))));
+        return;
+    }
     float re, im;
     plane_of(v, r, x, y, &re, &im);
     float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
@@ -616,6 +687,13 @@ static void zoom_at(int v, Rect r, float x, float y, float factor) {
 
 static void pan_by(int v, Rect r, float dx, float dy) {
     Section *s = A.prog->viewers[v];
+    if (s->mobius) { /* rotate the sphere so the point under the mouse follows it */
+        float mx = A.in.mouse_x, my = A.in.mouse_y;
+        Cx p0 = screen_to_w(r, mx - dx, my - dy), p1 = screen_to_w(r, mx, my);
+        Mob rot = mob_mul(mob_inv(mob_to_zero(p0)), mob_to_zero(p1));
+        mob_set(s->mobius, mob_mul(mob_get(s->mobius), rot));
+        return;
+    }
     float sc = view_scale(v, r);
     float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
     set_c(s->center, cx - dx * sc, cy + dy * sc);
@@ -623,6 +701,7 @@ static void pan_by(int v, Rect r, float dx, float dy) {
 
 static void reset_view(int v) {
     Section *s = A.prog->viewers[v];
+    if (s->mobius) memcpy(A.state + s->mobius->slot, A.prog->initial_state + s->mobius->slot, 32);
     memcpy(A.state + s->center->slot, A.prog->initial_state + s->center->slot, 8);
     memcpy(A.state + s->radius->slot, A.prog->initial_state + s->radius->slot, 4);
 }
@@ -852,6 +931,12 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
             break;
         case DRAW_CIRCLE: case DRAW_DISK: {
             float r = d->radius_px ? px(d->radius) : d->radius / sc;
+            if (!d->radius_px && A.prog->viewers[t->viewer]->mobius) {
+                float xr, yr;
+                pixel_of(t->viewer, t->r, d->p0[0] + d->radius, d->p0[1], &xr, &yr);
+                r = sqrtf((xr - x0) * (xr - x0) + (yr - y0) * (yr - y0));
+            }
+            if (!(fabsf(x0) < 1e6f)) break;
             if (!(r < 1e6f)) break;
             if (d->shape == DRAW_DISK) {
                 ui_disk(x0, y0, r, col);

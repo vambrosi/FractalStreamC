@@ -517,7 +517,28 @@ TEST(automatic_differentiation) {
     EXPECT_ERROR("@global\nx := critical z -> 3z + 1 with seed 0\n", "constant");
 }
 
+TEST(projective_mapping) {
+    Program *p = LOAD_OK(
+        "@config\nsphere.radius = 2\nsphere.center = 1 + i\n"
+        "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
+        "color = gray(|z|)\n");
+    Section *v = p->viewers[0];
+    CHECK(v->mobius != NULL);
+    float re, im;
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 50, &re, &im);
+    CHECK_NEAR(re, 1, 1e-5);
+    CHECK_NEAR(im, 1, 1e-5);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 150, 50, &re, &im); /* edge of the smaller side */
+    CHECK_NEAR(re, 3, 1e-4);
+    CHECK_NEAR(im, 1, 1e-4);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 0, &re, &im);
+    CHECK_NEAR(re, 1, 1e-4);
+    CHECK_NEAR(im, 3, 1e-4);
+    program_free(p);
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(projective_mapping),
     TESTCASE(automatic_differentiation),
     TESTCASE(variable_integer_powers),
     TESTCASE(default_viewer), TESTCASE(mandelbrot), TESTCASE(brief_example), TESTCASE(types_and_conversions),
