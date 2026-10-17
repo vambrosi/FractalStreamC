@@ -128,7 +128,8 @@ static Expr *parse_unary(Parser *p);
 /* can the current token start a juxtaposed factor (implicit multiplication)? */
 static bool starts_factor(Parser *p) {
     switch (cur(p)->kind) {
-    case TK_IDENT: case TK_INTERNAL: case TK_LPAREN: return true;
+    case TK_IDENT: return strcmp(cur(p)->str, "continuing") != 0; /* ... with seed s continuing from P */
+    case TK_INTERNAL: case TK_LPAREN: return true;
     case TK_BAR: return p->abs_depth == 0;
     default: return false;
     }
@@ -288,6 +289,21 @@ static Expr *parse_primary(Parser *p) {
             }
             e->b = parse_arith(p);
             if (!e->b) return NULL;
+            /* ... continuing from [c =] P: follow the solution from pixel to pixel, starting at P */
+            if (solve != SOLVE_DERIVATIVE && at(p, TK_IDENT) && !strcmp(cur(p)->str, "continuing")) {
+                advance(p);
+                if (!at(p, TK_IDENT) || strcmp(cur(p)->str, "from") != 0) {
+                    perr(p, cur(p), "expected 'from' after 'continuing', as in: continuing from c = .c");
+                    return NULL;
+                }
+                advance(p);
+                if (at(p, TK_IDENT) && peek(p, 1)->kind == TK_ASSIGN) {
+                    e->cont_var = advance(p)->str;
+                    advance(p);
+                }
+                e->cont_from = parse_arith(p);
+                if (!e->cont_from) return NULL;
+            }
             finish(p, e);
             return e;
         }

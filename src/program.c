@@ -65,6 +65,14 @@ Program *program_load(const char *source, const char *path) {
     vec_free(ufuncs);
     vec_free(gvars);
     if (p->nerrors == 0) check_program(p);
+    if (getenv("FS_DUMP_FUNCS")) { /* debugging aid: print generated functions */
+        StrBuf sb = {0};
+        for (int i = 0; i < p->funcs.len; i++)
+            if (p->funcs.data[i]->name[0] == '_' && p->funcs.data[i]->name[1] == '_' && !p->funcs.data[i]->prelude)
+                ast_dump_func(p->funcs.data[i], &sb);
+        fprintf(stderr, "%s", sb_cstr(&sb));
+        sb_free(&sb);
+    }
 
     if (p->nerrors == 0) {
         p->initial_state = (u32 *)arena_alloc(&p->arena, sizeof(u32) * (size_t)p->state_words);

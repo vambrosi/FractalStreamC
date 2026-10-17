@@ -152,6 +152,20 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "r := root t -> t^2 - z with seed 1\n"
      "d := derivative t -> exp(t) * sin(z t) at z\n"
      "color = [0.5 + 0.4 sin(re(w) + im(r)), 0.5 + 0.4 cos(re(d) * 0.1), 0.5]\n", 0.03},
+    {"autodiff_loops",
+     "@config\n.maxIterations = 40\n.escapeRadius = 100\n"
+     "@global\n"
+     "define esc(t, c) = x where\n"
+     "    x = t\n"
+     "    y := t\n"
+     "    while x not escapes do\n"
+     "        (x, y) = (x^2 + c - 0.3 y, x)\n"
+     "    end\n"
+     "end\n"
+     "@viewer v z\n"
+     "d := derivative t -> esc(t, z) at 0.5\n"
+     "w := critical t -> log(esc(t, z)) with seed 0.5\n"
+     "color = [0.5 + 0.4 sin(re(d) * 0.01), 0.5 + 0.4 cos(im(w)), 0.5 + 0.2 sin(.iterations)]\n", 0.05},
     {"projective",
      "@config\nsphere.radius = 2\nsphere.center = 0.5i\n"
      "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"

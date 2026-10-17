@@ -35,6 +35,11 @@ typedef struct Interp {
     DrawItemVec *draws;
     double steps, step_limit;
     int quiet; /* > 0 inside prelude functions: their loops don't touch .stuck/.iterations */
+    /* continuation (flood.c): how this pixel's `continuing` solve starts, and what it found */
+    int flood_mode;                   /* FLOOD_DIRECT, FLOOD_START or FLOOD_CONTINUE */
+    float flood_seed[2], flood_from[2]; /* FLOOD_CONTINUE: the neighbour's solution and its point */
+    float flood_out[2];
+    int flood_out_ok;                 /* -1: the solve did not run, 0 failed, 1 converged */
     char error[256];
 } Interp;
 
@@ -291,6 +296,27 @@ static i32 f2i(float x) {
 static void ev_intrinsic(Interp *I, Expr *e, u32 *out) {
     u32 a[4] = {0}, b[4] = {0}, c[4] = {0};
     int id = e->intrinsic;
+    if (id == I_FLOOD_SEED) {
+        ev(I, e->args[0], out);
+        if (I->flood_mode == FLOOD_CONTINUE) { out[0] = fw(I->flood_seed[0]); out[1] = fw(I->flood_seed[1]); }
+        return;
+    }
+    if (id == I_FLOOD_FROM) {
+        ev(I, e->args[0], a);
+        ev(I, e->args[1], b);
+        if (I->flood_mode == FLOOD_CONTINUE) { out[0] = fw(I->flood_from[0]); out[1] = fw(I->flood_from[1]); }
+        else if (I->flood_mode == FLOOD_START) { out[0] = a[0]; out[1] = a[1]; }
+        else { out[0] = b[0]; out[1] = b[1]; }
+        return;
+    }
+    if (id == I_FLOOD_OUT) {
+        ev(I, e->args[0], a);
+        ev(I, e->args[1], b);
+        I->flood_out[0] = wf(a[0]);
+        I->flood_out[1] = wf(a[1]);
+        I->flood_out_ok = b[0] != 0;
+        return;
+    }
     if (id == I_APPEND || id == I_CLEAR) {
         u32 *L = lv_addr(I, e->args[0]);
         Type *lt = e->args[0]->type;
@@ -610,7 +636,7 @@ static bool after_body(Interp *I) {
 
 static void exec_stmt(Interp *I, Stmt *s) {
     int mark = I->sp;
-    i32 maxit = wi(I->state[I->prog->s_max_iter->slot]);
+    i32 maxit = s->quiet ? 0x7fffffff : wi(I->state[I->prog->s_max_iter->slot]);
     switch (s->kind) {
     case S_DEFINE: case S_APPEND: break;
     case S_EXPR:
@@ -623,7 +649,13 @@ static void exec_stmt(Interp *I, Stmt *s) {
         if (!s->target->sym && s->target->kind != E_INDEX) break;
         u32 *tmp = push_words(I, s->target->type->size);
         if (s->value) ev(I, s->value, tmp);
-        if (I->signal != SIG_ABORT) store_value(I, s->target, tmp);
+        if (I->signal == SIG_ABORT) break;
+        if (s->internal && s->target->sym && s->target->sym->kind == SYM_EXEC) { /* generated code sets .stuck */
+            if (s->target->sym == I->prog->s_stuck) I->stuck = tmp[0] != 0;
+            else I->iterations = wi(tmp[0]);
+            break;
+        }
+        store_value(I, s->target, tmp);
         break;
     }
     case S_DESTRUCTURE: {
@@ -661,7 +693,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             exec_block(I, &s->body);
             if (after_body(I)) break;
         }
-        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet && !s->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_DOWHILE: {
@@ -679,7 +711,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             stuck = !ok && c;
             if (!(ok && c)) break;
         }
-        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet && !s->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_FOR: {
@@ -703,7 +735,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             if (after_body(I)) break;
             k[0] = k[0] + st;
         }
-        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet && !s->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_FOREACH: {
@@ -728,7 +760,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             exec_block(I, &s->body);
             if (after_body(I)) break;
         }
-        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet && !s->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_BREAK: I->signal = SIG_BREAK; break;

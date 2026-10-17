@@ -537,7 +537,96 @@ TEST(projective_mapping) {
     program_free(p);
 }
 
+TEST(autodiff_through_loops) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define iter(z, c) = w where\n"
+        "    w = z\n"
+        "    for k in 1..3 do\n"
+        "        w = w^2 + c\n"
+        "    end\n"
+        "end\n"
+        "d3 := derivative t -> iter(t, 0.1) at 0.5\n"
+        "define f(z) = s where\n"
+        "    s = 0\n"
+        "    for k in 1..3 do\n"
+        "        s += (z - k)^2\n"
+        "    end\n"
+        "end\n"
+        "cf := critical t -> f(t) with seed 7 + i\n"
+        "st := .stuck\n"
+        "define esc(z, c) = w where\n"
+        "    w = z\n"
+        "    while w not escapes do\n"
+        "        w = w^2 + c\n"
+        "    end\n"
+        "end\n"
+        "z0 := 0.3 + 0.2i\n"
+        "c0 := 0.4 + 0.1i\n"
+        "de := derivative t -> esc(t, c0) at z0\n"
+        "fd := 1\n"   /* the same derivative, propagated by hand */
+        "x := z0\n"
+        "while x not escapes do\n"
+        "    fd = 2 x fd\n"
+        "    x = x^2 + c0\n"
+        "end\n"
+        "define pq(z) = (u, v) where\n"
+        "    u = z^2\n"
+        "    v = u * z\n"
+        "end\n"
+        "define hh(z) = r where\n"
+        "    (u, v) := pq(z)\n"
+        "    r = u + v\n"
+        "end\n"
+        "dh := derivative t -> hh(t) at 2\n"
+        "define cnt(z) = w where\n"
+        "    w = z\n"
+        "    n : Z = 0\n"
+        "    while |w| < 10 do\n"
+        "        w = w * 2\n"
+        "        n += 1\n"
+        "    end\n"
+        "    w = w / n\n"
+        "end\n"
+        "dc := derivative t -> cnt(t) at 1\n"
+        "rl := root t -> log(t) + t - 1 with seed 3\n");
+    CHECK_NEAR(gnum(p, "d3", 0), 0.3115, 1e-5);
+    CHECK_NEAR(gnum(p, "cf", 0), 2, 1e-5);
+    CHECK_NEAR(gnum(p, "cf", 1), 0, 1e-5);
+    CHECK_NEAR(gnum(p, "st", 0), 0, 0);
+    CHECK_NEAR(gnum(p, "de", 0) / gnum(p, "fd", 0), 1, 1e-5);
+    CHECK_NEAR(gnum(p, "de", 1) / gnum(p, "fd", 1), 1, 1e-5);
+    CHECK_NEAR(gnum(p, "dh", 0), 2 * 2 + 3 * 4, 1e-4);
+    CHECK_NEAR(gnum(p, "dc", 0), 16.0 / 4.0, 1e-5); /* 1 -> 16 in 4 doublings: w = 16 t / 4 */
+    CHECK_NEAR(gnum(p, "rl", 0), 1, 1e-5);
+    program_free(p);
+    EXPECT_ERROR("@global\ndefine bad(z) = w where\n    w = z\n    w = w * |w|\nend\nx := root t -> bad(t) with seed 1\n",
+                 "can't differentiate");
+    EXPECT_ERROR("@global\ndefine tt(z) = w where\n    r : R = |z|\n    w = z * r\nend\nx := root t -> tt(t) with seed 1\n",
+                 "can't differentiate");
+}
+
+TEST(continuing_checks) {
+    Program *p = LOAD_OK(
+        "@viewer v c\n"
+        "define sq(t, c) = t^2 - c\n"
+        "w := root t -> sq(t, c) with seed 1 continuing from c = 1\n"
+        "color = gray(re(w))\n");
+    CHECK(p->viewers[0]->flood != NULL);
+    float rgb[3];
+    viewer_rgb(p, 0, 0.25f, 0, rgb);
+    CHECK_NEAR(rgb[0], 0.5, 1e-4);
+    program_free(p);
+    EXPECT_ERROR("@viewer v c\ncolor = .red\n@global\nw := root t -> t^2 - 1 with seed 1 continuing from 1\n", "only be used in a viewer");
+    EXPECT_ERROR("@viewer v c\nw := root t -> t^2 - c with seed 1 continuing from 1\nu := root t -> t^2 - c with seed 1 continuing from 1\ncolor = .red\n",
+                 "only one");
+    EXPECT_ERROR("@viewer v c\nd := 2 c\nw := root t -> t^2 - d with seed 1 continuing from c = 1\ncolor = .red\n", "computed from c");
+    EXPECT_ERROR("@viewer v c\nw := root t -> t^2 - c with seed 1 continuing from z = 1\ncolor = .red\n", "viewer's variable");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(autodiff_through_loops),
+    TESTCASE(continuing_checks),
     TESTCASE(projective_mapping),
     TESTCASE(automatic_differentiation),
     TESTCASE(variable_integer_powers),

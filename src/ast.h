@@ -123,9 +123,13 @@ struct Expr {
     double rval;       /* E_REAL / E_IMAG */
     float cval[4];     /* E_COLOR_CONST and folded constants */
     bool paren;        /* written in parentheses (for juxtaposition diagnostics) */
+    Expr *cont_from;   /* E_SOLVE ... continuing from [VAR =] P: the point P */
+    char *cont_var;    /* ... and VAR (NULL: the viewer's variable) */
 };
 
 enum { SOLVE_CRITICAL = 1, SOLVE_ROOT, SOLVE_DERIVATIVE };
+/* how a pixel's `continuing` solve starts (flood.c) */
+enum { FLOOD_DIRECT = 0, FLOOD_START = 1, FLOOD_CONTINUE = 2 };
 
 typedef struct Block {
     Stmt **stmts;
@@ -168,6 +172,8 @@ struct Stmt {
     bool radius_px;
     char *in_viewer; int viewer_index;
     Func *fn;           /* S_DEFINE */
+    bool internal;      /* generated code: may assign .stuck / .iterations */
+    bool quiet;         /* generated loop: no .maxIterations limit, leaves .stuck / .iterations alone */
 };
 
 /* ---- symbols --------------------------------------------------------- */
@@ -249,6 +255,7 @@ struct Section {
     int viewer_of;      /* tool: index of that viewer, -1 = every viewer */
     bool uses_time, uses_mouse; /* viewer depends on .time / .mouse */
     bool implicit;      /* the whole file was this (default) viewer */
+    Func *flood;        /* viewer: the function of its `continuing` solve (rendered by flood fill), or NULL */
 };
 typedef VEC(Section *) SectionVec;
 

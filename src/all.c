@@ -22,6 +22,8 @@
 #include "builtins.c"
 #include "parse.c"
 #include "check.c"
+#include "autodiff.c"
+#include "astdump.c"
 #include "interp.c"
 #include "spirv.c"
 #include "codegen.c"

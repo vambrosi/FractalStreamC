@@ -22,6 +22,8 @@ typedef enum Intrinsic {
     I_ISNAN, I_ISINF,
     /* generic (checked specially) */
     I_DOT, I_LENGTH, I_APPEND, I_CLEAR,
+    /* continuation (autodiff.c, flood.c): never written by users */
+    I_FLOOD_SEED, I_FLOOD_FROM, I_FLOOD_OUT,
     I_COUNT
 } Intrinsic;
 
