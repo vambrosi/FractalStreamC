@@ -110,7 +110,8 @@ typedef struct App {
     double next_file_check;
     u32 *prepare_snap;      /* the state after @prepare last ran (NULL: run it) */
     /* deferred to the start of the next frame (see process_requests) */
-    bool req_run, req_reload;
+    bool req_run, req_reload, req_new;
+    char req_new_path[1024]; /* a new script from this file ("": the welcome script) */
     char req_open[1024];
     char req_export[1024];  /* save a picture there */
     int export_viewer, export_scale, export_wait;
@@ -129,7 +130,11 @@ typedef struct App {
     /* the formula being edited in the config pane: its text, and where it is in the script */
     char formula_buf[512];
     int formula_start, formula_end;
-    int modal;              /* 0, 1 save as, 2 open, 3 save a picture */
+    int modal;              /* 0, 1 save as, 2 open, 3 save a picture, 4 new from a template, 5 unsaved changes */
+    int pending;            /* what waits for the answer about unsaved changes (PENDING_*) */
+    char pending_path[1024];
+    bool discard_ok;        /* the changes may go: once, for the next open / new / quit */
+    bool quit_now;          /* (asked: quit)*/
     bool modal_focus, modal_select_all;
     bool modal_confirm;     /* saving over a file: the next OK replaces it */
     char modal_buf[1024];
@@ -1126,12 +1131,12 @@ static bool open_file(const char *path, bool reload) {
     return ok;
 }
 
-static void save_file(const char *path) {
+static bool save_file(const char *path) {
     int len;
     const char *text = editor_get_text(A.ed, &len);
     if (!fs_write_file(path, text, (size_t)len)) {
         set_status(true, "Can't write %s", path);
-        return;
+        return false;
     }
     snprintf(A.path, sizeof A.path, "%s", path);
     editor_set_unmodified(A.ed);
@@ -1139,6 +1144,49 @@ static void save_file(const char *path) {
     note_recent(path);
     set_status(false, "Saved %s", fs_basename(path));
     update_title();
+    return true;
+}
+
+/* ---- unsaved changes: asked about before they would be lost ----------------------------------------------------- */
+enum { PENDING_NONE, PENDING_OPEN, PENDING_NEW, PENDING_QUIT };
+
+/* May `action` go ahead?  Not while the script has unsaved changes: the dialog asks first, and the action waits. */
+static bool unsaved_guard(int action, const char *path) {
+    if (A.discard_ok || !editor_is_modified(A.ed)) {
+        A.discard_ok = false;
+        return true;
+    }
+    A.pending = action;
+    snprintf(A.pending_path, sizeof A.pending_path, "%s", path ? path : "");
+    A.modal = 5;
+    return false;
+}
+
+/* a new script: a copy of `path` (or of the welcome script), not saved anywhere yet (see new_from) */
+static void new_from_now(const char *path) {
+    size_t len = 0;
+    char *src = path ? fs_read_file(path, &len) : NULL;
+    if (path && !src) {
+        set_status(true, "Can't read %s", path);
+        return;
+    }
+    const char *text = src ? src : welcome_script;
+    A.path[0] = 0;
+    A.file_mtime = 0;
+    editor_set_text(A.ed, text, (int)strlen(text));
+    editor_set_unmodified(A.ed);
+    if (load_source(text, LOAD_OPEN)) set_status(false, "A new script%s%s: " MODKEY "+S saves it", path ? " from " : "",
+                                                 path ? fs_basename(path) : "");
+    else A.editor_open = true;
+    A.editor_open = true;
+    free(src);
+    update_title();
+}
+
+/* (at the start of the next frame, like every load) */
+static void new_from(const char *path) {
+    A.req_new = true;
+    snprintf(A.req_new_path, sizeof A.req_new_path, "%s", path ? path : "");
 }
 
 static void run_editor_now(void) {
@@ -1163,7 +1211,12 @@ static void process_requests(void) {
         A.req_open[0] = 0;
         bool reload = A.req_reload;
         A.req_reload = false;
-        if (open_file(path, reload) && reload) set_status(false, "Reloaded %s (changed on disk)", fs_basename(path));
+        if ((reload || unsaved_guard(PENDING_OPEN, path)) && open_file(path, reload) && reload)
+            set_status(false, "Reloaded %s (changed on disk)", fs_basename(path));
+    }
+    if (A.req_new) {
+        A.req_new = false;
+        new_from_now(A.req_new_path[0] ? A.req_new_path : NULL);
     }
     if (A.req_run) {
         A.req_run = false;
@@ -1190,6 +1243,7 @@ static void default_save_path(char *out, int cap) {
 static void open_modal(int kind, const char *path);
 static const char *examples_dir(void);
 static const char *home_dir(void);
+static void ask_new(void);
 
 static void ask_save_as(void) {
     char path[1024];
@@ -2266,6 +2320,9 @@ static void editor_pane(float H) {
     ui_icon("play_arrow", ">", x + (wide ? px(2) : 0), y, bhh, UI_COL_ON_ACCENT);
     if (wide) ui_text(UI_FONT_SANS, x + bhh, y + (bhh - lh) / 2, "Run", -1, UI_COL_ON_ACCENT);
     x += rw + px(6);
+    if (ui_icon_button_ex("##new", "note_add", "N", x, y, bhh, 0)) ask_new();
+    ui_tooltip("A new script, from a template (" MODKEY "+N)");
+    x += bhh + px(4);
     if (ui_icon_button_ex("##save", "save", "S", x, y, bhh, 0)) {
         if (A.path[0]) save_file(A.path);
         else ask_save_as();
@@ -3081,7 +3138,7 @@ static void help_overlay(float W, float H) {
         {"Esc", "the menu of the view under the mouse (views, tools, pictures, place)"},
         {MODKEY "+Enter or " MODKEY "+R", "run the script"},
         {MODKEY "+S, " MODKEY "+Shift+S", "save, save as"},
-        {MODKEY "+O", "open a file (or drop it on the window)"},
+        {MODKEY "+O, " MODKEY "+N", "open a script (or drop it on the window), a new one from a template"},
         {MODKEY "+F, " MODKEY "+Alt+F", "find, replace in the script (" MODKEY "+G: next)"},
         {MODKEY "+E, " MODKEY "+T", "show / hide the script, the config"},
         {MODKEY "+1, 2, ...", "show a view (or the shortcut written in the script)"},
@@ -3191,24 +3248,93 @@ static void open_modal(int kind, const char *path) {
     snprintf(A.modal_buf, sizeof A.modal_buf, "%.1020s", path);
 }
 
+/* a new script from a template (the templates among the examples) */
+static void ask_new(void) {
+    if (!unsaved_guard(PENDING_NEW, NULL)) return;
+    char dir[1100];
+    const char *ex = examples_dir();
+    snprintf(dir, sizeof dir, "%.1000s/templates", ex);
+    if (!ex[0] || !fs_is_dir(dir)) snprintf(dir, sizeof dir, "%.1000s", ex[0] ? ex : home_dir() ? home_dir() : ".");
+    strcat(dir, "/");
+    open_modal(4, dir);
+}
+
+/* after the question about unsaved changes: what was asked for */
+static void perform_pending(void) {
+    int what = A.pending;
+    A.pending = PENDING_NONE;
+    A.discard_ok = true;
+    if (what == PENDING_OPEN) request_open(A.pending_path);
+    else if (what == PENDING_NEW) ask_new();
+    else if (what == PENDING_QUIT) {
+        A.quit_now = true;
+        platform_set_should_close(true);
+    } else A.discard_ok = false;
+}
+
+/* "Save the changes?": Save, Don't save, Cancel */
+static void unsaved_dialog(float W, float H) {
+    int prev = ui_layer(UI_LAYER_POPUP);
+    ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
+    float pw = FS_MIN(px(520), W - px(40)), ph = px(150);
+    Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
+    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
+    char q[400];
+    snprintf(q, sizeof q, "Save the changes to %.200s?", A.path[0] ? fs_basename(A.path) : "the new script");
+    ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(18), q, -1, UI_COL_TEXT);
+    const char *what = A.pending == PENDING_QUIT ? "Otherwise they are lost when FractalStream closes."
+                       : A.pending == PENDING_NEW ? "Otherwise they are lost with the new script."
+                                                  : "Otherwise they are lost when the other script opens.";
+    ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(48), what, -1, UI_COL_TEXT_DIM);
+    float by = pr.y + ph - px(48), bw = px(110);
+    bool save = ui_button_ex("Save##uns_save", pr.x + pr.w - 3 * (bw + px(10)), by, bw, px(32), UI_ACCENT);
+    bool drop = ui_button_ex("Don't save##uns_drop", pr.x + pr.w - 2 * (bw + px(10)), by, bw, px(32), 0);
+    bool cancel = ui_button_ex("Cancel##uns_cancel", pr.x + pr.w - (bw + px(10)), by, bw, px(32), 0);
+    if (ui_shortcut(UI_KEY_ENTER, 0)) save = true;
+    if (ui_shortcut(UI_KEY_D, UI_MOD_MOD) || ui_shortcut(UI_KEY_D, 0)) drop = true;
+    if (ui_shortcut(UI_KEY_ESCAPE, 0)) cancel = true;
+    if (save) {
+        A.modal = 0;
+        if (A.path[0]) {
+            if (save_file(A.path)) perform_pending();
+            else A.pending = PENDING_NONE;
+        } else {
+            ask_save_as(); /* (then what was asked for: see the save dialog) */
+        }
+    } else if (drop) {
+        A.modal = 0;
+        perform_pending();
+    } else if (cancel) {
+        A.modal = 0;
+        A.pending = PENDING_NONE;
+    }
+    ui_layer(prev);
+}
+
 static void modal_dialog(float W, float H) {
+    if (A.modal == 5) {
+        unsaved_dialog(W, H);
+        return;
+    }
     if (!A.modal) {
         if (A.browse) fs_free_dir(A.browse, A.nbrowse);
         A.browse = NULL;
         A.nbrowse = 0;
         A.browse_dir[0] = 0;
+        if (A.pending && A.pending != PENDING_NONE) A.pending = PENDING_NONE; /* (a save asked for was cancelled) */
         return;
     }
     int prev = ui_layer(UI_LAYER_POPUP);
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
-    bool saving = A.modal != 2;
+    bool saving = A.modal == 1 || A.modal == 3;
     const char *ext = A.modal == 3 ? ".png" : ".fstream";
     float rh = px(26), pad = px(16);
     float pw = FS_MIN(px(720), W - px(40)), ph = FS_MIN(px(560), H - px(40));
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
     ui_text(UI_FONT_SANS, pr.x + pad, pr.y + px(14),
-            A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):" : "Open a script:", -1, UI_COL_TEXT);
+            A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):"
+            : A.modal == 4 ? "A new script, from a template (or the welcome example):" : "Open a script:", -1, UI_COL_TEXT);
     char before[1024];
     snprintf(before, sizeof before, "%s", A.modal_buf);
     int r = ui_text_field_ex("##modal_path", pr.x + pad, pr.y + px(44), pr.w - 2 * pad, px(30), A.modal_buf,
@@ -3228,6 +3354,14 @@ static void modal_dialog(float W, float H) {
     if (home) snprintf(doc_dir, sizeof doc_dir, "%s/Documents", home);
     if (!doc_dir[0] || !fs_is_dir(doc_dir)) doc_dir[0] = 0;
     if (A.path[0]) split_path(A.path, script_dir, sizeof script_dir);
+    if (A.modal == 4) { /* the welcome example (built in) */
+        float bw = ui_text_width(UI_FONT_SANS, "Welcome example", -1) + px(24);
+        if (ui_button_ex("Welcome example##place_welcome", x, y, bw, px(26), UI_FLAT)) {
+            A.modal = 0;
+            new_from(NULL);
+        }
+        x += bw + px(6);
+    }
     const char *places[5][3] = {{"Recent", "history", A.modal == 2 && A.nrecent ? "" : NULL},
                                 {"Home", "home", home}, {"Documents", "folder", doc_dir[0] ? doc_dir : NULL},
                                 {"Examples", "school", examples_dir()[0] ? examples_dir() : NULL},
@@ -3382,14 +3516,19 @@ static void modal_dialog(float W, float H) {
         }
     }
     if (ok && A.modal_buf[0]) {
-        if (A.modal == 1) save_file(A.modal_buf);
-        else if (A.modal == 3) {
+        int kind = A.modal;
+        A.modal = 0; /* (before what follows, which may open another dialog) */
+        if (kind == 1) {
+            if (save_file(A.modal_buf) && A.pending) perform_pending(); /* (saved before an open, a new script or quitting) */
+        } else if (kind == 4) {
+            new_from(A.modal_buf);
+        } else if (kind == 3) {
             snprintf(A.req_export, sizeof A.req_export, "%s", A.modal_buf);
             A.export_wait = 2;
             set_status(false, "Saving the picture...");
+        } else {
+            request_open(A.modal_buf);
         }
-        else request_open(A.modal_buf);
-        A.modal = 0;
     } else if (cancel) {
         A.modal = 0;
     }
@@ -3431,6 +3570,7 @@ static void shortcuts(void) {
     }
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD | UI_MOD_SHIFT)) ask_save_as();
     if (ui_shortcut(UI_KEY_O, UI_MOD_MOD)) ask_open();
+    if (ui_shortcut(UI_KEY_N, UI_MOD_MOD)) ask_new();
     if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.editor_open = !A.editor_open;
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
@@ -3662,7 +3802,7 @@ static void frame(void) {
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);
     if (atlas) gfx_set_font_atlas(atlas, aw, ah);
-    for (int k = 0; k < in->ndropped; k++) open_file(in->dropped_files[k], false);
+    if (in->ndropped) request_open(in->dropped_files[0]); /* (the first file dropped) */
 
     /* layout */
     layout_panes(W, H);
@@ -3774,6 +3914,7 @@ static void frame_editor_only(void) {
     A.area = (Rect){(float)in->fb_w, 0, 0, (float)in->fb_h};
     editor_pane((float)in->fb_h);
     status_line((float)in->fb_w, (float)in->fb_h);
+    modal_dialog((float)in->fb_w, (float)in->fb_h);
     if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD) ||
         (editor_version(A.ed) != A.compiled_version && A.live)) {
         int l;
@@ -3878,7 +4019,11 @@ int app_run(const char *script_path) {
     platform_poll(in, false);
     /* FS_AUTOQUIT=seconds closes the window after that long (for automated runs under sanitizers) */
     double autoquit = getenv("FS_AUTOQUIT") ? atof(getenv("FS_AUTOQUIT")) : 0;
-    while (!platform_should_close() && !(autoquit > 0 && fs_time_seconds() - A.t0 > autoquit)) {
+    while (!(autoquit > 0 && fs_time_seconds() - A.t0 > autoquit)) {
+        if (platform_should_close()) { /* (unsaved changes: asked about first) */
+            if (A.quit_now || unsaved_guard(PENDING_QUIT, NULL)) break;
+            platform_set_should_close(false);
+        }
         if (A.prog) frame();
         else frame_editor_only();
         double wait = viewers_busy() || A.drag != DRAG_NONE ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
