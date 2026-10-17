@@ -7,3 +7,5 @@
 # Local material, kept out of the repo
 /notes/
 /tmp/
+# Build outputs
+/build/
