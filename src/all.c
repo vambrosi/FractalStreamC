@@ -46,7 +46,7 @@
 #include "editor.c"
 #endif
 /* application */
-#if __has_include("app.c")
+#if __has_include("app.c") && __has_include("editor.c")
 #include "app.c"
 #endif
 #if __has_include("cli.c")

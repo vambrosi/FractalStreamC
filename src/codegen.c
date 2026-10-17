@@ -979,6 +979,17 @@ static u32 from_buffer(Gen *g, Type *t, u32 v) {
     }
 }
 
+/* Which globals does viewer `v` read (directly or through functions)?  used[i] for p->globals.data[i]. */
+void codegen_viewer_deps(Program *p, Section *v, bool *used) {
+    Gen G = {0};
+    G.prog = p;
+    for (int i = 0; i < p->globals.len; i++) p->globals.data[i]->used = false;
+    mark_block(&G, &v->body);
+    v->center->used = v->radius->used = true;
+    for (int i = 0; i < p->globals.len; i++) used[i] = p->globals.data[i]->used;
+    vec_free(G.visited);
+}
+
 /* Generate the fragment shader of viewer `v`.  Returns malloc'd words or NULL. */
 u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) {
     Gen G = {0};
