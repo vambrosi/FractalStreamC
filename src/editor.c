@@ -1056,6 +1056,24 @@ int editor_replace_all(Editor *ed, const char *needle, const char *with, bool ma
     return count;
 }
 
+bool editor_replace_ranges(Editor *ed, const EditorEdit *edits, int n) {
+    for (int i = 0; i < n; i++) {
+        const EditorEdit *e = &edits[i];
+        if (e->pos < 0 || e->del < 0 || e->pos + e->del > ed->len || (i && e->pos < edits[i - 1].pos + edits[i - 1].del))
+            return false;
+    }
+    EdLineEdit *le = (EdLineEdit *)xmalloc(sizeof(EdLineEdit) * (size_t)FS_MAX(n, 1));
+    for (int i = 0; i < n; i++) {
+        le[i].pos = edits[i].pos;
+        le[i].del = edits[i].del;
+        le[i].text = edits[i].text ? edits[i].text : "";
+        le[i].ins = (int)strlen(le[i].text);
+    }
+    edp_apply_line_edits(ed, le, n);
+    free(le);
+    return true;
+}
+
 void editor_insert(Editor *ed, int offset, const char *utf8, int len) {
     if (!utf8) return;
     if (len < 0) len = (int)strlen(utf8);

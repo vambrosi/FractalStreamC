@@ -176,8 +176,117 @@ TEST(app_copy_paste_location) {
     app_test_end();
 }
 
+/* the values changed in the app go into the script's text: values given as numbers are replaced, formulas are left
+   alone, the views get lines at the top of @config; the script compiled again starts as the app is now */
+TEST(app_write_values_into_script) {
+    const char *src =
+        "# test\n"
+        "@config\n"
+        "a : C = 0.3 \"a =\"\n"
+        "n : Z = 2 in 0..10\n"
+        "flag : Bool = false\n"
+        "seeds : List of C = [0.1, 0.2]\n"
+        "col : Color = .red\n"
+        "@global\n"
+        "b := 2 * a + n  # a formula\n"
+        "@prepare\n"
+        "q := 0\n"
+        "@viewer m c\n"
+        "color = col\n";
+    Program *p = program_load(src, "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    A.ed = editor_create();
+    editor_set_text(A.ed, src, (int)strlen(src));
+    A.compiled_version = editor_version(A.ed);
+    CHECK_INT(count_changed(p, true), 0);
+    Sym *sa = NULL, *sn = NULL, *sf = NULL, *ss = NULL, *sb = NULL, *sc = NULL;
+    for (int i = 0; i < p->globals.len; i++) {
+        Sym *g = p->globals.data[i];
+        if (!strcmp(g->name, "a")) sa = g;
+        if (!strcmp(g->name, "n")) sn = g;
+        if (!strcmp(g->name, "flag")) sf = g;
+        if (!strcmp(g->name, "seeds")) ss = g;
+        if (!strcmp(g->name, "b")) sb = g;
+        if (!strcmp(g->name, "col")) sc = g;
+    }
+    CHECK(sa && sn && sf && ss && sb && sc);
+    if (!(sa && sn && sf && ss && sb && sc)) { editor_destroy(A.ed); app_test_end(); return; }
+    A.state[sa->slot] = fw(0.35f);
+    A.state[sa->slot + 1] = fw(-0.1f);
+    A.state[sn->slot] = 5;
+    A.state[sf->slot] = 1;
+    A.state[ss->slot] = 1; /* [0.5] */
+    A.state[ss->slot + ss->type->data_off] = fw(0.5f);
+    A.state[ss->slot + ss->type->data_off + 1] = 0;
+    A.state[sb->slot] = fw(7.0f);
+    A.state[sc->slot] = fw(0.25f);
+    A.state[sc->slot + 1] = fw(0.5f);
+    A.state[sc->slot + 2] = fw(1.0f);
+    set_view_center_d(0, -0.743643887037151, 0.131825904205330);
+    A.state[p->viewers[0]->radius->slot] = fw(1e-9f);
+    CHECK_INT(count_changed(p, false), 6);
+    CHECK_INT(count_changed(p, true), 7);
+    write_values();
+    int len;
+    const char *text = editor_get_text(A.ed, &len);
+    CHECK_STR(text,
+              "# test\n"
+              "@config\n"
+              "m.center = -0.74364388703715 + 0.13182590420533i\n"
+              "m.radius = 1e-09\n"
+              "a : C = 0.35 - 0.1i \"a =\"\n"
+              "n : Z = 5 in 0..10\n"
+              "flag : Bool = true\n"
+              "seeds : List of C = [0.5]\n"
+              "col : Color = rgb(0.25, 0.5, 1)\n"
+              "@global\n"
+              "b := 2 * a + n  # a formula\n"
+              "@prepare\n"
+              "q := 0\n"
+              "@viewer m c\n"
+              "color = col\n");
+    CHECK(strstr(A.status, "Not written") && strstr(A.status, "b"));
+    /* compiled again, the script starts where the app is (but for the formula) */
+    Program *q = program_load(text, "t");
+    CHECK_INT(q->nerrors, 0);
+    if (!q->nerrors) {
+        for (int i = 0; i < q->globals.len; i++) {
+            Sym *g = q->globals.data[i];
+            Sym *old = NULL;
+            for (int k = 0; k < p->globals.len; k++)
+                if (!strcmp(p->globals.data[k]->name, g->name)) old = p->globals.data[k];
+            if (!old || app_managed(q, g) || view_geometry(q, g) || !strcmp(g->name, "b")) continue;
+            CHECK_MSG(same_value(g->type, q->initial_state + g->slot, A.state + old->slot), "%s", g->name);
+        }
+        Section *m = q->viewers[0];
+        double cx = (double)wf(q->initial_state[m->center->slot]) + wf(q->initial_state[m->center_lo->slot]);
+        double cy = (double)wf(q->initial_state[m->center->slot + 1]) + wf(q->initial_state[m->center_lo->slot + 1]);
+        ViewPlace now = view_place(0);
+        CHECK_NEAR(cx, now.cx, 1e-14);
+        CHECK_NEAR(cy, now.cy, 1e-14);
+        CHECK(wf(q->initial_state[m->radius->slot]) == now.radius);
+    }
+    program_free(q);
+    /* undo is one step */
+    CHECK(editor_undo(A.ed));
+    text = editor_get_text(A.ed, &len);
+    CHECK_STR(text, src);
+    /* Reset values: as in the script, the view stays */
+    ViewPlace pl = view_place(0);
+    reset_values();
+    CHECK_INT(count_changed(p, false), 0);
+    CHECK_INT(count_changed(p, true), 1);
+    ViewPlace pl2 = view_place(0);
+    CHECK(same_place(&pl, &pl2));
+    editor_destroy(A.ed);
+    app_test_end();
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
     TESTCASE(app_copy_paste_location),
+    TESTCASE(app_write_values_into_script),
 };

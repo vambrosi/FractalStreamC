@@ -865,8 +865,35 @@ static void destroy_rts(ViewerRT *vrt, int n) {
     free(vrt);
 }
 
-/* compile `src`; on success replace the running program (keeping views and tools) */
-static bool load_source(const char *src, bool reset_layout) {
+/* ---- values of the script -------------------------------------------------------------------- */
+/* globals the app sets by itself */
+static bool app_managed(Program *p, Sym *s) {
+    return s == p->s_mouse || s == p->s_time || s == p->s_last_click || s == p->s_drag_start || s == p->s_width ||
+           s == p->s_height;
+}
+
+/* a view's centre and radius (and their hidden parts): the views have their own reset and history */
+static bool view_geometry(Program *p, Sym *s) {
+    if (s->viewer_index < 0 || s->viewer_index >= p->nviewers) return false;
+    Section *v = p->viewers[s->viewer_index];
+    return s == v->center || s == v->radius || s == v->center_lo || s == v->mobius;
+}
+
+/* lists: only the items in use */
+static bool same_value(Type *t, const u32 *a, const u32 *b) {
+    if (t->kind == T_LIST) {
+        if (a[0] != b[0]) return false;
+        int n = FS_CLAMP((i32)a[0], 0, t->n);
+        return memcmp(a + t->data_off, b + t->data_off, sizeof(u32) * (size_t)(n * t->stride)) == 0;
+    }
+    return memcmp(a, b, sizeof(u32) * (size_t)t->size) == 0;
+}
+
+/* compile `src`; on success replace the running program.  LOAD_RUN (the same script, edited or changed on disk) keeps
+   the layout, the views and their history, the tools, and the values changed since the last run (unless the script
+   now gives them another value); LOAD_OPEN (another script) starts afresh. */
+enum { LOAD_OPEN, LOAD_RUN };
+static bool load_source(const char *src, int mode) {
     Program *p = program_load(src, A.path[0] ? A.path : "untitled");
     diags_to_editor(p);
     A.compiled_version = editor_version(A.ed);
@@ -912,10 +939,12 @@ static bool load_source(const char *src, bool reset_layout) {
         vrt[v].tool = TOOL_PAN;
     }
     /* new state; keep the views, picked points and tools of viewers that still exist */
+    bool same = mode == LOAD_RUN && A.prog;
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
     int *remap = (int *)xmalloc(sizeof(int) * (size_t)(A.prog ? A.prog->nviewers : 1));
-    for (int ov = 0; A.prog && ov < A.prog->nviewers; ov++) {
+    for (int ov = 0; A.prog && ov < A.prog->nviewers; ov++) remap[ov] = -1;
+    for (int ov = 0; same && ov < A.prog->nviewers; ov++) {
         remap[ov] = -1;
         Section *os = A.prog->viewers[ov];
         for (int v = 0; v < p->nviewers; v++) {
@@ -943,8 +972,21 @@ static bool load_source(const char *src, bool reset_layout) {
                     vrt[v].tool = t;
         }
     }
+    /* the values changed since the last run (in the panel, by tools) stay, unless the script changed them too */
+    for (int i = 0; same && i < p->globals.len; i++) {
+        Sym *s = p->globals.data[i];
+        if (s->kind != SYM_GLOBAL || app_managed(p, s) || view_geometry(p, s)) continue;
+        for (int k = 0; k < A.prog->globals.len; k++) {
+            Sym *os = A.prog->globals.data[k];
+            if (strcmp(os->name, s->name) != 0 || os->is_internal != s->is_internal) continue;
+            if (os->type == s->type && os->kind == SYM_GLOBAL &&
+                same_value(s->type, A.prog->initial_state + os->slot, p->initial_state + s->slot))
+                memcpy(state + s->slot, A.state + os->slot, sizeof(u32) * (size_t)s->type->size);
+            break;
+        }
+    }
     /* keep the layout if all the viewers in it still exist */
-    bool keep = A.prog && !reset_layout;
+    bool keep = same;
     for (int i = 0; keep && i < MAX_NODES; i++)
         if (A.nodes[i].kind == N_LEAF && remap[A.nodes[i].viewer] < 0) keep = false;
     for (int i = 0; keep && i < MAX_FLOATS; i++)
@@ -989,7 +1031,7 @@ static bool load_source(const char *src, bool reset_layout) {
     return true;
 }
 
-static bool open_file(const char *path) {
+static bool open_file(const char *path, bool reload) {
     size_t len;
     char *src = fs_read_file(path, &len);
     if (!src) {
@@ -1000,7 +1042,7 @@ static bool open_file(const char *path) {
     editor_set_text(A.ed, src, (int)len);
     editor_set_unmodified(A.ed);
     A.file_mtime = file_mtime(A.path);
-    bool ok = load_source(src, true);
+    bool ok = load_source(src, reload ? LOAD_RUN : LOAD_OPEN);
     free(src);
     if (!ok) A.editor_open = true;
     else set_status(false, "Opened %s", fs_basename(path));
@@ -1024,7 +1066,7 @@ static void save_file(const char *path) {
 static void run_editor_now(void) {
     int len;
     const char *text = editor_get_text(A.ed, &len);
-    if (load_source(text, false)) set_status(false, "Running");
+    if (load_source(text, LOAD_RUN)) set_status(false, "Running");
 }
 
 /* Compiling or opening replaces the viewers and their pictures, which this frame's drawing may already
@@ -1043,7 +1085,7 @@ static void process_requests(void) {
         A.req_open[0] = 0;
         bool reload = A.req_reload;
         A.req_reload = false;
-        if (open_file(path) && reload) set_status(false, "Reloaded %s (changed on disk)", fs_basename(path));
+        if (open_file(path, reload) && reload) set_status(false, "Reloaded %s (changed on disk)", fs_basename(path));
     }
     if (A.req_run) {
         A.req_run = false;
@@ -2114,6 +2156,296 @@ static void editor_pane(float H) {
 
 static float config_row_h(void) { return px(30); }
 
+/* ---- the script's values: which ones changed, back to them, or into the script ----------------------------------- */
+static bool block_assigns(Block *b, Sym *s);
+static bool stmt_assigns(Stmt *st, Sym *s) {
+    if ((st->kind == S_ASSIGN || st->kind == S_APPEND) && st->target && st->target->sym == s) return true;
+    if (st->kind == S_DECL && st->sym == s) return true;
+    if (st->kind == S_DESTRUCTURE)
+        for (int k = 0; k < st->ntargets; k++)
+            if (st->targets[k] && st->targets[k]->sym == s) return true;
+    return block_assigns(&st->body, s) || block_assigns(&st->else_body, s);
+}
+static bool block_assigns(Block *b, Sym *s) {
+    for (int i = 0; i < b->n; i++)
+        if (stmt_assigns(b->stmts[i], s)) return true;
+    return false;
+}
+
+/* a value the script computes again whenever the state changes (@prepare): not a setting */
+static bool prepared(Program *p, Sym *s) {
+    for (int i = 0; i < p->nprepares; i++)
+        if (block_assigns(&p->prepares[i]->body, s)) return true;
+    return false;
+}
+
+/* a setting of the script (not a view's place, not something the app or @prepare keeps up to date) */
+static bool script_setting(Program *p, Sym *s) {
+    return s->kind == SYM_GLOBAL && !app_managed(p, s) && !view_geometry(p, s) && !prepared(p, s);
+}
+
+static bool value_changed(Program *p, Sym *s) {
+    return !same_value(s->type, A.state + s->slot, p->initial_state + s->slot);
+}
+
+/* has view v moved from where the script puts it? */
+static bool view_moved(Program *p, int v) {
+    Section *s = p->viewers[v];
+    Sym *g[4] = {s->center, s->radius, s->center_lo, s->mobius};
+    for (int k = 0; k < 4; k++)
+        if (g[k] && value_changed(p, g[k])) return true;
+    return false;
+}
+
+static int count_changed(Program *p, bool views) {
+    int n = 0;
+    for (int i = 0; i < p->globals.len; i++)
+        if (script_setting(p, p->globals.data[i]) && value_changed(p, p->globals.data[i])) n++;
+    for (int v = 0; views && v < p->nviewers; v++)
+        if (view_moved(p, v)) n++;
+    return n;
+}
+
+/* Reset values: the settings as the script has them (the views stay) */
+static void reset_values(void) {
+    Program *p = A.prog;
+    int n = 0;
+    for (int i = 0; i < p->globals.len; i++) {
+        Sym *s = p->globals.data[i];
+        if (!script_setting(p, s) || !value_changed(p, s)) continue;
+        memcpy(A.state + s->slot, p->initial_state + s->slot, sizeof(u32) * (size_t)s->type->size);
+        n++;
+        for (int v = 0; v < p->nviewers; v++) /* a picked point back where the script has it: no marker */
+            if (p->viewers[v]->picked == s) A.vrt[v].picked = s->type->size >= 2 && (A.state[s->slot] || A.state[s->slot + 1]);
+    }
+    if (n) set_status(false, "%d value%s back as in the script", n, n == 1 ? "" : "s");
+    else set_status(false, "The values are as in the script (the views have their own reset: Home)");
+}
+
+/* A literal for a value, as the script would write it; false if it has none (infinities...) */
+static bool value_literal(StrBuf *sb, Type *t, const u32 *v) {
+    char a[48], b[48];
+    switch (t->kind) {
+    case T_BOOL: sb_puts(sb, v[0] ? "true" : "false"); return true;
+    case T_INT: sb_printf(sb, "%d", (i32)v[0]); return true;
+    case T_REAL:
+        if (!isfinite(wf(v[0]))) return false;
+        float_text(a, sizeof a, wf(v[0]));
+        sb_puts(sb, a);
+        return true;
+    case T_COMPLEX: {
+        float re = wf(v[0]), im = wf(v[1]);
+        if (!isfinite(re) || !isfinite(im)) return false;
+        float_text(a, sizeof a, re);
+        float_text(b, sizeof b, fabsf(im));
+        if (im == 0) sb_puts(sb, a);
+        else if (re == 0) sb_printf(sb, "%s%si", im < 0 ? "-" : "", b);
+        else sb_printf(sb, "%s %c %si", a, im < 0 ? '-' : '+', b);
+        return true;
+    }
+    case T_QUAT:
+        sb_puts(sb, "quat(");
+        for (int k = 0; k < 4; k++) {
+            if (!isfinite(wf(v[k]))) return false;
+            float_text(a, sizeof a, wf(v[k]));
+            sb_printf(sb, "%s%s", k ? ", " : "", a);
+        }
+        sb_puts(sb, ")");
+        return true;
+    case T_VEC: case T_LIST: {
+        int n = t->kind == T_VEC ? t->n : FS_CLAMP((i32)v[0], 0, t->n);
+        const u32 *d = t->kind == T_VEC ? v : v + t->data_off;
+        sb_puts(sb, t == t_color ? "rgb(" : "[");
+        for (int k = 0; k < n; k++) {
+            if (k) sb_puts(sb, ", ");
+            if (!value_literal(sb, t->elem, d + k * t->stride)) return false;
+        }
+        sb_puts(sb, t == t_color ? ")" : "]");
+        return true;
+    }
+    default: return false;
+    }
+}
+
+/* an expression made of numbers only (what a value written in the script looks like, not a formula) */
+static bool literal_like(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case E_INT: case E_REAL: case E_IMAG: case E_BOOL: case E_COLOR_CONST: return true;
+    case E_INTERNAL: case E_NAME: return e->sym && e->sym->kind == SYM_CONST; /* .red, pi */
+    case E_UNARY: return e->op == TK_MINUS && literal_like(e->a);
+    case E_CONVERT: case E_POWI: return literal_like(e->a);
+    case E_BINARY:
+        return (e->op == TK_PLUS || e->op == TK_MINUS || e->op == TK_STAR || e->op == TK_SLASH || e->op == TK_CARET) &&
+               literal_like(e->a) && literal_like(e->b);
+    case E_VECTOR: case E_CALL: /* [1, 2], rgb(1, 0, 0), quat(...) */
+        if (e->kind == E_CALL && e->fn && !e->fn->prelude) return false;
+        for (int k = 0; k < e->nargs; k++)
+            if (!literal_like(e->args[k])) return false;
+        return true;
+    default: return false;
+    }
+}
+
+/* where expression e is in the text: one line, brackets balanced */
+static bool expr_span(const char *text, int len, const int *ls, int nlines, Expr *e, int *start, int *end) {
+    if (e->line < 1 || e->line > nlines) return false;
+    int l0 = ls[e->line - 1], l1 = e->line < nlines ? ls[e->line] : len;
+    int a = l0 + e->col - 1, b = l0 + e->end_col - 1;
+    if (a < l0 || b > l1 || b <= a) return false;
+    int depth = 0;
+    for (int i = a; i < b; i++) {
+        char c = text[i];
+        if (c == '\n' || c == '#' || c == '"') return false;
+        if (c == '(' || c == '[') depth++;
+        if ((c == ')' || c == ']') && --depth < 0) return false;
+    }
+    if (depth) return false;
+    *start = a;
+    *end = b;
+    return true;
+}
+
+/* the last top-level statement of @config / @global giving s its value: `x : R = 1`, `x := 1` or `x = 1` */
+static Stmt *defining_stmt(Program *p, Sym *s) {
+    Stmt *last = NULL;
+    for (int i = 0; i < p->sections.len; i++) {
+        Section *sec = p->sections.data[i];
+        if (sec->kind != SEC_CONFIG && sec->kind != SEC_GLOBAL) continue;
+        for (int k = 0; k < sec->body.n; k++) {
+            Stmt *st = sec->body.stmts[k];
+            if ((st->kind == S_DECL && st->sym == s && st->value) ||
+                (st->kind == S_ASSIGN && st->op == TK_ASSIGN && st->target && st->target->sym == s))
+                last = st;
+        }
+    }
+    return last;
+}
+
+typedef struct KeepEdit { int pos, del, order; char *text; } KeepEdit;
+typedef VEC(KeepEdit) KeepEditVec;
+
+static int keep_edit_cmp(const void *a, const void *b) {
+    const KeepEdit *x = (const KeepEdit *)a, *y = (const KeepEdit *)b;
+    return x->pos != y->pos ? (x->pos < y->pos ? -1 : 1) : x->order - y->order;
+}
+
+/* "Write the values into the script": the settings changed in the panel or by tools, and the places of the flat
+   views, become the script's own (the script then opens like this).  One undo step in the editor. */
+static void write_values(void) {
+    Program *p = A.prog;
+    if (!p) return;
+    int len;
+    const char *text = editor_get_text(A.ed, &len);
+    if (A.compiled_version != editor_version(A.ed)) {
+        set_status(true, "The script changed since it last ran: run it first (" MODKEY "+Enter)");
+        return;
+    }
+    VEC(int) ls = {0}; /* line starts */
+    vec_push(ls, 0);
+    for (int i = 0; i < len; i++)
+        if (text[i] == '\n') vec_push(ls, i + 1);
+    int nlines = ls.len;
+    KeepEditVec edits = {0};
+    StrBuf skipped = {0}, sb = {0};
+    int nvalues = 0, nviews = 0;
+    for (int i = 0; i < p->globals.len; i++) {
+        Sym *s = p->globals.data[i];
+        if (!script_setting(p, s) || !value_changed(p, s)) continue;
+        Stmt *st = defining_stmt(p, s);
+        int a, b;
+        sb_clear(&sb);
+        if (!st || !literal_like(st->value) || !expr_span(text, len, ls.data, nlines, st->value, &a, &b) ||
+            !value_literal(&sb, s->type, A.state + s->slot)) {
+            sb_printf(&skipped, "%s%s%s", skipped.len ? ", " : "", s->is_internal ? "." : "", s->name);
+            continue;
+        }
+        KeepEdit e = {a, b - a, edits.len, xstrdup(sb_cstr(&sb))};
+        vec_push(edits, e);
+        nvalues++;
+    }
+    /* the views: NAME.center = ... and NAME.radius = ..., changed where the script has them, else added to @config */
+    Section *config = NULL, *first = NULL;
+    for (int i = 0; i < p->sections.len; i++) {
+        Section *sec = p->sections.data[i];
+        if (sec->line < 1 || sec->line > nlines) continue;
+        int h = ls.data[sec->line - 1];
+        while (h < len && (text[h] == ' ' || text[h] == '\t')) h++;
+        if (h >= len || text[h] != '@') continue; /* (no header: a script without sections, or code before the first) */
+        if (!first || sec->line < first->line) first = sec;
+        if (sec->kind == SEC_CONFIG && (!config || sec->line < config->line)) config = sec;
+    }
+    StrBuf added = {0};
+    for (int v = 0; v < p->nviewers; v++) {
+        Section *vs = p->viewers[v];
+        if (!view_moved(p, v)) continue;
+        if (vs->mobius || !first) {
+            sb_printf(&skipped, "%s%s (its place)", skipped.len ? ", " : "", vs->name);
+            continue;
+        }
+        char loc[256];
+        location_text(v, loc, sizeof loc); /* "NAME.center = ...\nNAME.radius = ...\n" */
+        char *nl = strchr(loc, '\n');
+        *nl = 0;
+        const char *lines[2] = {loc, nl + 1};
+        Sym *syms[2] = {vs->center, vs->radius};
+        for (int k = 0; k < 2; k++) {
+            char *l = (char *)lines[k];
+            l[strcspn(l, "\n")] = 0;
+            const char *value = strstr(l, " = ") + 3;
+            Stmt *st = defining_stmt(p, syms[k]);
+            int a, b;
+            if (st && literal_like(st->value) && expr_span(text, len, ls.data, nlines, st->value, &a, &b)) {
+                KeepEdit e = {a, b - a, edits.len, xstrdup(value)};
+                vec_push(edits, e);
+            } else {
+                sb_printf(&added, "%s\n", l);
+            }
+        }
+        nviews++;
+    }
+    if (added.len) {
+        KeepEdit e = {0, 0, edits.len, NULL};
+        if (config) { /* at the top of @config */
+            e.pos = config->line < nlines ? ls.data[config->line] : len;
+            sb_clear(&sb);
+            sb_printf(&sb, "%s%s", e.pos == len && len && text[len - 1] != '\n' ? "\n" : "", sb_cstr(&added));
+        } else { /* a new @config before the first section */
+            e.pos = ls.data[first->line - 1];
+            sb_clear(&sb);
+            sb_printf(&sb, "@config\n%s\n", sb_cstr(&added));
+        }
+        e.text = xstrdup(sb_cstr(&sb));
+        vec_push(edits, e);
+    }
+    qsort(edits.data, (size_t)edits.len, sizeof(KeepEdit), keep_edit_cmp);
+    EditorEdit *ee = (EditorEdit *)xcalloc((size_t)FS_MAX(edits.len, 1), sizeof(EditorEdit));
+    for (int i = 0; i < edits.len; i++) ee[i] = (EditorEdit){edits.data[i].pos, edits.data[i].del, edits.data[i].text};
+    bool ok = edits.len == 0 || editor_replace_ranges(A.ed, ee, edits.len);
+    free(ee);
+    for (int i = 0; i < edits.len; i++) free(edits.data[i].text);
+    if (!ok) {
+        set_status(true, "Couldn't write the values into the script");
+    } else if (nvalues + nviews == 0 && !skipped.len) {
+        set_status(false, "The script already has these values");
+    } else {
+        sb_clear(&sb);
+        if (nvalues) sb_printf(&sb, "%d value%s", nvalues, nvalues == 1 ? "" : "s");
+        if (nviews) sb_printf(&sb, "%sthe place of %d view%s", nvalues ? " and " : "", nviews, nviews == 1 ? "" : "s");
+        if (nvalues + nviews) sb_printf(&sb, " written into the script (" MODKEY "+S saves it)");
+        if (skipped.len)
+            sb_printf(&sb, "%sNot written (a formula there, or not in @config): %s", nvalues + nviews ? ". " : "",
+                      sb_cstr(&skipped));
+        set_status(skipped.len > 0 && nvalues + nviews == 0, "%s", sb_cstr(&sb));
+        if (nvalues + nviews) run_editor(); /* the script's values are now these */
+    }
+    vec_free(ls);
+    vec_free(edits);
+    sb_free(&skipped);
+    sb_free(&sb);
+    sb_free(&added);
+}
+
 /* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-i" */
 static bool parse_number_text(const char *s, float *re, float *im) {
     while (*s == ' ') s++;
@@ -2313,6 +2645,28 @@ static bool config_auto(Program *p, Sym *s, int group) {
     return s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
 }
 
+/* A dot before the label of a value that isn't the script's any more (a view's centre: with its low part); the
+   label's tooltip says what the script has. */
+static void config_changed_mark(Program *p, Sym *s, float x0, float y, float w) {
+    char id[160];
+    snprintf(id, sizeof id, "##label_%s", s->name);
+    bool hovered = ui_interact(id, x0, y, w, config_row_h() - px(4)).hovered; /* (for the tooltip) */
+    bool changed = value_changed(p, s);
+    if (s->viewer_index >= 0 && s == p->viewers[s->viewer_index]->center && p->viewers[s->viewer_index]->center_lo)
+        changed = changed || value_changed(p, p->viewers[s->viewer_index]->center_lo);
+    if (!changed || !(script_setting(p, s) || view_geometry(p, s))) {
+        if (hovered && s->label) ui_tooltip(s->name);
+        return;
+    }
+    ui_disk(x0 - px(5), y + (config_row_h() - px(4)) / 2, px(2.5f), UI_COL_ACCENT);
+    if (!hovered) return;
+    StrBuf sb = {0};
+    sb_printf(&sb, "%s%s: changed; the script has ", s->is_internal ? "." : "", s->name);
+    if (!value_literal(&sb, s->type, p->initial_state + s->slot)) sb_puts(&sb, "another value");
+    ui_tooltip(sb_cstr(&sb));
+    sb_free(&sb);
+}
+
 /* The centre of a flat view, with its low part, showing as many digits as the radius asks for and dragged by a
    fraction of the radius.  The two parts go side by side in the value column (x1, width w) when they fit there, else
    on two rows of their own below the label, from x0.  Returns the height used. */
@@ -2469,6 +2823,19 @@ static void config_pane(float W, float H) {
     float nx = pane_splitter("##config_split", pr.x, H);
     if (nx == nx && W > 0) A.config_frac = FS_CLAMP((W - nx) / W, 0.12f, 0.6f);
     if (!p) return;
+    /* the values changed since the script ran (a dot marks each): into the script, or back */
+    int nchanged = count_changed(p, true), nsettings = count_changed(p, false);
+    float bx = pr.x + pr.w - px(34) - px(32);
+    if (bx > pr.x + px(70) &&
+        ui_icon_button_ex("##config_write", "edit_note", "W", bx, px(6), px(28), nchanged ? UI_FLAT : UI_FLAT | UI_DISABLED))
+        write_values();
+    ui_tooltip(nchanged ? "Write the changed values (marked with a dot) and the places of the views into the script, so it opens like this"
+                        : "Write the values into the script (nothing changed since it ran)");
+    bx -= px(32);
+    if (bx > pr.x + px(70) &&
+        ui_icon_button_ex("##config_reset", "restore", "R", bx, px(6), px(28), nsettings ? UI_FLAT : UI_FLAT | UI_DISABLED))
+        reset_values();
+    ui_tooltip("Set the changed values back as the script has them (the views stay: Home resets a view)");
     float rh = config_row_h();
     /* the width of the labels */
     float lw = px(60);
@@ -2507,7 +2874,7 @@ static void config_pane(float W, float H) {
             Sym *s = it->sym;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
-            if (s->label && ui_last_hovered()) ui_tooltip(s->name);
+            config_changed_mark(p, s, x0, y, lw - px(14));
             if (s->nchoices) config_choice(s, x1, y, ww);
             else config_number(s, x1, y, ww);
             y += rh;
@@ -2527,6 +2894,7 @@ static void config_pane(float W, float H) {
             if (!config_auto(p, s, group)) continue;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
+            config_changed_mark(p, s, x0, y, lw - px(14));
             int vs = group == 1 ? s->viewer_index : -1;
             if (vs >= 0 && s == p->viewers[vs]->center) {
                 y += config_center(vs, x0, x1, y, ww);
@@ -2900,7 +3268,7 @@ static void frame(void) {
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);
     if (atlas) gfx_set_font_atlas(atlas, aw, ah);
-    for (int k = 0; k < in->ndropped; k++) open_file(in->dropped_files[k]);
+    for (int k = 0; k < in->ndropped; k++) open_file(in->dropped_files[k], false);
 
     /* layout */
     layout_panes(W, H);
@@ -3016,7 +3384,7 @@ static void frame_editor_only(void) {
         (editor_version(A.ed) != A.compiled_version && A.live)) {
         int l;
         const char *t2 = editor_get_text(A.ed, &l);
-        load_source(t2, true);
+        load_source(t2, LOAD_OPEN);
     }
     const GfxDrawList *dl = ui_end_frame();
     if (gfx_frame_begin()) {
@@ -3104,7 +3472,7 @@ int app_run(const char *script_path) {
     A.file_mtime = file_mtime(A.path);
     A.editor_open = script_path == NULL;
     layout_reset(0);
-    if (!load_source(text, true)) {
+    if (!load_source(text, LOAD_OPEN)) {
         A.editor_open = true; /* nothing to show: keep the editor up so the errors can be fixed */
     } else {
         for (int v = 0; v < A.prog->nviewers; v++) A.vrt[v].strip_until = A.t0 + 3.0; /* show where the tools are */

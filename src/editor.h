@@ -95,6 +95,10 @@ bool editor_redo(Editor *ed);
 /* Raw edits at an offset (undoable).  The caret and selection are adjusted as if another party edited. */
 void editor_insert(Editor *ed, int offset, const char *utf8, int len);
 void editor_delete(Editor *ed, int offset, int len);
+/* Several replacements as one undo step: `del` bytes at `pos` (offsets in the text as it is now; sorted, not
+ * overlapping) become `text`.  False (nothing done) if they are out of order or out of range. */
+typedef struct EditorEdit { int pos, del; const char *text; } EditorEdit;
+bool editor_replace_ranges(Editor *ed, const EditorEdit *edits, int n);
 
 /* ---- highlighting and diagnostics ----------------------------------------------------------------------------------- */
 void editor_set_builtins(Editor *ed, const char *const *names, int n); /* function names to highlight */

@@ -33,6 +33,9 @@ end
   (Ctrl+Shift+C) puts the view's centre and radius on the clipboard as script lines, with all
   their digits (`mandel.center = -0.74364388703715 + 0.13182590420533i`); Paste location goes
   there, and the same lines in `@config` open the script at that place.
+- Values changed in the config pane (or by tools) are marked with a dot and survive running the
+  script again; a button at the top of the pane writes them, and the places of the views, into
+  the script (another sets them back).
 - Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
   button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
   the tools, saves the picture as a PNG file (as on the screen, or four times larger for
