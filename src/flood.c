@@ -158,6 +158,7 @@ static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section 
     I.flood_out_ok = -1;
     float re, im, c[3];
     viewer_pixel_to_plane(p, scratch, v, (float)fp->w, (float)fp->h, x + 0.5f, y + 0.5f, &re, &im);
+    I.pixel = viewer_pixel_size(p, scratch, v, (float)fp->w, (float)fp->h, x + 0.5f, y + 0.5f);
     interp_eval_viewer(&I, v, re, im, c);
     e->t[0] = I.flood_out[0];
     e->t[1] = I.flood_out[1];

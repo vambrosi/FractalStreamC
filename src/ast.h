@@ -279,7 +279,7 @@ typedef struct Program {
     int nerrors;
     /* internals with fixed meaning */
     Sym *s_max_iter, *s_epsilon, *s_escape, *s_time, *s_last_click, *s_mouse, *s_width, *s_height;
-    Sym *s_stuck, *s_iterations;
+    Sym *s_stuck, *s_iterations, *s_pixel;
     char *title;
     int prelude_lines;   /* diagnostics inside the prelude are reported as internal errors */
 } Program;

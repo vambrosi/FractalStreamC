@@ -262,9 +262,29 @@ static Type *join_numbers(Type *a, Type *b) {
     return type_number_of_rank(FS_MAX(type_number_rank(a), type_number_rank(b)));
 }
 
-/* type for an untyped declaration initialised with a value of type t */
-static Type *infer_decl_type(Type *t) {
-    if (type_is_number(t)) return t->kind == T_QUAT ? t_quat : t_complex;
+/* a value written only with numbers and constants (0, 2.5, 1 + 2i, 2 pi) */
+static bool is_number_literal(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case E_INT: case E_REAL: case E_IMAG: return true;
+    case E_NAME: return e->sym && e->sym->kind == SYM_CONST && type_is_number(e->sym->type);
+    case E_CONVERT: return is_number_literal(e->a);
+    case E_UNARY: return e->op == TK_MINUS && is_number_literal(e->a);
+    case E_POWI: return is_number_literal(e->a);
+    case E_BINARY:
+        return (e->op == TK_PLUS || e->op == TK_MINUS || e->op == TK_STAR || e->op == TK_SLASH) && is_number_literal(e->a) &&
+               is_number_literal(e->b);
+    default: return false;
+    }
+}
+
+/* Type for an untyped declaration initialised with `value` (of type t): the type of the value, except
+   that plain numbers are complex (`z := 0` is the usual start of an iteration).  Vectors are at least real. */
+static Type *infer_decl_type(Type *t, Expr *value) {
+    if (type_is_number(t)) {
+        if (t->kind == T_QUAT) return t_quat;
+        return !value || is_number_literal(value) ? t_complex : t;
+    }
     if (t->kind == T_VEC && type_number_rank(t->elem) < 2) return type_vec(t_real, t->n);
     return t;
 }
@@ -345,6 +365,8 @@ static void setup_internals(Checker *c) {
     add_internal(c, "title", t_string, SYM_GLOBAL, "window title");
     p->s_stuck = add_internal(c, "stuck", t_bool, SYM_EXEC, "true if the last loop hit .maxIterations");
     p->s_iterations = add_internal(c, "iterations", t_int, SYM_EXEC, "number of iterations of the last loop");
+    p->s_pixel = add_internal(c, "pixel", t_real, SYM_EXEC, "size of a pixel of the viewer (in a tool: of the viewer clicked)");
+    p->s_pixel->readonly = true;
     add_color(c, "red", 1, 0, 0);
     add_color(c, "green", 0, 1, 0);
     add_color(c, "blue", 0, 0, 1);
@@ -992,7 +1014,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
             Type *vt = chk(c, s->value);
             if (vt == t_error) { declare(c, tg, tg->name, t_error); return; }
             if (vt == t_void) { ERR(c, s->value, "this doesn't produce a value"); return; }
-            t = infer_decl_type(vt);
+            t = infer_decl_type(vt, s->value);
             s->value = coerce(c, s->value, t, "the value");
         }
         Sym *sym = declare(c, tg, tg->name, t);
@@ -1029,7 +1051,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 Type *vt = chk(c, s->value);
                 if (vt == t_error) { declare(c, tg, tg->name, t_error); return; }
                 if (vt == t_void) { ERR(c, s->value, "this doesn't produce a value"); return; }
-                Type *t = infer_decl_type(vt);
+                Type *t = infer_decl_type(vt, s->value);
                 sym = declare(c, tg, tg->name, t);
                 s->value = coerce(c, s->value, t, "the value");
                 s->implicit_decl = true;
@@ -1089,6 +1111,8 @@ static void chk_stmt(Checker *c, Stmt *s) {
                     ERR(c, v->args[i], "this doesn't produce a single value");
                     return;
                 }
+                if (s->declare) it = infer_decl_type(it, v->args[i]); /* (x, y) := (0, 1) declares complex numbers */
+                v->args[i] = coerce(c, v->args[i], it, "the value");
                 Sym *tmp = new_sym(c, arena_printf(&c->prog->arena, "__pa%d", i + 1), it, SYM_LOCAL, s->line, s->col);
                 tmp->owner = c->fn;
                 vec_push(*c->locals, tmp);
@@ -1155,7 +1179,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 Sym *sym = s->declare ? NULL : lookup_name(c, tg->name);
                 if (sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym) sym = NULL;
                 if (!sym) {
-                    sym = declare(c, tg, tg->name, infer_decl_type(it));
+                    sym = declare(c, tg, tg->name, infer_decl_type(it, v)); /* (n, ok) := f(x) keeps f's types */
                     if (!sym) return;
                 }
                 tg->sym = sym;

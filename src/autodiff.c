@@ -956,7 +956,8 @@ static void ad_collect_captures(Expr *e, Sym *var, SymVec *out) {
 /* Newton loop:
  *   k = 0; conv = false; prev = 1e30
  *   while k < limit do
- *       k += 1; <jets>; step = num / den; t -= step; a = |step|; scale = 1 + |t|
+ *       k += 1; .stuck = false; <jets>; if .stuck then break end   -- a loop of the expression got stuck
+ *       step = num / den; t -= step; a = |step|; scale = 1 + |t|
  *       if a <= .epsilon scale then conv = true; break end          -- converged
  *       if a <= 1e-3 scale and a >= prev / 2 then conv = true; break end
  *                                    -- steps stopped shrinking: rounding noise of 32-bit floats
@@ -986,7 +987,10 @@ static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym
     ad->out = &loop;
     ad_assign(ad, k, ad_bin(ad, TK_PLUS, ad_name(ad, k), ad_int(ad, 1)));
     if (total) ad_assign(ad, total, ad_bin(ad, TK_PLUS, ad_name(ad, total), ad_int(ad, 1)));
+    /* an evaluation that gets stuck (a loop of the expression reaches .maxIterations) is not a value to trust */
+    ad_assign(ad, ad->p->s_stuck, ad_bool(ad, false));
     Jet j = ad_jet(ad, body);
+    ad_emit(ad, ad_if_break(ad, ad_name(ad, ad->p->s_stuck), NULL));
     Expr *num = op == SOLVE_CRITICAL ? j.d1 : j.v;
     Expr *den = op == SOLVE_CRITICAL ? j.d2 : j.d1;
     if (!den && !ad->failed) {

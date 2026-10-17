@@ -51,8 +51,13 @@ static bool parse_complex_literal(const char *s, float *re, float *im) {
     if (*end == 0) { *re = (float)a; return true; }
     if (*end != '+' && *end != '-') return false;
     const char *t = end;
-    double b = strtod(t, &end);
-    if (end == t + 1 && *end == 'i') b = *t == '-' ? -1 : 1; /* "1+i" */
+    double b;
+    if (t[1] == 'i') { /* "1+i", "1-i" */
+        b = *t == '-' ? -1 : 1;
+        end = (char *)t + 1;
+    } else {
+        b = strtod(t, &end);
+    }
     if (*end != 'i' || end[1] != 0) return false;
     *re = (float)a;
     *im = (float)b;
@@ -73,6 +78,10 @@ static bool cli_set_global(Program *p, u32 *state, const char *assign) {
     snprintf(name, sizeof name, "%.*s", (int)(eq - assign), assign);
     Sym *s = cli_find_global(p, name);
     float re, im;
+    if (s && s->type->kind == T_BOOL && (!strcmp(eq + 1, "true") || !strcmp(eq + 1, "false"))) {
+        state[s->slot] = eq[1] == 't';
+        return true;
+    }
     if (!s || !parse_complex_literal(eq + 1, &re, &im)) {
         fprintf(stderr, "error: can't set '%s' (unknown global or bad value)\n", assign);
         return false;
@@ -144,6 +153,7 @@ void render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba
             interp_init(&I, p, st);
             float re, im, c[3];
             viewer_pixel_to_plane(p, st, v, (float)w, (float)h, x + 0.5f, y + 0.5f, &re, &im);
+            I.pixel = viewer_pixel_size(p, st, v, (float)w, (float)h, x + 0.5f, y + 0.5f);
             interp_eval_viewer(&I, v, re, im, c);
             interp_free(&I);
             u8 *px = rgba + 4 * ((size_t)y * w + x);
@@ -292,6 +302,9 @@ int cli_main(int argc, char **argv) {
         interp_init(&I, p, state);
         DrawItemVec draws = {0};
         I.draws = &draws;
+        /* .pixel as if the tool's viewer were rendered at --size */
+        Section *tv = t->viewer_of >= 0 ? p->viewers[t->viewer_of] : v;
+        if (tv) I.pixel = viewer_pixel_size(p, state, tv, (float)w, (float)h, 0.5f * w, 0.5f * h);
         if (!interp_run_tool(&I, t, re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
         static const char *shapes[] = {"point", "circle", "disk", "line"};
         for (int k = 0; k < draws.len; k++) {
@@ -299,7 +312,7 @@ int cli_main(int argc, char **argv) {
             printf("draw %s at %g%+gi", shapes[d->shape], d->p0[0], d->p0[1]);
             if (d->shape == DRAW_LINE) printf(" to %g%+gi", d->p1[0], d->p1[1]);
             if (d->shape == DRAW_CIRCLE || d->shape == DRAW_DISK) printf(" radius %g%s", d->radius, d->radius_px ? " px" : "");
-            printf(" color [%g, %g, %g]", d->color[0], d->color[1], d->color[2]);
+            printf(" color [%g, %g, %g] width %g px", d->color[0], d->color[1], d->color[2], d->width);
             if (d->viewer >= 0) printf(" in %s", p->viewers[d->viewer]->name);
             printf("\n");
         }

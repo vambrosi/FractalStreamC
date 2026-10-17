@@ -139,7 +139,10 @@ TEST(types_and_conversions) {
         "@global\n"
         "n : Z = 7\n"
         "x : R = n / 2\n"
-        "c := n\n"          /* untyped -> C */
+        "c := 7\n"          /* untyped number -> C */
+        "d := n\n"          /* untyped from a value: its type */
+        "t := n / 2 + pi\n" /* R */
+        "u := 2 pi + 1\n"   /* numbers and constants -> C */
         "q : H = 1 + 2i\n"
         "v : R^3 = [1, 2, 3]\n"
         "k : Z = 2^10\n"
@@ -149,6 +152,9 @@ TEST(types_and_conversions) {
         "b := 3 > 2 and not false\n");
     CHECK_NEAR(gnum(p, "x", 0), 3.5, 1e-6);
     CHECK(find_global(p, "c") && find_global(p, "c")->type == t_complex);
+    CHECK(find_global(p, "d") && find_global(p, "d")->type == t_int);
+    CHECK(find_global(p, "t") && find_global(p, "t")->type == t_real);
+    CHECK(find_global(p, "u") && find_global(p, "u")->type == t_complex);
     CHECK_NEAR(gnum(p, "q", 1), 2, 1e-6);
     CHECK_NEAR(gnum(p, "v", 2), 3, 1e-6);
     CHECK_NEAR(gnum(p, "k", 0), 1024, 0);
@@ -624,7 +630,90 @@ TEST(continuing_checks) {
     EXPECT_ERROR("@viewer v c\nw := root t -> t^2 - c with seed 1 continuing from z = 1\ncolor = .red\n", "viewer's variable");
 }
 
+TEST(pixel_size_and_px) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        "plane.radius = 2\n"
+        "@viewer plane z\n"
+        "a : R = 8 px\n"
+        "color = rgb(.pixel * 10, a / .pixel / 10, 0)\n"
+        "@plane.tool \"T\"\n"
+        "b : R = 3 px\n"
+        "draw circle at z with radius 4 px and width 2 px\n"
+        "draw circle at z with radius b\n");
+    Section *v = p->viewers[0];
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, state);
+    I.pixel = viewer_pixel_size(p, state, v, 200, 100, 10, 10); /* 2 / 50 */
+    CHECK_NEAR(I.pixel, 0.04, 1e-7);
+    float rgb[3];
+    CHECK(interp_eval_viewer(&I, v, 0, 0, rgb));
+    CHECK_NEAR(rgb[0], 0.4, 1e-6);
+    CHECK_NEAR(rgb[1], 0.8, 1e-6);
+    DrawItemVec draws = {0};
+    I.draws = &draws;
+    CHECK(interp_run_tool(&I, p->tools[0], 1, 0));
+    CHECK_INT(draws.len, 2);
+    if (draws.len == 2) {
+        CHECK(draws.data[0].radius_px); /* radius 4 px stays a screen size */
+        CHECK_NEAR(draws.data[0].radius, 4, 1e-6);
+        CHECK_NEAR(draws.data[0].width, 2, 1e-6);
+        CHECK(!draws.data[1].radius_px); /* 3 px computed in plane units */
+        CHECK_NEAR(draws.data[1].radius, 0.12, 1e-6);
+    }
+    vec_free(draws);
+    interp_free(&I);
+    free(state);
+    program_free(p);
+    EXPECT_ERROR("@viewer v z\n.pixel = 2\ncolor = .red\n", "can't be changed");
+}
+
+TEST(solve_fails_when_its_expression_gets_stuck) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define esc(z) = w where\n"
+        "    w = z\n"
+        "    while w not escapes do\n"
+        "        w = w^2\n"
+        "    end\n"
+        "end\n"
+        "r1 := root t -> esc(t) - 1e6 with seed 1.5\n"  /* escapes: a root (1.5^(2^k) = 1e6 for the k of the seed) */
+        "s1 := .stuck\n"
+        "r2 := root t -> esc(t) - 1e6 with seed 0.5\n"  /* the orbit of 0.5 never escapes */
+        "s2 := .stuck\n");
+    CHECK_NEAR(gnum(p, "s1", 0), 0, 0);
+    CHECK_NEAR(gnum(p, "s2", 0), 1, 0);
+    program_free(p);
+}
+
+TEST(declarations_take_the_type_of_their_value) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define two(z) = (n : Z, ok : Bool) where\n"
+        "    n = 2\n"
+        "    ok = true\n"
+        "end\n"
+        "(n, ok) := two(1)\n"
+        "(x, y) := (0, n)\n"
+        "r := |3 + 4i|\n"
+        "q := fract(2.5)\n");
+    CHECK(find_global(p, "n") && find_global(p, "n")->type == t_int);
+    CHECK(find_global(p, "ok") && find_global(p, "ok")->type == t_bool);
+    CHECK(find_global(p, "x") && find_global(p, "x")->type == t_complex);
+    CHECK(find_global(p, "y") && find_global(p, "y")->type == t_int);
+    CHECK(find_global(p, "r") && find_global(p, "r")->type == t_real);
+    CHECK(find_global(p, "q") && find_global(p, "q")->type == t_real);
+    CHECK_NEAR(gnum(p, "r", 0), 5, 1e-6);
+    CHECK_NEAR(gnum(p, "y", 0), 2, 0);
+    program_free(p);
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(pixel_size_and_px),
+    TESTCASE(solve_fails_when_its_expression_gets_stuck),
+    TESTCASE(declarations_take_the_type_of_their_value),
     TESTCASE(autodiff_through_loops),
     TESTCASE(continuing_checks),
     TESTCASE(projective_mapping),

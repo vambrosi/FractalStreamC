@@ -19,7 +19,7 @@ typedef struct Gen {
     Section *viewer;
     u32 tvoid, tbool, tint, tuint, tfloat, tvec2, tvec4;
     u32 state_var, pc_var, fragcoord, out_color;
-    u32 stuck_var, iter_var;
+    u32 stuck_var, iter_var, pxsize_var; /* .stuck, .iterations, .pixel */
     /* compute variant (flood fill): see codegen_viewer_flood */
     bool compute;
     u32 flood_mode_var, flood_seed_var, flood_from_var, flood_out_t_var, flood_out_ok_var;
@@ -1091,6 +1091,36 @@ static u32 flat_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
     return vec2(g, re, im);
 }
 
+/* size of a pixel of a w x h flat view, in plane units */
+static u32 flat_pixel_size(Gen *g, u32 w, u32 h) {
+    u32 f = g->tfloat;
+    u32 m = op2(g, SpvOpFMul, f, cf(g, 0.5f), ext2(g, f, GLSLFMin, w, h));
+    return op2(g, SpvOpFDiv, f, global_value(g, g->viewer->radius), m);
+}
+
+/* plane point of the pixel position (px, py) in a w x h projective view (see proj_pixel_to_plane in interp.c) */
+static u32 proj_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
+    Section *v = g->viewer;
+    u32 f = g->tfloat;
+    u32 half = cf(g, 0.5f);
+    u32 m = op2(g, SpvOpFMul, f, half, ext2(g, f, GLSLFMin, w, h));
+    u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
+    u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
+    u32 T = cf(g, 1.19175359f);
+    u32 x = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dx, m), T);
+    u32 y = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dy, m), T);
+    u32 r2 = op2(g, SpvOpFAdd, f, op2(g, SpvOpFAdd, f, op2(g, SpvOpFMul, f, x, x), op2(g, SpvOpFMul, f, y, y)), cf(g, 1));
+    u32 n = op2(g, SpvOpFDiv, f, cf(g, 1), ext1(g, f, GLSLSqrt, r2));
+    u32 u = vec2(g, op2(g, SpvOpFMul, f, x, n), op2(g, SpvOpFMul, f, y, n));
+    u32 vv = vec2(g, op2(g, SpvOpFAdd, f, cf(g, 1), n), cf(g, 0));
+    u32 mv = global_value(g, v->mobius);
+    u32 ma = extract(g, g->tvec2, mv, 0), mb = extract(g, g->tvec2, mv, 1);
+    u32 mc = extract(g, g->tvec2, mv, 2), md = extract(g, g->tvec2, mv, 3);
+    u32 num = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, ma, u), g_cmul(g, mb, vv));
+    u32 den = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, mc, u), g_cmul(g, md, vv));
+    return g_cdiv(g, num, den);
+}
+
 static u32 iabs_(Gen *g, u32 x) { return ext1(g, g->tint, GLSLSAbs, x); }
 static u32 imax_(Gen *g, u32 a, u32 b) { return ext2(g, g->tint, GLSLSMax, a, b); }
 static u32 isel(Gen *g, u32 c, u32 a, u32 b) { return spv_op3(&g->s, SpvOpSelect, g->tint, c, a, b); }
@@ -1285,8 +1315,10 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, u32 *nword
     }
     g->stuck_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tbool), SpvSCPrivate, spv_const_bool(s, false));
     g->iter_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
+    g->pxsize_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tfloat), SpvSCPrivate, cf(g, 0));
     p->s_stuck->spv_var = g->stuck_var;
     p->s_iterations->spv_var = g->iter_var;
+    p->s_pixel->spv_var = g->pxsize_var;
 
     /* main */
     u32 mainfn = spv_new_id(s);
@@ -1314,6 +1346,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, u32 *nword
         u32 py = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, fy), half);
         u32 z = flat_plane_point(g, px, py, fw_, fh_);
         if (v->coord) store(g, v->coord->spv_var, z);
+        store(g, g->pxsize_var, flat_pixel_size(g, fw_, fh_));
         u32 W = g->flood_W;
         u32 nx = op2(g, SpvOpSMod, g->tint, g->flood_nb, ext2(g, g->tint, GLSLSMax, W, ci(g, 1)));
         u32 ny = op2(g, SpvOpSDiv, g->tint, g->flood_nb, ext2(g, g->tint, GLSLSMax, W, ci(g, 1)));
@@ -1332,26 +1365,13 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, u32 *nword
         u32 w = extract(g, f, size, 0), h = extract(g, f, size, 1);
         u32 z;
         if (v->mobius) {
-            /* see proj_pixel_to_plane in interp.c */
-            u32 half = cf(g, 0.5f);
-            u32 m = op2(g, SpvOpFMul, f, half, ext2(g, f, GLSLFMin, w, h));
-            u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
-            u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
-            u32 T = cf(g, 1.19175359f);
-            u32 x = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dx, m), T);
-            u32 y = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dy, m), T);
-            u32 r2 = op2(g, SpvOpFAdd, f, op2(g, SpvOpFAdd, f, op2(g, SpvOpFMul, f, x, x), op2(g, SpvOpFMul, f, y, y)), cf(g, 1));
-            u32 n = op2(g, SpvOpFDiv, f, cf(g, 1), ext1(g, f, GLSLSqrt, r2));
-            u32 u = vec2(g, op2(g, SpvOpFMul, f, x, n), op2(g, SpvOpFMul, f, y, n));
-            u32 vv = vec2(g, op2(g, SpvOpFAdd, f, cf(g, 1), n), cf(g, 0));
-            u32 mv = global_value(g, v->mobius);
-            u32 ma = extract(g, g->tvec2, mv, 0), mb = extract(g, g->tvec2, mv, 1);
-            u32 mc = extract(g, g->tvec2, mv, 2), md = extract(g, g->tvec2, mv, 3);
-            u32 num = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, ma, u), g_cmul(g, mb, vv));
-            u32 den = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, mc, u), g_cmul(g, md, vv));
-            z = g_cdiv(g, num, den);
+            z = proj_plane_point(g, px, py, w, h);
+            /* .pixel: distance to the point of the next pixel */
+            u32 z1 = proj_plane_point(g, op2(g, SpvOpFAdd, f, px, cf(g, 1)), py, w, h);
+            store(g, g->pxsize_var, ext1(g, f, GLSLLength, op2(g, SpvOpFSub, g->tvec2, z1, z)));
         } else {
             z = flat_plane_point(g, px, py, w, h);
+            store(g, g->pxsize_var, flat_pixel_size(g, w, h));
         }
         if (v->coord) store(g, v->coord->spv_var, z);
     }

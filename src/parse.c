@@ -23,6 +23,7 @@ typedef struct Parser {
     VEC(const char *) lvars;                /* variables declared so far in this section/function */
     int last_line, last_end_col;      /* end of the previous token */
     int nerr_stmt;                    /* errors in the current statement */
+    bool no_px;                       /* parsing a radius or width of `draw`, where px is its own unit */
 } Parser;
 
 static Token *cur(Parser *p) { return &p->t[p->pos]; }
@@ -372,7 +373,13 @@ static Expr *parse_power(Parser *p) {
         advance(p);
         Expr *ex = parse_exponent(p);
         if (!ex) return NULL;
-        return binary(p, TK_CARET, base, ex);
+        base = binary(p, TK_CARET, base, ex);
+    }
+    if (at(p, TK_PX) && !p->no_px) { /* `8 px`: a length in pixels of the viewer, 8 * .pixel */
+        Token *t = advance(p);
+        Expr *px = new_expr(p, E_INTERNAL, t);
+        px->name = "pixel";
+        base = binary(p, TK_STAR, base, px);
     }
     return base;
 }
@@ -639,7 +646,9 @@ static Stmt *parse_draw(Parser *p) {
         const char *mn = m->kind == TK_IDENT ? m->str : "";
         if (strcmp(mn, "radius") == 0) {
             advance(p);
+            p->no_px = true; /* `radius 4 px` stays 4 pixels on the screen when the view is zoomed */
             s->radius = parse_arith(p);
+            p->no_px = false;
             if (!s->radius) return NULL;
             s->radius_px = accept(p, TK_PX);
         } else if (strcmp(mn, "color") == 0 || strcmp(mn, "colour") == 0) {
@@ -648,7 +657,9 @@ static Stmt *parse_draw(Parser *p) {
             if (!s->color) return NULL;
         } else if (strcmp(mn, "width") == 0 || strcmp(mn, "thickness") == 0) {
             advance(p);
+            p->no_px = true;
             s->width = parse_arith(p);
+            p->no_px = false;
             if (!s->width) return NULL;
             accept(p, TK_PX);
         } else {

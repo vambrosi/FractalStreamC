@@ -1,0 +1,201 @@
+# SaddleDrop: the parameter space of the complex Henon maps H(x, y) = (x^2 + c - a y, x).
+#
+# This is the algorithm of the program SaddleDrop (K. Papadantonakis, with J. H. Hubbard,
+# J. Smillie and E. Bedford, Cornell 2000):
+#   - p is a saddle fixed point of H and lam its expanding eigenvalue;
+#   - gamma(w) = lim H^n(p + (w / lam^n) (lam, 1)) parametrizes the unstable manifold W^u(p);
+#   - a critical point w of G+ o gamma (G+ is the escape rate, G+(x, y) = lim 2^-n log |H^n(x, y)|)
+#     is found by Newton's method and followed from pixel to pixel of the parameter plane, by
+#     continuation from the parameter c0 (marked with a ring) and its critical point w0;
+#   - each parameter c is coloured by how fast its critical point escapes: by nu = -log2 G+,
+#     modulo 1 (replacing w by lam w, the next critical point of its orbit, shifts nu by 1).
+# Black: the critical point does not escape (within .maxIterations): there is no critical point,
+# the set K of bounded orbits is connected. White: Newton's method did not converge.
+# Where the colours jump along a line, the continuation went around the black set on both sides
+# and came back with different critical points (as in the original program).
+#
+# The view "Unstable manifold" shows W^u(p) for the parameter .c picked in the parameter plane.
+# Its tools: "Show critical points" (V) marks the critical points in view, and "Follow" (F)
+# restarts the parameter plane from .c with the critical point closest to the click.
+# In the parameter plane, "Start here" (S) moves the start, carrying the critical point along;
+# after changing a, use it to find a critical point for the new map.
+
+@config
+.title = "SaddleDrop"
+.width = 1400
+.height = 820
+.maxIterations = 200
+.escapeRadius = 1000
+a : C = 0.3                    # the Jacobian of H (|a| < 1)
+depth : Z = 16 in 2..40        # steps of the parametrization of W^u(p): more is more precise
+bands : R = 1 in 0.25..4       # colour bands per halving of the escape rate
+style : Z = 0 in 0..1          # 0: colours, 1: grays like the original SaddleDrop
+param.center = -0.5
+param.radius = 2
+dyn.radius = 3.5
+
+@global
+c0 := -2.4                     # where the continuation starts
+w0 := -2.742                   # the critical point it starts with
+.c = -2.4                      # the parameter shown in the unstable manifold
+
+# the saddle fixed point p of H (of the two fixed points, the one whose expanding eigenvalue lam is
+# larger: with |a| < 1 at most one eigenvalue of a fixed point is larger than 1)
+define saddle(c) = (p, lam) where
+    b := (1 + a) / 2
+    r := sqrt(b^2 - c)
+    p = b + r
+    lam = p + sqrt(p^2 - a)
+    l2 := p - sqrt(p^2 - a)
+    if |l2| > |lam| then
+        lam = l2
+    end
+    q := b - r
+    m1 := q + sqrt(q^2 - a)
+    m2 := q - sqrt(q^2 - a)
+    if |m2| > |m1| then
+        m1 = m2
+    end
+    if |m1| > |lam| then
+        p = q
+        lam = m1
+    end
+end
+
+# the orbit of gamma(w) until it escapes; x is its first coordinate then (.stuck if it never
+# escapes, .iterations counts the steps after the first `depth`)
+define escape_x(w, c) = x where
+    (p, lam) := saddle(c)
+    s := w / lam^depth
+    # follow (u, v) = (x - p, y - p): adding the tiny s to p directly would lose its digits
+    u := lam s
+    v := s
+    for k in 1..depth do
+        (u, v) = (u (u + 2 p) - a v, u)
+    end
+    x = p + u
+    y := p + v
+    while x not escapes do
+        (x, y) = (x^2 + c - a y, x)
+    end
+end
+
+# nu = -log2 G+ (up to an integer) after x = escape_x(...)
+define potential(x) = nu : R where
+    nu = .iterations - log2(log(|x|))
+end
+
+define shade(nu : R) = col : Color where
+    t := fract(bands nu)
+    if style == 0 then
+        col = hsv(t, 0.55, 0.95)
+    else
+        col = gray(0.42 + 0.45 t)
+    end
+end
+
+# a critical point of G+ o gamma near `near` (.stuck if there is none, or it never escapes)
+define critical_point(near, c) = w where
+    w = critical t -> log(escape_x(t, c)) with seed near
+    if not .stuck then
+        x := escape_x(w, c)
+    end
+end
+
+# The critical point that escapes fastest for its size: the smallest nu + log|w| / log|lam|, a
+# number that does not change when w is replaced by lam w.  Found from a few seeds; 0 if none.
+define best_critical(c) = best where
+    (p, lam) := saddle(c)
+    L : R = log(|lam|)
+    best = 0
+    level : R = 1e30
+    for m in 1..5 do
+        for n in 1..12 do
+            v := critical_point(exp(L (m - 0.5) / 5) cis(tau n / 12), c)
+            if not .stuck then
+                x := escape_x(v, c)
+                lv : R = potential(x) + log(|v|) / L
+                if lv < level then
+                    level = lv
+                    best = v
+                end
+            end
+        end
+    end
+end
+
+@viewer param c "Parameter plane" "Ctrl + 1"
+w := critical t -> log(escape_x(t, c)) with seed w0 continuing from c = c0
+failed := .stuck
+x := escape_x(w, c)
+if .stuck then
+    color = .black
+else if failed then
+    color = .white
+else
+    color = shade(potential(x))
+end
+# a ring around the start c0
+d : R = |c - c0| / .pixel
+if d > 4 and d < 6.5 then
+    color = .white
+else if d >= 6.5 and d < 8 then
+    color = .black
+end
+
+@viewer dyn w "Unstable manifold" "Ctrl + 2"
+x := escape_x(w, .c)
+if .stuck then
+    color = .black
+else
+    color = shade(potential(x))
+end
+
+# move the start of the continuation here, carrying its critical point along the segment
+@param.tool "Start here" "S" "flag"
+.panning = true
+v := w0
+ok := true
+for k in 1..64 do
+    v = critical_point(v, c0 + (c - c0) k / 64)
+    if .stuck then
+        ok = false
+        break
+    end
+end
+if not ok then
+    # the segment crosses the black set: look for a critical point afresh
+    v = best_critical(c)
+    ok = v != 0
+end
+if ok then
+    c0 = c
+    w0 = v
+    .c = c
+else
+    draw circle at c with radius 6 px and color .red
+end
+
+# restart the parameter plane from .c with the critical point closest to the click
+@dyn.tool "Follow" "F" "adjust"
+.panning = true
+v := critical_point(w, .c)
+if .stuck then
+    draw circle at w with radius 6 px and color .red
+else
+    c0 = .c
+    w0 = v
+    draw circle at v with radius 6 px and color .white
+end
+
+# mark the critical points in view
+@dyn.tool "Show critical points" "V" "scatter_plot"
+.panning = true
+for m in -8..8 do
+    for n in -8..8 do
+        v := critical_point(dyn.center + dyn.radius (m + n i) / 8, .c)
+        if not .stuck then
+            draw point at v with color .white
+        end
+    end
+end

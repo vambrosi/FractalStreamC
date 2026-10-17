@@ -31,6 +31,7 @@ typedef struct Interp {
     u32 *frame;
     bool stuck;
     i32 iterations;
+    float pixel;      /* .pixel: size of a pixel of the viewer being drawn or clicked, in plane units */
     int signal;
     DrawItemVec *draws;
     double steps, step_limit;
@@ -207,7 +208,7 @@ static u32 *sym_addr(Interp *I, Sym *s) {
     case SYM_GLOBAL: return I->state + s->slot;
     case SYM_LOCAL: return I->frame + s->slot;
     case SYM_EXEC:
-        exec_words[0] = s == I->prog->s_stuck ? (u32)I->stuck : (u32)I->iterations;
+        exec_words[0] = s == I->prog->s_stuck ? (u32)I->stuck : s == I->prog->s_pixel ? fw(I->pixel) : (u32)I->iterations;
         return exec_words;
     case SYM_CONST: return NULL;
     }
@@ -223,7 +224,7 @@ static void load_sym(Interp *I, Sym *s, u32 *out) {
         return;
     }
     if (s->kind == SYM_EXEC) {
-        out[0] = s == I->prog->s_stuck ? (u32)I->stuck : (u32)I->iterations;
+        out[0] = s == I->prog->s_stuck ? (u32)I->stuck : s == I->prog->s_pixel ? fw(I->pixel) : (u32)I->iterations;
         return;
     }
     memcpy(out, sym_addr(I, s), sizeof(u32) * (size_t)s->type->size);
@@ -930,4 +931,13 @@ void viewer_pixel_to_plane(const Program *p, const u32 *state, const Section *v,
     float scale = r / (0.5f * FS_MIN(w, h));
     *re = cx + scale * (px - 0.5f * w);
     *im = cy + scale * (0.5f * h - py);
+}
+
+/* .pixel at pixel (px, py) of a w x h tile: the distance in the plane to the next pixel (constant in flat views) */
+float viewer_pixel_size(const Program *p, const u32 *state, const Section *v, float w, float h, float px, float py) {
+    float r0, i0, r1, i1;
+    viewer_pixel_to_plane(p, state, v, w, h, px, py, &r0, &i0);
+    viewer_pixel_to_plane(p, state, v, w, h, px + 1.0f, py, &r1, &i1);
+    if (!v->mobius) return wf(state[v->radius->slot]) / (0.5f * FS_MIN(w, h));
+    return hypotf(r1 - r0, i1 - i0);
 }

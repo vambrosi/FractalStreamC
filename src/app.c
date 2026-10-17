@@ -654,7 +654,13 @@ static bool load_source(const char *src, bool reset_layout) {
     A.menu_viewer = -1;
     interp_init(&A.interp, p, A.state);
     A.interp.step_limit = 3e7;
-    if (!keep) layout_reset(0);
+    if (!keep) {
+        layout_reset(0);
+        if (p->nviewers >= 2) { /* the first two views side by side */
+            split_leaf(A.root, DROP_RIGHT, 1);
+            A.focus_viewer = 0;
+        }
+    }
     for (int v = 0; v < p->nviewers; v++) {
         Sym *ps = p->viewers[v]->picked;
         if (ps && (state[ps->slot] || state[ps->slot + 1])) vrt[v].picked = true;
@@ -736,6 +742,15 @@ static void run_tool(int tool, int viewer, float re, float im) {
         before[v][0] = ps ? wf(A.state[ps->slot]) : 0;
         before[v][1] = ps ? wf(A.state[ps->slot + 1]) : 0;
     }
+    /* .pixel: the size of a pixel of the viewer, under the mouse */
+    A.interp.pixel = 0;
+    for (int i = 0; i < A.nvis; i++)
+        if (A.vis[i].viewer == viewer) {
+            Rect r = A.vis[i].r;
+            float x = FS_CLAMP(A.in.mouse_x - r.x, 0.0f, r.w), y = FS_CLAMP(A.in.mouse_y - r.y, 0.0f, r.h);
+            A.interp.pixel = viewer_pixel_size(p, A.state, p->viewers[viewer], r.w, r.h, x, y);
+            break;
+        }
     DrawItemVec out = {0};
     A.interp.draws = &out;
     if (!interp_run_tool(&A.interp, p->tools[tool], re, im)) set_status(true, "%s: %s", p->tools[tool]->display, A.interp.error);
@@ -1920,10 +1935,6 @@ int app_run(const char *script_path) {
     if (!load_source(text, true)) {
         A.editor_open = true; /* nothing to show: keep the editor up so the errors can be fixed */
     } else {
-        if (!script_path && A.prog->nviewers >= 2) {
-            split_leaf(A.root, DROP_RIGHT, 1);
-            A.focus_viewer = 0;
-        }
         for (int v = 0; v < A.prog->nviewers; v++) A.vrt[v].strip_until = A.t0 + 3.0; /* show where the tools are */
     }
     free(src);
