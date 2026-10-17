@@ -716,6 +716,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
         break;
     }
     case S_FOR: {
+        if (!s->quiet) maxit = FS_FOR_LIMIT; /* a for loop runs its whole range */
         u32 lo, hi, st = 1;
         ev(I, s->from, &lo);
         ev(I, s->to, &hi);
@@ -740,6 +741,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
         break;
     }
     case S_FOREACH: {
+        if (!s->quiet) maxit = FS_FOR_LIMIT;
         Type *ct = s->from->type;
         u32 *coll = push_words(I, ct->size);
         ev(I, s->from, coll);

@@ -710,7 +710,32 @@ TEST(declarations_take_the_type_of_their_value) {
     program_free(p);
 }
 
+TEST(for_loops_run_their_range) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        ".maxIterations = 10\n"
+        "@global\n"
+        "f : Z = 0\n"
+        "for k in 1..100 do\n"
+        "    f += 1\n"
+        "end\n"
+        "fs := .stuck\n"
+        "fi := .iterations\n"
+        "n : Z = 0\n"
+        "while n < 100 do\n"
+        "    n += 1\n"
+        "end\n"
+        "ws := .stuck\n");
+    CHECK_NEAR(gnum(p, "f", 0), 100, 0);
+    CHECK_NEAR(gnum(p, "fs", 0), 0, 0);
+    CHECK_NEAR(gnum(p, "fi", 0), 100, 0);
+    CHECK_NEAR(gnum(p, "n", 0), 10, 0);
+    CHECK_NEAR(gnum(p, "ws", 0), 1, 0);
+    program_free(p);
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(for_loops_run_their_range),
     TESTCASE(pixel_size_and_px),
     TESTCASE(solve_fails_when_its_expression_gets_stuck),
     TESTCASE(declarations_take_the_type_of_their_value),

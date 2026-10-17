@@ -130,7 +130,8 @@ struct Expr {
 enum { SOLVE_CRITICAL = 1, SOLVE_ROOT, SOLVE_DERIVATIVE };
 /* how a pixel's `continuing` solve starts (flood.c) */
 enum { FLOOD_DIRECT = 0, FLOOD_START = 1, FLOOD_CONTINUE = 2 };
-#define FLOOD_GROUP_SIZE 64 /* compute workgroup size of flood shaders */
+#define FLOOD_GROUP_SIZE 64
+#define FS_FOR_LIMIT 1000000 /* a `for` loop runs its whole range, up to this many steps (while loops: .maxIterations) */ /* compute workgroup size of flood shaders */
 
 typedef struct Block {
     Stmt **stmts;

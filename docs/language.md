@@ -123,8 +123,9 @@ for x in L do ... end              # items of a list or vector
 break    continue    return
 ```
 
-Every loop stops after `.maxIterations` iterations. After a loop, `.stuck` tells whether it was
-stopped by that limit, and `.iterations` how many times its body ran.
+`while` and `do` loops stop after `.maxIterations` iterations; `for` loops run their whole range
+(up to a million steps). After a loop, `.stuck` tells whether it was stopped by its limit, and
+`.iterations` how many times its body ran.
 
 ## Functions
 
@@ -221,7 +222,7 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.r
 
 | name | type | meaning |
 |---|---|---|
-| `.maxIterations` | Z | iteration limit of every loop (default 1000) |
+| `.maxIterations` | Z | iteration limit of `while` and `do` loops (default 1000) |
 | `.epsilon` | R | tolerance of `==` and `vanishes` (default 1e-6) |
 | `.escapeRadius` | R | `escapes` threshold (default 2) |
 | `.stuck`, `.iterations` | Bool, Z | result of the last loop |

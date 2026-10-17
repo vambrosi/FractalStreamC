@@ -57,8 +57,13 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "for e in v do\n"
      "    acc += e\n"
      "end\n"
+     "f : Z = 0\n"
+     "for k in 1..100 do\n"   /* for loops run their whole range, beyond .maxIterations */
+     "    f += 1\n"
+     "end\n"
+     "fs := .stuck\n"
      "g : R = 0\n"
-     "if st and n == 37 and it1 == 16 and d == 10 and t == 30 and acc == 6 then\n"
+     "if st and n == 37 and it1 == 16 and d == 10 and t == 30 and acc == 6 and f == 100 and not fs then\n"
      "    g = 1\n"
      "end\n"
      "color = [0.5 + 0.4 sin(s), g, 0.5]\n", 0.002},

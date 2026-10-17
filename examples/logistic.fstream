@@ -7,7 +7,7 @@
 .title = "Bifurcation diagram for the logistic map"
 .width = 512
 .height = 512
-.maxIterations = 1000         # also caps `warmup` below: every loop stops at .maxIterations
+.maxIterations = 1000
 .epsilon = 0.0001             # "tolerance": the orbit is back when |x - x0| < .epsilon
 outer : R = 0.01              # "outer tolerance": distances above this are white
 warmup : Z = 1000             # "Warmup iterations"

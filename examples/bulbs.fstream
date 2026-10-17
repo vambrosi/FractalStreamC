@@ -43,9 +43,6 @@ end
 
 @plane.tool "Bulb info" "B" "info"
 .panning = true               # clicks only: dragging pans
-saved : Z = .maxIterations
-.maxIterations = max(warmup, max_period)   # these loops are longer than the viewer's
-
 # Iterate z^2 + C many times so that we end up with z close to one of the points on
 # the attracting cycle.
 z := 0
@@ -62,18 +59,19 @@ if z escapes then
 else
     target := z
     n : Z = 0
-    do
+    for k in 1..max_period do
         z = z^2 + C
-        n += 1
-    while |z - target| >= tol and n < max_period end
+        n = k
+        if |z - target| < tol then
+            break
+        end
+    end
     if |z - target| >= tol then
         period = -1
     else
         period = n
     end
 end
-.maxIterations = saved
-
 if |marks| == 64 then          # lists hold at most 64 items
     clear(marks)
     clear(periods)
