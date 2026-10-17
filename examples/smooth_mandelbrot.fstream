@@ -5,8 +5,10 @@
 .title = "Mandelbrot set with smooth coloring"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10
+
+@config "Configuration"
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Escape radius"
 
 @viewer plane C "Mandelbrot set" "Ctrl + 1"
 z := 0
@@ -16,7 +18,7 @@ end
 if z escapes then
     # see https://linas.org/art-gallery/escape/ray.html
     m : R = .iterations + 1 - log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
-    color = mix(.white, .red, 2 atan(m / 20) / pi)
+    color = blend(2 atan(m / 20) / pi, .red, .white)
 else
     color = .black
 end

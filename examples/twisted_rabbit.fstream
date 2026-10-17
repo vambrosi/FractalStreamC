@@ -7,16 +7,19 @@
 .title = "Twisted rabbit"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10            # "Max. radius"
-C := -0.1226 + 0.7449i
-twist_center := -0.267 + 0.478i    # "Center of twist"
-r0 : R = 0.2                  # "Inner radius"
-r1 : R = 0.5                  # "Outer radius"
 
-@global
-define f(z) = z^2 + C                      # "Iterate f(z) ="
-define stop(z) = |z| > .escapeRadius       # "until"
+@config "Parametric complex dynamics"
+"Iterate z -> f(z) until stop(z):"
+define f(z) = z^2 + C
+define stop(z) = |z| > .escapeRadius
+
+@config "Configuration"
+C := -0.1226 + 0.7449i
+twist_center := -0.267 + 0.478i "Center of twist"
+r0 : R = 0.2 "Inner radius"
+r1 : R = 0.5 "Outer radius"
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Max. radius"
 
 @viewer plane z "Twisted rabbit" "Ctrl + 1"
 while not stop(z) do
@@ -31,13 +34,9 @@ end
 if .stuck then
     color = .black
 else
-    c1 : Color = .yellow
-    c2 : Color = .red
-    if im z > 0 then
-        c1 = .blue
-        c2 = .green
-    end
+    c1 := if im z > 0 then .blue else .yellow
+    c2 := if im z > 0 then .green else .red
     s : R = .iterations + 1 - log(log(|z|^2 / 2)) / log(2)
     s = cos(s pi / 10)^2
-    color = mix(c2, c1, s)
+    color = blend(s, c1, c2)
 end

@@ -7,14 +7,13 @@
 .title = "Newton's method"
 .width = 512
 .height = 512
-.maxIterations = 100
-.epsilon = 0.01               # "closeness"
-.a = 0                        # "a =" (pick it in the parameter plane)
+
+@config "Newton's method configuration"
+.a = 0 "a"                    # (pick it in the parameter plane)
+.epsilon = 0.01 "closeness"
+.maxIterations = 100 "Max. iterations"
 
 @global
-define dark(c : Color) = mix(c, .black, 1/3)
-define light(c : Color) = mix(c, .white, 1/3)
-
 # one Newton step for (z - r1)(z - r2)(z - r3)
 define newton(z, a) = next where
     r1 := 1
@@ -36,7 +35,7 @@ define basin(z, a, n : Z) = c : Color where
         c = .blue
     end
     s : R = cos(n pi / 10)^2
-    c = mix(light(c), dark(c), s)
+    c = blend(s, dark(c), light(c))
 end
 
 @viewer parameter a "Parameter plane" "Ctrl + 1"
@@ -46,11 +45,7 @@ do
     lastZ = z
     z = newton(z, a)
 while z != lastZ end
-if z == lastZ then
-    color = basin(z, a, .iterations)
-else
-    color = .black
-end
+color = if z == lastZ then basin(z, a, .iterations) else .black
 
 @viewer dynamical z "Newton's method dynamics" "Ctrl + 2"
 lastZ := 0
@@ -58,11 +53,7 @@ do
     lastZ = z
     z = newton(z, .a)
 while z != lastZ end
-if z == lastZ then
-    color = basin(z, .a, .iterations)
-else
-    color = .black
-end
+color = if z == lastZ then basin(z, .a, .iterations) else .black
 
 @dynamical.tool "Trace" "T" "timeline"
 lastZ := 0
@@ -73,3 +64,6 @@ while z != lastZ do
     draw line between lastZ and z
 end
 draw point at z
+on hide do
+    erase
+end

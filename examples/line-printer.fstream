@@ -6,12 +6,14 @@
 .title = "Mandelbrot set throwback"
 .width = 752
 .height = 546
-.maxIterations = 250
-.escapeRadius = 10
 plane.center = -0.75
 plane.radius = 1.241         # 1/220 per pixel in a 752x546 window
-xsize : R = 0.035            # "Cell width"
-shift : R = -0.05            # "Parameter shift"
+
+@config "Configuration"
+.maxIterations = 250 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+xsize : R = 0.035 "Cell width"
+shift : R = -0.05 "Parameter shift"
 
 @viewer plane w "Mandelbrot set throwback" "Ctrl + 1"
 ysize : R = 1.66 xsize

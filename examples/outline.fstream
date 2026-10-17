@@ -6,21 +6,22 @@
 .title = "Outlines"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10            # "Max. radius"
-.epsilon = 0.001              # "Min. radius"
-.C = -0.1226 + 0.7449i        # "Selected value of C" (pick it in the parameter plane)
-fatness : R = 0.1 in 0.01..2
-boundary_color : Color = .black
-exterior_color : Color = .white
-interior_color : Color = rgb(0.926, 0.863, 0.927)
+
+@config "Configuration"
+.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Max. radius"
+.epsilon = 0.001 "Min. radius"
+fatness : R = 0.1 in 0.01..2 "Fatness"
+
+@config "Colors"
+boundary_color : Color = .black "Boundary"
+exterior_color : Color = .white "Exterior"
+interior_color : Color = rgb(0.926, 0.863, 0.927) "Interior"
 
 @viewer parameter C "Parameter plane" "Ctrl + 1"
-# the size of a pixel: the old viewer knew it; here it is estimated from the view radius
-# (256 pixels per radius in the initial 512x512 window)
-pixel : R = parameter.radius / 256
 z := 0
-tol : R = pixel fatness / 2
+tol : R = fatness px / 2
 dzdc := 0
 der := 1
 
@@ -39,10 +40,9 @@ else
 end
 
 @viewer dynamical z "Dynamical plane" "Ctrl + 2"
-pixel : R = dynamical.radius / 256
 dz := 1
 w := z
-tol : R = 2 pixel fatness
+tol : R = 2 fatness px
 
 do
     dz = 2 z dz

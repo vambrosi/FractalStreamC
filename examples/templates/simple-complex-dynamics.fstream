@@ -1,48 +1,47 @@
 # Template: iterate z -> f(z) until done(z), colouring by success or failure, with a
-# Trace tool. Edit f, done and the two colours in @global (the old app asked for them,
-# and for the title, in a setup dialog).
+# Trace tool. f, done and the two colours are formulas of the config panel (the old app
+# asked for them, and for the title, in a setup dialog).
 # Ported from FractalStream examples/templates/simple-complex-dynamics.yaml
 
 @config
 .title = "Complex dynamics of z^2 + i"
 .width = 600
 .height = 600
-.maxIterations = 100          # "Iteration limit"
-.escapeRadius = 10            # "Escape radius"
-.epsilon = 0.0001             # "Vanishing radius"
 plane.radius = 2.34           # 1/128 per pixel in a 600x600 window
 
+@config "Dynamical system"
+"Iterate z ↦ f(z) until done(z)."
+define f(z) = z^2 + i
+define done(z) = z escapes
+
+@config "Coloring"
+"Color expressions can use color names like .red or .black, and color functions involving the variables z and .iterations."
+define on_success(z) = rainbow(.iterations / 20)
+define on_failure(z) = .black
+
+@config "Configuration"
+.maxIterations = 100 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+.epsilon = 0.0001 "Vanishing radius"
+
 @global
-# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
-define rainbow(t : R) = c : Color where
-    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
-    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
-    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
-    s : R = 8 fract(t)
-    k : Z = floor(s) + 1
-    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
-end
-
-define f(z) = z^2 + i                          # "iterate z ⟼"
-define done(z) = z escapes                     # "until"
-define on_success(z, n : Z) = rainbow(n / 20)  # "Color expression for success"
-define on_failure(z, n : Z) = .black           # "Color expression for failure"
-
 @viewer plane z "Complex dynamics of z^2 + i" "Ctrl + 1"
 while not done(z) do
     z = f(z)
 end
-if .stuck then
-    color = on_failure(z, .iterations)
-else
-    color = on_success(z, .iterations)
-end
+color = if .stuck then on_failure(z) else on_success(z)
 
 @plane.tool "Trace" "T" "timeline"
 prevZ := z
 while not done(z) do
     prevZ = z
-    draw point at z
+    draw point at z with color .white
     z = f(z)
-    draw line between z and prevZ
+    draw line between z and prevZ with color .white
+end
+on show do                    # (selected, or the config or the view changed)
+    erase
+end
+on hide do
+    erase
 end

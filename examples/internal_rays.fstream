@@ -1,42 +1,36 @@
 # Internal rays of hyperbolic components: the orbit is followed onto its attracting cycle,
 # whose period and multiplier lambda are measured; the parameter space is coloured by
 # arg(lambda), the dynamical plane by the angle in the linearising coordinate (den sectors),
-# escaping points are blue/yellow. Edit f, f2, the critical point and degree in @global.
+# escaping points are blue/yellow. The Trace tool draws the orbit of a point onto its cycle.
 # Ported from FractalStream examples/internal_rays.yaml
 
 @config
 .title = "Internal rays"
 .width = 800
 .height = 800
-.maxIterations = 300          # "max iterations"
-.escapeRadius = 100           # "escape radius"
-.epsilon = 0.00001            # "vanishing radius"
-continuous : Bool = false     # continuous colouring of the angle, or den sectors
-den : Z = 3 in 1..24          # "denominator"
-.c = 0                        # "c = " (pick it in the parameter space)
-extra_iterations : Z = 1
-start := 0                    # "orbit start" (set by the Trace tool)
 parameter.center = -0.5
 
+@config "Internal Rays Setup"
+define f(z, c) = z^2 + c
+define f2(w, c) = (w^2 + c)^2 + c
+define critical_point(c) = 0
+degree : Z = 2 "Degree"
+
+@config "Internal Rays"
+continuous : Bool = false               # continuous colouring of the angle, or den sectors
+den : Z = 3 in 1..24 "denominator"
+
+@config "Dynamics"
+.c = 0 "c"                              # (pick it in the parameter space)
+.maxIterations = 300 "max iterations"
+.escapeRadius = 100 "escape radius"
+.epsilon = 0.00001 "vanishing radius"
+extra_iterations : Z = 1 "extra iterations"
+
+@config "Orbit Tracker"
+start := 0 "orbit start"                # (set by the Trace tool)
+
 @global
-define f(z, c) = z^2 + c                   # "f_c(z) ="
-define f2(w, c) = (w^2 + c)^2 + c          # "(f_c)²(w) ="
-define critical_point(c) = 0               # "critical_point(c) ="
-degree : Z = 2                             # "Degree"
-
-define dark(c : Color) = mix(c, .black, 1/3)
-define light(c : Color) = mix(c, .white, 1/3)
-
-# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
-define rainbow(t : R) = c : Color where
-    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
-    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
-    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
-    s : R = 8 fract(t)
-    k : Z = floor(s) + 1
-    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
-end
-
 # the colour of the orbit of z0 under f_c; `dynamic` chooses the angle to show
 define picture(z0, c, dynamic : Bool) = col : Color where
     z := z0
@@ -49,12 +43,9 @@ define picture(z0, c, dynamic : Bool) = col : Color where
     if .stuck then
         col = .black
     else if z escapes then
-        col = .yellow
-        if im z > 0 then
-            col = .blue
-        end
+        col = if im z > 0 then .blue else .yellow
         s : R = .iterations + 1 - log(log(|z|)) / log(degree)
-        col = mix(dark(col), light(col), cos(s pi)^2)
+        col = blend(cos(s pi)^2, light(col), dark(col))
     else
         lambda := 1
         do
@@ -84,15 +75,36 @@ define picture(z0, c, dynamic : Bool) = col : Color where
 
         if continuous then
             col = rainbow((ptheta den) mod 1)
-        else if ptheta mod (1 / den) > 0.5 / den then
-            col = .red
         else
-            col = rgb(0, 1, 1)
+            col = if ptheta mod (1 / den) > 0.5 / den then .red else rgb(0, 1, 1)
         end
 
         s_adjusted : R = s + 1 - log(|z - w|) / log(|lambda|)
-        col = mix(dark(col), light(col), cos(s_adjusted pi)^2)
+        col = blend(cos(s_adjusted pi)^2, light(col), dark(col))
     end
+end
+
+# draw the orbit of z0 onto its attracting cycle, and mark the point w of the cycle that
+# was found (the Trace tool)
+define trace(z0, c) = w where
+    z := z0
+    w = z0
+    do
+        z = f(z, c)
+        w = f2(w, c)
+    while not (|z - w| vanishes or z escapes) end
+
+    if |z - w| vanishes then
+        z = z0
+        lastZ := z
+        while not (|z - w| vanishes) do
+            lastZ = z
+            z = f(z, c)
+            draw point at lastZ
+            draw line between lastZ and z
+        end
+    end
+    draw circle at w with radius .epsilon and color .green
 end
 
 @viewer parameter c "Parameter space" "Ctrl + 1"
@@ -102,21 +114,14 @@ color = picture(critical_point(c), c, false)
 color = picture(z, .c, true)
 
 @dynamical.tool "Trace" "T" "timeline"
-start = z
-w := z
-lastZ := z
-do
-    z = f(z, .c)
-    w = f2(w, .c)
-while not (|z - w| vanishes or z escapes) end
-
-if |z - w| vanishes then
-    z = lastZ
-    while not (|z - w| vanishes) do
-        lastZ = z
-        z = f(z, .c)
-        draw point at lastZ
-        draw line between lastZ and z
-    end
+on press do
+    start = z
+    trace(start, .c)
 end
-draw circle at w with radius .epsilon and color .green
+on drag do
+    start = z
+    trace(start, .c)
+end
+on show do                    # redraw the orbit of start when the configuration changes
+    trace(start, .c)          # (the original's redraw restarted from 0 instead of start)
+end

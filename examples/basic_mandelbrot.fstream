@@ -5,12 +5,10 @@
 .title = "Mandelbrot set"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10
 
-@global
-# the old built-in cycle(t, c1, c2): c2 at t = 0, c1 at t = 1/2, back to c2 at t = 1
-define cycle(t : R, c1 : Color, c2 : Color) = mix(c2, c1, 1 - |2 fract(t) - 1|)
+@config "Configuration"
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Escape radius"
 
 @viewer plane C "Mandelbrot set" "Ctrl + 1"
 z := 0

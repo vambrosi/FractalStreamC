@@ -5,10 +5,12 @@
 .title = "Julia set"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10
-C := -0.11 + 0.78i            # f(z) = z^2 + C
-p : R = 0.5 in 0.05..2        # "Brightness"
+
+@config "Configuration"
+C := -0.11 + 0.78i "f(z) = z^2 +"
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Escape radius"
+p : R = 0.5 in 0.05..2 "Brightness"
 
 @viewer plane z "Julia set" "Ctrl + 1"
 while z not escapes do
@@ -17,8 +19,7 @@ end
 if .stuck then
     color = .black
 else
-    # blend((iterations / max_iters)^p, dark blue, white)
-    color = mix(.white, mix(.blue, .black, 1/3), (.iterations / .maxIterations)^p)
+    color = blend((.iterations / .maxIterations)^p, dark(.blue), .white)
 end
 
 @plane.tool "Trace" "T" "timeline"

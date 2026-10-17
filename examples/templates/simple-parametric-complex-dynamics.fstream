@@ -1,7 +1,7 @@
 # Template: the parameter plane and the dynamical plane of z -> f(z, C), iterated until
-# done(z, C), colouring by success or failure, with a Trace tool. Edit f, done, the
-# initial z of the parameter plane and the two colours in @global (the old app asked for
-# them, and for the title, in a setup dialog).
+# done(z, C), colouring by success or failure, with a Trace tool. f, done, the initial z
+# of the parameter plane and the two colours are formulas of the config panel (the old
+# app asked for them, and for the title, in a setup dialog).
 # Ported from FractalStream examples/templates/simple-parametric-complex-dynamics.yaml
 # (by Matt Noonan: "Single-variable complex dynamics, with an additional complex parameter C.")
 
@@ -9,56 +9,51 @@
 .title = "Parametric complex dynamics"
 .width = 600
 .height = 600
-.maxIterations = 100          # "Iteration limit"
-.escapeRadius = 10            # "Escape radius"
-.epsilon = 0.0001             # "Vanishing radius"
-.C = -0.1226 + 0.7449i        # "Selected value of C" (pick it in the parameter plane)
 parameter.radius = 2.34       # 1/128 per pixel in a 600x600 window
 dynamical.radius = 2.34
 
+@config "Dynamical system"
+"Iterate z ↦ f(z, C) until done(z, C); in the parameter plane z starts at initial_z(C)."
+define f(z, C) = z^2 + C
+define done(z, C) = z escapes
+define initial_z(C) = 0
+
+@config "Coloring"
+"Color expressions can use color names like .red or .black, and color functions involving the variables z, C and .iterations."
+define on_success(z, C) = rainbow(.iterations / 20)
+define on_failure(z, C) = .black
+
+@config "Configuration"
+.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+.maxIterations = 100 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+.epsilon = 0.0001 "Vanishing radius"
+
 @global
-# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
-define rainbow(t : R) = c : Color where
-    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
-    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
-    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
-    s : R = 8 fract(t)
-    k : Z = floor(s) + 1
-    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
-end
-
-define f(z, C) = z^2 + C                          # "iterate z ⟼"
-define done(z, C) = z escapes                     # "until"
-define initial_z(C) = 0                           # "Initial expression for z in parameter plane"
-define on_success(z, C, n : Z) = rainbow(n / 20)  # "Color expression for success"
-define on_failure(z, C, n : Z) = .black           # "Color expression for failure"
-
 @viewer parameter C "Parametric complex dynamics parameter plane" "Ctrl + 1"
 z : C = initial_z(C)
 while not done(z, C) do
     z = f(z, C)
 end
-if .stuck then
-    color = on_failure(z, C, .iterations)
-else
-    color = on_success(z, C, .iterations)
-end
+color = if .stuck then on_failure(z, C) else on_success(z, C)
 
 @viewer dynamical z "Parametric complex dynamics" "Ctrl + 2"
 while not done(z, .C) do
     z = f(z, .C)
 end
-if .stuck then
-    color = on_failure(z, .C, .iterations)
-else
-    color = on_success(z, .C, .iterations)
-end
+color = if .stuck then on_failure(z, .C) else on_success(z, .C)
 
 @dynamical.tool "Trace" "T" "timeline"
 prevZ := z
 while not done(z, .C) do
     prevZ = z
-    draw point at z
+    draw point at z with color .white
     z = f(z, .C)
-    draw line between z and prevZ
+    draw line between z and prevZ with color .white
+end
+on show do                    # (selected, or the config or the view changed)
+    erase
+end
+on hide do
+    erase
 end

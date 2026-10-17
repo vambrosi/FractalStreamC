@@ -13,8 +13,4 @@ plane.radius = 1.5625        # 1/128 per pixel in a 400x425 window
 while z not escapes do
     z = z^2 - 0.12256 + 0.74486i
 end
-if z escapes then
-    color = .white
-else
-    color = .black
-end
+color = if z escapes then .white else .black

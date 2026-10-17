@@ -6,21 +6,12 @@
 .title = "Mandelbrot set tiled by Julia sets"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10
-size : R = 0.05               # "Julia set size"
-scale : R = 2.5               # "Julia set zoom level"
 
-@global
-# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
-define rainbow(t : R) = c : Color where
-    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
-    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
-    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
-    s : R = 8 fract(t)
-    k : Z = floor(s) + 1
-    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
-end
+@config "Configuration"
+.maxIterations = 100 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+size : R = 0.05 "Julia set size"
+scale : R = 2.5 "Julia set zoom level"
 
 @viewer plane w "Tiled Mandelbrot set" "Ctrl + 1"
 x : R = re(w) mod size

@@ -2,23 +2,30 @@
 # the parameter space and in the dynamical plane, with smooth escape-time colouring
 # (blue/green above the real axis, yellow/red below). "Trace" draws an orbit; "Dehn twist"
 # drags the centre of the twist or either of its circles.
-# The old "setup" dialog asked for f and stop; here, edit them in @global.
 # Ported from FractalStream examples/twisted_mandelbrot.yaml
 
 @config
 .title = "Twisted Mandelbrot set"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10            # "Max. radius"
-.C = -0.1226 + 0.7449i        # "Selected value of C" (pick it in the parameter space)
-twist_center := -0.267 + 0.478i    # Dehn twist: "Center of twist"
-r0 : R = 0.2                  #   "Inner radius"
-r1 : R = 0.5                  #   "Outer radius"
+
+@config "Parametric complex dynamics"
+"Iterate z ↦ f(z, C) until stop(z, C)."
+define f(z, C) = z^2 + C
+define stop(z, C) = |z| > .escapeRadius
+
+@config "Configuration"
+.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter space)
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Max. radius"
+
+@config "Dehn twist"
+twist_center := -0.267 + 0.478i "Center of twist"
+r0 : R = 0.2 "Inner radius"
+r1 : R = 0.5 "Outer radius"
 
 @global
-define f(z, C) = z^2 + C                   # "Iterate f(z) ="
-define stop(z, C) = |z| > .escapeRadius    # "until"
+drag_target : Z = 0           # what "Dehn twist" drags: 1 the centre, 2 the inner, 3 the outer circle
 
 # one step: f, then the Dehn twist
 define step(z, C) = w where
@@ -31,15 +38,11 @@ define step(z, C) = w where
 end
 
 define shade(z, n : Z) = c : Color where
-    c1 : Color = .yellow
-    c2 : Color = .red
-    if im z > 0 then
-        c1 = .blue
-        c2 = .green
-    end
+    c1 := if im z > 0 then .blue else .yellow
+    c2 := if im z > 0 then .green else .red
     s : R = n + 1 - log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
     s = cos(s pi / 10)^2
-    c = mix(c2, c1, s)
+    c = blend(s, c1, c2)
 end
 
 @viewer parameter C "Parameter space" "Ctrl + 1"
@@ -74,20 +77,47 @@ for k in 1..100 do
     z = step(z, .C)
     draw line between z and prevZ
 end
+on hide do
+    erase
+end
 
 @dynamical.tool "Dehn twist" "D" "rotate_right"
-# Drag the centre, or either circle, of the twist. (The old tool remembered what the drag
-# started on; here it is found again at every step, so drag slowly. The px size is
-# estimated from the radius of the view, 256 pixels in the initial 512x512 window.)
-eps : R = 5 dynamical.radius / 256
-d : R = |z - twist_center|
-if d < eps then
-    twist_center = z
-else if |d - r0| < eps then
-    r0 = d
-else if |d - r1| < eps then
-    r1 = d
+.keep = true                  # drawings stay until erased, as in the old tool
+on show do
+    erase
+    draw point at twist_center with color .red
+    draw circle at twist_center with radius r0 and color .white
+    draw circle at twist_center with radius r1 and color .white
 end
-draw point at twist_center with color .red
-draw circle at twist_center with radius r0
-draw circle at twist_center with radius r1
+on drag do
+    eps : R = 5 px
+    if drag_target == 0 then      # grab what the drag started on
+        d0 : R = |.dragStart - twist_center|
+        if d0 < eps then
+            drag_target = 1
+        else if |d0 - r0| < eps then
+            drag_target = 2
+        else if |d0 - r1| < eps then
+            drag_target = 3
+        end
+    end
+    if drag_target == 1 then
+        twist_center = z
+    else if drag_target == 2 then
+        r0 = |z - twist_center|
+    else if drag_target == 3 then
+        r1 = |z - twist_center|
+    end
+    if drag_target > 0 then
+        erase
+        draw point at twist_center with color .red
+        draw circle at twist_center with radius r0 and color .white
+        draw circle at twist_center with radius r1 and color .white
+    end
+end
+on release do
+    drag_target = 0
+end
+on hide do
+    erase
+end

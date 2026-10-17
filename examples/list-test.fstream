@@ -6,7 +6,9 @@
 .title = "Circle"
 .width = 512
 .height = 512
-myList : List of C = [0, 1, i]      # "Centers" (edit the list here: the config panel can't)
+
+@config "Configuration"
+myList : List of C = [0, 1, i] "Centers"
 
 @viewer plane z "Circle" "Ctrl + 1"
 if |z| < 1 then
@@ -18,7 +20,9 @@ else
 end
 
 @plane.tool "Show circles" "S" "bubble_chart"
-# the original redrew the circles whenever the config changed; here, click anywhere
-for center in myList do
-    draw circle at center with radius 1
+.panning = true
+on show do                    # when selected, and whenever the config changes
+    for center in myList do
+        draw circle at center with radius 1
+    end
 end

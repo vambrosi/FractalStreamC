@@ -1,47 +1,35 @@
 # The Mandelbrot set with the bifurcation diagram of the logistic map x -> r x (1 - x)
 # drawn over it (inverted colours), lined up so that the real parameter c of z^2 + c and
-# the r of the logistic map are conjugate (r = 1 + sqrt(1 - 4c)). Use the "Vertical line"
-# tool to compare points of the Mandelbrot set and of the bifurcation diagram.
+# the r of the logistic map are conjugate (r = 1 + sqrt(1 - 4c)).
 # Ported from FractalStream examples/mandelbrot-bifurcations.yaml
 
 @config
 .title = "Mandelbrot set + logistic map bifurcations"
 .width = 700
 .height = 500
-.maxIterations = 1000
-.escapeRadius = 10
 plane.center = -0.8 + 0.3i
 plane.radius = 1.25           # 0.005 per pixel in a 700x500 window
-warmup : Z = 500              # Bifurcation diagram: "Warmup iterations"
-cycle_length : Z = 200        # "Cycle check iterations"
-offset : R = 0.5              # "Vertical offset"
 
-@global
-# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
-define rainbow(t : R) = c : Color where
-    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
-    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
-    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
-    s : R = 8 fract(t)
-    k : Z = floor(s) + 1
-    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
-end
+@config "Configuration"
+"Use the \"Vertical line\" tool (shortcut V) to compare points between the Mandelbrot set and the logistic map bifurcation diagram."
+
+@config "Mandelbrot set"
+.maxIterations = 1000 "Max. iterations"
+.escapeRadius = 10 "Escape radius"
+
+@config "Bifurcation diagram"
+warmup : Z = 500 "Warmup iterations"
+cycle_length : Z = 200 "Cycle check iterations"
+offset : R = 0.5 "Vertical offset"
 
 @viewer plane C "Mandelbrot set" "Ctrl + 1"
-# the size of a pixel: the old viewer knew it; here it is estimated from the view radius
-# (250 pixels per radius in the initial 700x500 window)
-pixel : R = plane.radius / 250
+z := 0
 
 # Draw the Mandelbrot set
-z := 0
 while z not escapes do
     z = z^2 + C
 end
-if z escapes then
-    color = mix(.white, rainbow(.iterations / 20), 0.2)
-else
-    color = .black
-end
+color = if z escapes then blend(0.2, rainbow(.iterations / 20), .white) else .black
 
 # Overlay a bifurcation diagram for the logistic map
 if re C >= -2 and re C <= 1/4 and im C > offset and im C < offset + 1 then
@@ -53,15 +41,13 @@ if re C >= -2 and re C <= 1/4 and im C > offset and im C < offset + 1 then
     end
     hit := false
     for k in 1..cycle_length do
-        if |x - x0| < pixel then
+        if |x - x0| < .pixel then
             hit = true
             break
         end
         x = x r (1 - x)
     end
-    if hit then
-        color = .white - color
-    end
+    color = if hit then invert(color) else color
 end
 
 @plane.tool "Vertical line" "V" "height"

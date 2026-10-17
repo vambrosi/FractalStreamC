@@ -8,14 +8,12 @@
 .width = 150
 .height = 150
 plane.radius = 0.5859        # 1/128 per pixel in a 150x150 window
-myList : List of C = [0, 1, i]   # "Centers" (unused, as in the original)
-radius : R = 0.2
-myColor : Color = .yellow
+
+@config "Configuration"
+myList : List of C = [0, 1, i] "Centers"     # (unused, as in the original)
+radius : R = 0.2 "Radius"
+myColor : Color = .yellow "My color"
 
 @viewer plane z "Voronoi" "Ctrl + 1"
 computed : Color = myColor       # was computed once, in the preparation step
-if |z| < radius then
-    color = .blue
-else
-    color = computed
-end
+color = if |z| < radius then .blue else computed

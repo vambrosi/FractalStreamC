@@ -9,17 +9,23 @@
 .title = "Exceptional divisors"
 .width = 512
 .height = 512
-.maxIterations = 100          # "Iteration limit"
-.escapeRadius = 10            # "Escape radius"
-.epsilon = 0.01               # "Tolerance"
-.t = 1 + i                    # "t = " (pick it in the t-plane)
-tcolor1 : Color = .red        # t-plane colours: 1
-tcolor2 : Color = .green      #   ω
-tcolor3 : Color = .blue       #   ω²
-zcol : Color = .yellow        # z-plane colours: "escaped" (used for x = 0)
-color8 : Color = .red         #   "inf"
-color9 : Color = .green       #   "j"
-color10 : Color = .blue       #   "jbar"
+
+@config "Configuration"
+.maxIterations = 100 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+.epsilon = 0.01 "Tolerance"
+.t = 1 + i "t"                # (pick it in the t-plane)
+
+@config "t-plane colors"
+tcolor1 : Color = .red "1"
+tcolor2 : Color = .green "ω"
+tcolor3 : Color = .blue "ω²"
+
+@config "z-plane colors"
+zcol : Color = .yellow "escaped"      # (used for x = 0)
+color8 : Color = .red "inf"
+color9 : Color = .green "j"
+color10 : Color = .blue "jbar"
 exceptional : Color = rgb(1, 0.7, 0.7)
 
 @global

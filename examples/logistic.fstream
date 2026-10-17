@@ -7,10 +7,12 @@
 .title = "Bifurcation diagram for the logistic map"
 .width = 512
 .height = 512
-.maxIterations = 1000
-.epsilon = 0.0001             # "tolerance": the orbit is back when |x - x0| < .epsilon
-outer : R = 0.01              # "outer tolerance": distances above this are white
-warmup : Z = 1000             # "Warmup iterations"
+
+@config "Configuration"
+.epsilon = 0.0001 "tolerance"            # the orbit is back when |x - x0| < .epsilon
+outer : R = 0.01 "outer tolerance"       # distances above this are white
+.maxIterations = 1000 "Max. iterations"
+warmup : Z = 1000 "Warmup iterations"
 
 @viewer plane z "Logistic map" "Ctrl + 1"
 x : R = im z
@@ -28,4 +30,4 @@ while x != x0 do
         best = |x - x0|
     end
 end
-color = mix(.black, .white, best / outer)
+color = blend(best / outer, .white, .black)

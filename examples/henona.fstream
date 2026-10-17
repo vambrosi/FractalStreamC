@@ -14,9 +14,6 @@ b := 0.6 + 0.2i               # "default b to 0.6 + 0.2i."
 zoom : R = 0.001              # "default zoom to 0.001."
 
 @global
-# the old built-in cycle(t, c1, c2): c2 at t = 0, c1 at t = 1/2, back to c2 at t = 1
-define cycle(t : R, c1 : Color, c2 : Color) = mix(c2, c1, 1 - |2 fract(t) - 1|)
-
 # iterate from the fixed point moved by `step` along the unstable direction; the result
 # is the number of steps before x escapes (.maxIterations if it does not)
 define henon(a, b, step) = n : Z where

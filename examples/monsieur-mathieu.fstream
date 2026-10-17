@@ -7,7 +7,9 @@
 .title = "Monsieur Mathieu"
 .width = 512
 .height = 512
-tol : R = 0.01 in 0.0001..0.1    # "Tolerance"
+
+@config "Configuration"
+tol : R = 0.01 in 0.0001..0.1 "Tolerance"
 
 @global
 a := (107 + 7 sqrt(11) i) / 486

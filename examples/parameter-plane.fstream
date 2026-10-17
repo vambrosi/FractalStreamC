@@ -1,31 +1,30 @@
 # Parameter plane and dynamical plane of z -> f(z) = z^2 + C, iterated until stop(z):
 # escaping points get a smooth escape-time colouring (blue/green above the real axis,
 # yellow/red below). The Trace tool draws orbits in the dynamical plane.
-# The old "setup" dialog asked for f and stop; here, edit them in @global.
 # Ported from FractalStream examples/parameter-plane.yaml
 
 @config
 .title = "Parametric complex dynamics"
 .width = 512
 .height = 512
-.maxIterations = 100
-.escapeRadius = 10            # "Max. radius"
-.C = -0.1226 + 0.7449i        # "Selected value of C" (pick it in the parameter plane)
+
+@config "Parametric complex dynamics"
+"Iterate z -> f(z, C) until stop(z, C):"
+define f(z, C) = z^2 + C
+define stop(z, C) = |z| > .escapeRadius
+
+@config "Configuration"
+.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+.maxIterations = 100 "Max. iterations"
+.escapeRadius = 10 "Max. radius"
 
 @global
-define f(z, C) = z^2 + C                   # "Iterate f(z) ="
-define stop(z, C) = |z| > .escapeRadius    # "until"
-
 define shade(z, n : Z) = c : Color where
-    c1 : Color = .yellow
-    c2 : Color = .red
-    if im z > 0 then
-        c1 = .blue
-        c2 = .green
-    end
+    c1 := if im z > 0 then .blue else .yellow
+    c2 := if im z > 0 then .green else .red
     s : R = n + 1 - log(log(|z|^2 / 2)) / log(2)
     s = cos(s pi / 10)^2
-    c = mix(c2, c1, s)
+    c = blend(s, c1, c2)
 end
 
 @viewer parameter C "Parameter plane" "Ctrl + 1"
@@ -56,4 +55,7 @@ while not stop(z, .C) do
     draw point at z
     z = f(z, .C)
     draw line between z and prevZ
+end
+on hide do
+    erase
 end

@@ -7,16 +7,12 @@
 .title = "Sarah thing"
 .width = 600
 .height = 600
-.maxIterations = 100
-.escapeRadius = 10
-.epsilon = 0.0001             # "Vanishing radius"
 plane.radius = 2.34           # 1/128 per pixel in a 600x600 window
 
-@global
-define dark(c : Color) = mix(c, .black, 1/3)
-define light(c : Color) = mix(c, .white, 1/3)
-# the old built-in cycle(t, c1, c2): c2 at t = 0, c1 at t = 1/2, back to c2 at t = 1
-define cycle(t : R, c1 : Color, c2 : Color) = mix(c2, c1, 1 - |2 fract(t) - 1|)
+@config "Standard settings"
+.maxIterations = 100 "Iteration limit"
+.escapeRadius = 10 "Escape radius"
+.epsilon = 0.0001 "Vanishing radius"
 
 @viewer plane z "Sarah thing" "Ctrl + 1"
 p := z
