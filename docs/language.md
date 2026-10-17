@@ -209,6 +209,11 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 - A solution with several branches (like the critical points in SaddleDrop) is followed
   continuously; where the fill comes back around an obstacle with another branch, the picture
   shows a line. See [`examples/saddledrop.fstream`](../examples/saddledrop.fstream).
+- The fill travels along rays from `P`. Rows of pixels that pass between two nearby branch
+  points come back with another branch and would carry it to the edge of the picture as a thin
+  band. After the fill, such bands are solved again from their sides ("mending"): a band whose
+  two sides agree takes their branch, and a band between two sides that disagree goes to the
+  nearer side, so one line is left instead of two.
 - One `continuing` solve per viewer, in flat (not projective) viewers. The expression can't use
   locals of the viewer computed from `c` (compute them inside the expression, in a function).
 - In the GUI the picture grows from `P` as it is computed.

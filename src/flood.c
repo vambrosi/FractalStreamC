@@ -16,18 +16,29 @@
  *   2. FLOOD_SWEEPS - 1 more sweeps over the rings, alternately inwards and
  *      outwards, for the pixels still waiting (behind failed regions);
  *   3. one last pass over every pixel still waiting: a plain solve from the
- *      seed, without continuation.
+ *      seed, without continuation;
+ *   4. FLOOD_MEND_ROUNDS rounds of mending (see flood_mend_source): a thin band
+ *      of pixels whose solutions jump away from those on both of its sides
+ *      (which agree with each other) is solved again, continuing from one
+ *      side.  Such bands are left behind when the continuation passes between
+ *      two nearby branch points (where the solution meets another one): the
+ *      rows passing between them come back with another solution and carry it
+ *      to the edge of the picture.  Mending leaves only the short cut between
+ *      the branch points.  A thin band between two regions that disagree goes
+ *      to the nearer one (one cut instead of two).  Bands lie along the rays
+ *      from the start pixel, so they are looked for across the rays.  One pass decides (writes
+ *      `pad`), the next solves.
  * Every pass only reads entries that earlier passes wrote. */
 
 enum { FLOOD_PENDING = 0, FLOOD_DONE = 1, FLOOD_FAILED = 2 };
-enum { FLOOD_PASS_RING = 0, FLOOD_PASS_COLD = 1 };
 #define FLOOD_SWEEPS 3
+#define FLOOD_MEND_ROUNDS 3
 
 /* one entry per pixel; the same layout as the GPU buffer (std430: vec2 + uint + pad) */
 typedef struct FloodEntry {
     float t[2];
     u32 status;
-    u32 pad;
+    u32 pad;  /* after a decide pass: 0, or 1 + the pixel to continue from when mending this one */
 } FloodEntry;
 
 typedef struct FloodPlan {
@@ -47,13 +58,14 @@ void flood_plan_init(FloodPlan *fp, int w, int h, int sx, int sy) {
     fp->rings = 1 + flood_imax(flood_imax(fp->sx, w - 1 - fp->sx), flood_imax(fp->sy, h - 1 - fp->sy));
 }
 
-int flood_pass_count(const FloodPlan *fp) { return FLOOD_SWEEPS * fp->rings + 1; }
+int flood_pass_count(const FloodPlan *fp) { return FLOOD_SWEEPS * fp->rings + 1 + 2 * FLOOD_MEND_ROUNDS; }
 
 /* what pass number `index` does */
 void flood_pass_info(const FloodPlan *fp, int index, int *kind, int *ring) {
     int sweep = index / fp->rings, k = index % fp->rings;
     if (sweep >= FLOOD_SWEEPS) {
-        *kind = FLOOD_PASS_COLD;
+        int r = index - FLOOD_SWEEPS * fp->rings;
+        *kind = r == 0 ? FLOOD_PASS_COLD : (r % 2 == 1 ? FLOOD_PASS_DECIDE : FLOOD_PASS_MEND);
         *ring = 0;
         return;
     }
@@ -109,6 +121,120 @@ int flood_pick_neighbour(const FloodPlan *fp, const FloodEntry *field, int x, in
     return best;
 }
 
+/* ---- mending --------------------------------------------------------------------- */
+/* Thickest band mended: about 1/40 of the picture (bands are features of the plane, so they get
+ * thicker in larger pictures), at least 8 pixels.  codegen.c computes the same. */
+int flood_mend_limit(int w, int h) { return FS_CLAMP(FS_MIN(w, h) / 40, 8, FLOOD_MEND_KMAX); }
+
+static float flood_cabs(float re, float im) { return sqrtf(re * re + im * im); }
+#define FLOOD_FAR 1e30f /* "no difference available" */
+
+/* Along the line through pixel (x, y) in direction (ux, uy): the solutions of the pixels
+ * j = -(n) .. n steps away (done[] false where not converged or outside). */
+typedef struct FloodLine {
+    bool done[2 * FLOOD_MEND_KMAX + 3];
+    float re[2 * FLOOD_MEND_KMAX + 3], im[2 * FLOOD_MEND_KMAX + 3];
+} FloodLine;
+#define FLOOD_LINE_AT(j) ((j) + FLOOD_MEND_KMAX + 1)
+
+static float flood_line_diff(const FloodLine *L, int a, int b) { /* |w_b - w_a| or FLOOD_FAR */
+    if (!L->done[FLOOD_LINE_AT(a)] || !L->done[FLOOD_LINE_AT(b)]) return FLOOD_FAR;
+    return flood_cabs(L->re[FLOOD_LINE_AT(b)] - L->re[FLOOD_LINE_AT(a)], L->im[FLOOD_LINE_AT(b)] - L->im[FLOOD_LINE_AT(a)]);
+}
+
+/* Is there a jump between the pixels a and b = a + s (s = +-1) of the line: a difference much
+ * larger than the differences next to it (in a smooth region they are all about the same)? */
+static bool flood_line_jump(const FloodLine *L, int a, int s) {
+    int b = a + s;
+    float d = flood_line_diff(L, a, b);
+    if (d >= FLOOD_FAR) return false;
+    float g = FS_MIN(flood_line_diff(L, a - s, a), flood_line_diff(L, b, b + s));
+    if (g >= FLOOD_FAR) return false;
+    float size = flood_cabs(L->re[FLOOD_LINE_AT(a)], L->im[FLOOD_LINE_AT(a)]) + flood_cabs(L->re[FLOOD_LINE_AT(b)], L->im[FLOOD_LINE_AT(b)]);
+    return d > 8.0f * g + 1e-4f * size;
+}
+
+/* The first FLOOD_MEND_JUMPS jumps from pixel 0 going in direction s: the k such that (s(k-1), sk)
+ * jumps, within kmax steps and before a pixel that did not converge.  Returns how many. */
+static int flood_line_jumps(const FloodLine *L, int s, int kmax, int ks[FLOOD_MEND_JUMPS]) {
+    int n = 0;
+    for (int k = 1; k <= kmax && n < FLOOD_MEND_JUMPS; k++) {
+        if (!L->done[FLOOD_LINE_AT(s * k)]) break;
+        if (flood_line_jump(L, s * (k - 1), s)) ks[n++] = k;
+    }
+    return n;
+}
+
+/* Do the pixels a > 0 and b < 0 of the line agree, allowing for the variation between pixels just
+ * beyond them (they are t + 1 pixels apart)?  The smaller variation counts: the larger one may be
+ * a jump to yet another band. */
+static bool flood_line_agree(const FloodLine *L, int a, int b, int t) {
+    float g = FS_MIN(flood_line_diff(L, a, a + 1), flood_line_diff(L, b, b - 1));
+    if (g >= FLOOD_FAR) return false;
+    float d = flood_line_diff(L, a, b);
+    float size = flood_cabs(L->re[FLOOD_LINE_AT(a)], L->im[FLOOD_LINE_AT(a)]) + flood_cabs(L->re[FLOOD_LINE_AT(b)], L->im[FLOOD_LINE_AT(b)]);
+    return d <= 4.0f * (float)(t + 1) * g + 1e-4f * size;
+}
+
+/* Is the pixel beyond the jump at k (direction s) clean: does the next pixel outwards continue it
+ * smoothly (rather than being more debris)? */
+static bool flood_line_clean(const FloodLine *L, int s, int k) {
+    float out = flood_line_diff(L, s * k, s * (k + 1));
+    return out < FLOOD_FAR && 8.0f * out <= flood_line_diff(L, s * (k - 1), s * k);
+}
+
+/* Pixel (x, y) (converged) is in a band across the axis (ux, uy) when there is a jump on each side,
+ * at most kmax pixels apart, with agreeing pixels beyond them (bands may hold several solutions,
+ * so the first few jumps on each side are tried, the thinnest band wins).  Failing that, a band
+ * between two regions that do not agree (the continuation found a third solution between them)
+ * goes to the nearer region, so that one cut is left instead of two.  Returns 0 (no band), the
+ * band's thickness, or (the second kind) its thickness + FLOOD_MEND_KMAX + 1; and in *src, the
+ * pixel beyond the nearer of its two jumps. */
+static int flood_mend_axis(const FloodPlan *fp, const FloodEntry *field, int x, int y, int ux, int uy, int kmax, int *src) {
+    FloodLine L;
+    for (int j = -(kmax + 1); j <= kmax + 1; j++) {
+        int px = x + j * ux, py = y + j * uy, at = FLOOD_LINE_AT(j);
+        bool in = px >= 0 && py >= 0 && px < fp->w && py < fp->h;
+        const FloodEntry *e = in ? &field[py * fp->w + px] : NULL;
+        L.done[at] = e && e->status == FLOOD_DONE;
+        L.re[at] = e ? e->t[0] : 0;
+        L.im[at] = e ? e->t[1] : 0;
+    }
+    int kp[FLOOD_MEND_JUMPS], km[FLOOD_MEND_JUMPS];
+    int np = flood_line_jumps(&L, 1, kmax, kp), nm = np ? flood_line_jumps(&L, -1, kmax, km) : 0;
+    int best = 0, bestk = 0;
+    for (int i = 0; i < np; i++)
+        for (int j = 0; j < nm; j++) {
+            int t = kp[i] + km[j] - 1;
+            if (t > kmax || (best && t >= best) || !flood_line_agree(&L, kp[i], -km[j], t)) continue;
+            best = t;
+            bestk = kp[i] <= km[j] ? kp[i] : -km[j];
+        }
+    if (!best) { /* between regions that disagree: the nearest clean region on each side */
+        int cp = 0, cm = 0;
+        for (int i = np - 1; i >= 0; i--)
+            if (flood_line_clean(&L, 1, kp[i])) cp = kp[i];
+        for (int j = nm - 1; j >= 0; j--)
+            if (flood_line_clean(&L, -1, km[j])) cm = km[j];
+        if (cp && cm && cp + cm - 1 <= kmax) {
+            best = cp + cm - 1 + FLOOD_MEND_KMAX + 1;
+            bestk = cp <= cm ? cp : -cm;
+        }
+    }
+    if (best) *src = (y + bestk * uy) * fp->w + (x + bestk * ux);
+    return best;
+}
+
+/* The decision of a decide pass for pixel (x, y): 0 (keep it) or 1 + the pixel to continue from.
+ * Solutions travel along the rays from the start pixel, and so do bands: they are crossed along the
+ * axis closer to perpendicular to the ray (vertically left and right of the start pixel). */
+u32 flood_mend_source(const FloodPlan *fp, const FloodEntry *field, int x, int y) {
+    if (field[y * fp->w + x].status != FLOOD_DONE) return 0;
+    int kmax = flood_mend_limit(fp->w, fp->h), src = -1;
+    bool vertical = flood_iabs(x - fp->sx) >= flood_iabs(y - fp->sy);
+    return flood_mend_axis(fp, field, x, y, vertical ? 0 : 1, vertical ? 1 : 0, kmax, &src) ? (u32)src + 1 : 0;
+}
+
 /* start pixel of a viewer: where the point after `continuing from` is (clamped to the image) */
 bool flood_start_pixel(Program *p, const u32 *state, Section *v, int w, int h, int *sx, int *sy) {
     u32 *st = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
@@ -135,9 +261,17 @@ bool flood_start_pixel(Program *p, const u32 *state, Section *v, int w, int h, i
 static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section *v, const FloodPlan *fp,
                             FloodEntry *field, u8 *rgba, int x, int y, int kind) {
     FloodEntry *e = &field[y * fp->w + x];
-    if (e->status != FLOOD_PENDING) return true;
     int mode = FLOOD_DIRECT, nb = -1;
-    if (kind == FLOOD_PASS_COLD) {
+    if (kind == FLOOD_PASS_MEND) {
+        if (e->status != FLOOD_DONE || !e->pad) return true;
+        /* the source may be mended in this pass too: then continue from where it would (a few hops) */
+        nb = (int)e->pad - 1;
+        for (int hop = 0; hop < FLOOD_MEND_HOPS && field[nb].pad; hop++) nb = (int)field[nb].pad - 1;
+        if (field[nb].pad || field[nb].status != FLOOD_DONE) return true;
+        mode = FLOOD_CONTINUE;
+    } else if (e->status != FLOOD_PENDING) {
+        return true;
+    } else if (kind == FLOOD_PASS_COLD) {
         mode = FLOOD_DIRECT;
     } else {
         nb = flood_pick_neighbour(fp, field, x, y);
@@ -160,10 +294,11 @@ static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section 
     viewer_pixel_to_plane(p, scratch, v, (float)fp->w, (float)fp->h, x + 0.5f, y + 0.5f, &re, &im);
     I.pixel = viewer_pixel_size(p, scratch, v, (float)fp->w, (float)fp->h, x + 0.5f, y + 0.5f);
     interp_eval_viewer(&I, v, re, im, c);
+    interp_free(&I);
+    if (kind == FLOOD_PASS_MEND && I.flood_out_ok != 1) return true; /* keep what it had */
     e->t[0] = I.flood_out[0];
     e->t[1] = I.flood_out[1];
     e->status = I.flood_out_ok == 1 ? FLOOD_DONE : FLOOD_FAILED;
-    interp_free(&I);
     u8 *px = rgba + 4 * ((size_t)y * fp->w + x);
     for (int k = 0; k < 3; k++) px[k] = (u8)(c[k] * 255.0f + 0.5f);
     px[3] = 255;
@@ -184,7 +319,10 @@ void flood_render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8
     for (int pass = 0; pass < npass; pass++) {
         int kind, ring;
         flood_pass_info(&fp, pass, &kind, &ring);
-        if (kind == FLOOD_PASS_COLD) {
+        if (kind == FLOOD_PASS_DECIDE) {
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++) field[y * w + x].pad = flood_mend_source(&fp, field, x, y);
+        } else if (kind != FLOOD_PASS_RING) {
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++) flood_cpu_pixel(p, state, scratch, v, &fp, field, rgba, x, y, kind);
         } else {
@@ -269,8 +407,8 @@ void flood_gpu_record(FloodGpu *fg, int max_passes, int target) {
     for (int k = 0; k < max_passes && fg->next_pass < npass; k++, fg->next_pass++) {
         int kind, ring;
         flood_pass_info(&fg->plan, fg->next_pass, &kind, &ring);
-        FloodPush pc = {(float)fg->w, (float)fg->h, fg->plan.sx, fg->plan.sy, ring, kind == FLOOD_PASS_COLD ? 1 : 0};
-        u32 count = kind == FLOOD_PASS_COLD ? (u32)(fg->w * fg->h) : (u32)flood_ring_size(ring);
+        FloodPush pc = {(float)fg->w, (float)fg->h, fg->plan.sx, fg->plan.sy, ring, kind};
+        u32 count = kind != FLOOD_PASS_RING ? (u32)(fg->w * fg->h) : (u32)flood_ring_size(ring);
         gfx_frame_dispatch(fg->pipe, bufs, &pc, (count + FLOOD_GROUP_SIZE - 1) / FLOOD_GROUP_SIZE, 1, 1);
     }
     if (target) gfx_frame_buffer_to_target(fg->colors, 0, target);

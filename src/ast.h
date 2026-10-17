@@ -131,8 +131,13 @@ struct Expr {
 enum { SOLVE_CRITICAL = 1, SOLVE_ROOT, SOLVE_DERIVATIVE };
 /* how a pixel's `continuing` solve starts (flood.c) */
 enum { FLOOD_DIRECT = 0, FLOOD_START = 1, FLOOD_CONTINUE = 2 };
-#define FLOOD_GROUP_SIZE 64
-#define FS_FOR_LIMIT 1000000 /* a `for` loop runs its whole range, up to this many steps (while loops: .maxIterations) */ /* compute workgroup size of flood shaders */
+#define FLOOD_GROUP_SIZE 64 /* compute workgroup size of flood shaders */
+/* the passes of a flood fill (flood.c), also the `mode` push constant of its compute shader */
+enum { FLOOD_PASS_RING = 0, FLOOD_PASS_COLD = 1, FLOOD_PASS_DECIDE = 2, FLOOD_PASS_MEND = 3 };
+#define FLOOD_MEND_KMAX 32 /* thickest band mended (the limit grows with the picture, see flood_mend_limit) */
+#define FLOOD_MEND_JUMPS 3 /* jumps looked for on each side of a pixel */
+#define FLOOD_MEND_HOPS 4  /* a pixel continues from its source's source (...) when that is mended too */
+#define FS_FOR_LIMIT 1000000 /* a `for` loop runs its whole range, up to this many steps (while loops: .maxIterations) */
 
 typedef struct Block {
     Stmt **stmts;

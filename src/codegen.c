@@ -25,6 +25,7 @@ typedef struct Gen {
     u32 flood_mode_var, flood_seed_var, flood_from_var, flood_out_t_var, flood_out_ok_var;
     u32 field_var, colors_var, pixel_var; /* storage buffers and this invocation's pixel index */
     u32 flood_nb, flood_W;                /* the neighbour to continue from (pixel index), image width */
+    u32 flood_pass_var;                   /* the pass's mode (FLOOD_PASS_*), for the output */
     Func *fn;
     struct { u32 merge, cont; } loops[64];
     int nloops;
@@ -36,6 +37,7 @@ typedef struct Gen {
 
 static u32 gen_expr(Gen *g, Expr *e);
 static void gen_block(Gen *g, Block *b);
+static void return_if(Gen *g, u32 bad);
 static void mark_expr(Gen *g, Expr *e);
 
 /* ---- types ---------------------------------------------------------------- */
@@ -710,9 +712,13 @@ static void write_output_compute(Gen *g) {
     }
     u32 idx = load(g, g->tint, g->pixel_var);
     u32 zero = ci(g, 0), one = ci(g, 1);
+    u32 ok = load(g, g->tint, g->flood_out_ok_var);
+    /* mending: a pixel whose new solve fails keeps what it had */
+    return_if(g, op2(g, SpvOpLogicalAnd, g->tbool,
+                     op2(g, SpvOpIEqual, g->tbool, load(g, g->tint, g->flood_pass_var), ci(g, FLOOD_PASS_MEND)),
+                     op2(g, SpvOpINotEqual, g->tbool, ok, one)));
     u32 ci_[2] = {zero, idx};
     store(g, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->colors_var, ci_, 2), packed);
-    u32 ok = load(g, g->tint, g->flood_out_ok_var);
     u32 status = spv_op3(&g->s, SpvOpSelect, g->tuint, op2(g, SpvOpIEqual, g->tbool, ok, one),
                          spv_const_u32(&g->s, g->tuint, 1 /* FLOOD_DONE */), spv_const_u32(&g->s, g->tuint, 2 /* FLOOD_FAILED */));
     u32 ti[3] = {zero, idx, zero};
@@ -1144,24 +1150,208 @@ static u32 proj_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
 static u32 iabs_(Gen *g, u32 x) { return ext1(g, g->tint, GLSLSAbs, x); }
 static u32 imax_(Gen *g, u32 a, u32 b) { return ext2(g, g->tint, GLSLSMax, a, b); }
 static u32 isel(Gen *g, u32 c, u32 a, u32 b) { return spv_op3(&g->s, SpvOpSelect, g->tint, c, a, b); }
+static u32 fsel(Gen *g, u32 c, u32 a, u32 b) { return spv_op3(&g->s, SpvOpSelect, g->tfloat, c, a, b); }
+static u32 band(Gen *g, u32 a, u32 b) { return op2(g, SpvOpLogicalAnd, g->tbool, a, b); }
+static u32 bnot(Gen *g, u32 a) { return op1(g, SpvOpLogicalNot, g->tbool, a); }
+
+/* ---- mending (see flood_mend_source in flood.c, which this must match) ---------------------- */
+typedef struct FloodPix { u32 done, t; } FloodPix; /* converged (bool), solution (vec2) */
+
+/* the entry of pixel (x + j ux, y + j uy): converged inside the image, and its solution
+ * (ux, uy: ids of ints, (1, 0) or (0, 1)) */
+static FloodPix mend_pix(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 j, u32 ux, u32 uy) {
+    u32 I = g->tint, B = g->tbool, z0 = ci(g, 0), z1 = ci(g, 1);
+    u32 px = op2(g, SpvOpIAdd, I, x, op2(g, SpvOpIMul, I, j, ux)), py = op2(g, SpvOpIAdd, I, y, op2(g, SpvOpIMul, I, j, uy));
+    u32 in = band(g, band(g, op2(g, SpvOpSGreaterThanEqual, B, px, z0), op2(g, SpvOpSGreaterThanEqual, B, py, z0)),
+                  band(g, op2(g, SpvOpSLessThan, B, px, W), op2(g, SpvOpSLessThan, B, py, H)));
+    u32 safe = op2(g, SpvOpIAdd, I, op2(g, SpvOpIMul, I, ext3(g, I, GLSLSClamp, py, z0, op2(g, SpvOpISub, I, H, z1)), W),
+                   ext3(g, I, GLSLSClamp, px, z0, op2(g, SpvOpISub, I, W, z1)));
+    u32 si[3] = {z0, safe, z1}, ti[3] = {z0, safe, z0};
+    u32 st = load(g, g->tuint, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->field_var, si, 3));
+    FloodPix r;
+    r.done = band(g, in, op2(g, SpvOpIEqual, B, st, spv_const_u32(&g->s, g->tuint, 1 /* FLOOD_DONE */)));
+    r.t = load(g, g->tvec2, g_access(g, ptr(g, SpvSCUniform, g->tvec2), g->field_var, ti, 3));
+    return r;
+}
+
+static u32 mend_abs(Gen *g, u32 t) { /* sqrt(re^2 + im^2), as flood_cabs */
+    u32 f = g->tfloat, re = extract(g, f, t, 0), im = extract(g, f, t, 1);
+    return ext1(g, f, GLSLSqrt, op2(g, SpvOpFAdd, f, op2(g, SpvOpFMul, f, re, re), op2(g, SpvOpFMul, f, im, im)));
+}
+
+static u32 mend_diff(Gen *g, FloodPix a, FloodPix b) { /* |t_b - t_a| or FLOOD_FAR */
+    return fsel(g, band(g, a.done, b.done), mend_abs(g, op2(g, SpvOpFSub, g->tvec2, b.t, a.t)), cf(g, 1e30f));
+}
+
+static u32 fmin_(Gen *g, u32 a, u32 b) { return fsel(g, op2(g, SpvOpFOrdLessThan, g->tbool, a, b), a, b); }
+
+/* flood_line_jumps: a loop over k = 1 .. kmax collecting the first FLOOD_MEND_JUMPS jumps (0: none).
+ * The pixels a = s (k - 1), b = s k and the differences around them slide along the line, so each
+ * step loads one pixel (b + s) and computes one difference. */
+static void mend_jumps(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, int sgn, u32 kmax, u32 enabled, u32 out[FLOOD_MEND_JUMPS]) {
+    u32 I = g->tint, B = g->tbool, F = g->tfloat, V2 = g->tvec2;
+    u32 kv[FLOOD_MEND_JUMPS];
+    for (int i = 0; i < FLOOD_MEND_JUMPS; i++) {
+        kv[i] = local_var_id(g, I);
+        store(g, kv[i], ci(g, 0));
+    }
+    u32 n = local_var_id(g, I), stop = local_var_id(g, B), kk = local_var_id(g, I);
+    u32 v_dam = local_var_id(g, F), v_dab = local_var_id(g, F), v_ma = local_var_id(g, F), v_mb = local_var_id(g, F);
+    u32 v_bdone = local_var_id(g, B), v_bt = local_var_id(g, V2);
+    u32 s = ci(g, sgn);
+    {
+        FloodPix am = mend_pix(g, x, y, W, H, op1(g, SpvOpSNegate, I, s), ux, uy);
+        FloodPix a = mend_pix(g, x, y, W, H, ci(g, 0), ux, uy);
+        FloodPix b = mend_pix(g, x, y, W, H, s, ux, uy);
+        store(g, v_dam, mend_diff(g, am, a));
+        store(g, v_dab, mend_diff(g, a, b));
+        store(g, v_ma, mend_abs(g, a.t));
+        store(g, v_mb, mend_abs(g, b.t));
+        store(g, v_bdone, b.done);
+        store(g, v_bt, b.t);
+    }
+    store(g, n, ci(g, 0));
+    store(g, stop, bnot(g, enabled));
+    store(g, kk, ci(g, 1));
+    u32 header = new_label(g), check = new_label(g), body = new_label(g), cont = new_label(g), merge = new_label(g);
+    branch(g, header);
+    label(g, header);
+    spv_loop_merge(&g->s, merge, cont);
+    branch(g, check);
+    label(g, check);
+    u32 k = load(g, I, kk);
+    u32 go = band(g, band(g, op2(g, SpvOpSLessThanEqual, B, k, kmax), op2(g, SpvOpSLessThan, B, load(g, I, n), ci(g, FLOOD_MEND_JUMPS))),
+                  bnot(g, load(g, B, stop)));
+    spv_branch_cond(&g->s, go, body, merge);
+    label(g, body);
+    FloodPix b = {load(g, B, v_bdone), load(g, V2, v_bt)};
+    FloodPix bp = mend_pix(g, x, y, W, H, op2(g, SpvOpIMul, I, s, op2(g, SpvOpIAdd, I, k, ci(g, 1))), ux, uy);
+    u32 far = cf(g, 1e30f);
+    u32 d = load(g, F, v_dab), dbn = mend_diff(g, b, bp);
+    u32 gg = fmin_(g, load(g, F, v_dam), dbn);
+    u32 size = op2(g, SpvOpFAdd, F, load(g, F, v_ma), load(g, F, v_mb));
+    u32 lim = op2(g, SpvOpFAdd, F, op2(g, SpvOpFMul, F, cf(g, 8.0f), gg), op2(g, SpvOpFMul, F, cf(g, 1e-4f), size));
+    u32 jump = band(g, band(g, b.done, op2(g, SpvOpFOrdLessThan, B, d, far)),
+                    band(g, op2(g, SpvOpFOrdLessThan, B, gg, far), op2(g, SpvOpFOrdGreaterThan, B, d, lim)));
+    u32 nv = load(g, I, n);
+    for (int i = 0; i < FLOOD_MEND_JUMPS; i++)
+        store(g, kv[i], isel(g, band(g, jump, op2(g, SpvOpIEqual, B, nv, ci(g, i))), k, load(g, I, kv[i])));
+    store(g, n, op2(g, SpvOpIAdd, I, nv, isel(g, jump, ci(g, 1), ci(g, 0))));
+    store(g, stop, bnot(g, b.done));
+    /* slide: a <- b, b <- b + s */
+    store(g, v_dam, d);
+    store(g, v_dab, dbn);
+    store(g, v_ma, load(g, F, v_mb));
+    store(g, v_mb, mend_abs(g, bp.t));
+    store(g, v_bdone, bp.done);
+    store(g, v_bt, bp.t);
+    branch(g, cont);
+    label(g, cont);
+    store(g, kk, op2(g, SpvOpIAdd, I, k, ci(g, 1)));
+    branch(g, header);
+    label(g, merge);
+    for (int i = 0; i < FLOOD_MEND_JUMPS; i++) out[i] = load(g, I, kv[i]);
+}
+
+/* flood_mend_axis: the band's thickness (0: none) and the pixel to continue from */
+static u32 mend_axis(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, u32 kmax, u32 *src) {
+    u32 I = g->tint, B = g->tbool, F = g->tfloat, z0 = ci(g, 0), z1 = ci(g, 1);
+    enum { NJ = FLOOD_MEND_JUMPS };
+    u32 kp[NJ], km[NJ];
+    mend_jumps(g, x, y, W, H, ux, uy, 1, kmax, spv_const_bool(&g->s, true), kp);
+    mend_jumps(g, x, y, W, H, ux, uy, -1, kmax, op2(g, SpvOpSGreaterThan, B, kp[0], z0), km); /* no jump on one side: no band */
+    /* the pixels beyond the jumps, the next ones outwards, and the ones before the jumps */
+    FloodPix op[NJ], opo[NJ], opi[NJ], om[NJ], omo[NJ], omi[NJ];
+    u32 nkm[NJ];
+    for (int i = 0; i < NJ; i++) {
+        nkm[i] = op1(g, SpvOpSNegate, I, km[i]);
+        op[i] = mend_pix(g, x, y, W, H, kp[i], ux, uy);
+        opo[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpIAdd, I, kp[i], z1), ux, uy);
+        opi[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpISub, I, kp[i], z1), ux, uy);
+        om[i] = mend_pix(g, x, y, W, H, nkm[i], ux, uy);
+        omo[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpISub, I, nkm[i], z1), ux, uy);
+        omi[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpIAdd, I, nkm[i], z1), ux, uy);
+    }
+    u32 far = cf(g, 1e30f);
+    u32 best = z0, bestk = z0;
+    for (int i = 0; i < NJ; i++)
+        for (int j = 0; j < NJ; j++) {
+            u32 t = op2(g, SpvOpISub, I, op2(g, SpvOpIAdd, I, kp[i], km[j]), z1);
+            u32 valid = band(g, band(g, op2(g, SpvOpSGreaterThan, B, kp[i], z0), op2(g, SpvOpSGreaterThan, B, km[j], z0)),
+                             op2(g, SpvOpSLessThanEqual, B, t, kmax));
+            u32 better = op2(g, SpvOpLogicalOr, B, op2(g, SpvOpIEqual, B, best, z0), op2(g, SpvOpSLessThan, B, t, best));
+            /* flood_line_agree */
+            u32 gg = fmin_(g, mend_diff(g, op[i], opo[i]), mend_diff(g, om[j], omo[j]));
+            u32 d = mend_diff(g, op[i], om[j]);
+            u32 size = op2(g, SpvOpFAdd, F, mend_abs(g, op[i].t), mend_abs(g, om[j].t));
+            u32 t1 = op1(g, SpvOpConvertSToF, F, op2(g, SpvOpIAdd, I, t, z1));
+            u32 lim = op2(g, SpvOpFAdd, F, op2(g, SpvOpFMul, F, op2(g, SpvOpFMul, F, cf(g, 4.0f), t1), gg),
+                          op2(g, SpvOpFMul, F, cf(g, 1e-4f), size));
+            u32 agree = band(g, op2(g, SpvOpFOrdLessThan, B, gg, far), op2(g, SpvOpFOrdLessThanEqual, B, d, lim));
+            u32 take = band(g, band(g, valid, better), agree);
+            best = isel(g, take, t, best);
+            bestk = isel(g, take, isel(g, op2(g, SpvOpSLessThanEqual, B, kp[i], km[j]), kp[i], nkm[j]), bestk);
+        }
+    /* between regions that disagree: the nearest clean region on each side (flood_line_clean) */
+    u32 cp = z0, cm = z0;
+    for (int i = NJ - 1; i >= 0; i--) {
+        u32 cleanp = band(g, op2(g, SpvOpSGreaterThan, B, kp[i], z0),
+                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, op[i], opo[i]), far),
+                               op2(g, SpvOpFOrdLessThanEqual, B, op2(g, SpvOpFMul, F, cf(g, 8.0f), mend_diff(g, op[i], opo[i])),
+                                   mend_diff(g, opi[i], op[i]))));
+        cp = isel(g, cleanp, kp[i], cp);
+        u32 cleanm = band(g, op2(g, SpvOpSGreaterThan, B, km[i], z0),
+                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, om[i], omo[i]), far),
+                               op2(g, SpvOpFOrdLessThanEqual, B, op2(g, SpvOpFMul, F, cf(g, 8.0f), mend_diff(g, om[i], omo[i])),
+                                   mend_diff(g, omi[i], om[i]))));
+        cm = isel(g, cleanm, km[i], cm);
+    }
+    u32 tf = op2(g, SpvOpISub, I, op2(g, SpvOpIAdd, I, cp, cm), z1);
+    u32 fall = band(g, op2(g, SpvOpIEqual, B, best, z0),
+                    band(g, band(g, op2(g, SpvOpSGreaterThan, B, cp, z0), op2(g, SpvOpSGreaterThan, B, cm, z0)),
+                         op2(g, SpvOpSLessThanEqual, B, tf, kmax)));
+    best = isel(g, fall, op2(g, SpvOpIAdd, I, tf, ci(g, FLOOD_MEND_KMAX + 1)), best);
+    bestk = isel(g, fall, isel(g, op2(g, SpvOpSLessThanEqual, B, cp, cm), cp, op1(g, SpvOpSNegate, I, cm)), bestk);
+    u32 sx_ = op2(g, SpvOpIAdd, I, x, op2(g, SpvOpIMul, I, bestk, ux)), sy_ = op2(g, SpvOpIAdd, I, y, op2(g, SpvOpIMul, I, bestk, uy));
+    *src = op2(g, SpvOpIAdd, I, op2(g, SpvOpIMul, I, sy_, W), sx_);
+    return best;
+}
+
+/* flood_mend_source (the pixel is converged): 0 or 1 + the pixel to continue from */
+static u32 mend_source(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 sx, u32 sy) {
+    u32 I = g->tint, B = g->tbool, z0 = ci(g, 0), z1 = ci(g, 1);
+    /* kmax = clamp(min(w, h) / 40, 8, FLOOD_MEND_KMAX), as flood_mend_limit */
+    u32 kmax = ext3(g, I, GLSLSClamp, op2(g, SpvOpSDiv, I, ext2(g, I, GLSLSMin, W, H), ci(g, 40)), ci(g, 8), ci(g, FLOOD_MEND_KMAX));
+    /* across the ray from the start pixel: vertically when |x - sx| >= |y - sy| */
+    u32 vertical = op2(g, SpvOpSGreaterThanEqual, B, iabs_(g, op2(g, SpvOpISub, I, x, sx)), iabs_(g, op2(g, SpvOpISub, I, y, sy)));
+    u32 src;
+    u32 t = mend_axis(g, x, y, W, H, isel(g, vertical, z0, z1), isel(g, vertical, z1, z0), kmax, &src);
+    u32 r = isel(g, op2(g, SpvOpSGreaterThan, B, t, z0), op2(g, SpvOpIAdd, I, src, z1), z0);
+    return op1(g, SpvOpBitcast, g->tuint, r);
+}
 
 /* The flood-fill prologue (see flood.c, which this must match exactly): find this invocation's
- * pixel, skip it unless it is waiting, pick the neighbour to continue from, set the flood_* variables.
+ * pixel, skip it unless this pass computes it, pick the neighbour to continue from, set the flood_*
+ * variables.  A decide pass (mending) only writes the pixel's `pad` and returns.
  * Returns the pixel's (x, y) as ints through *px, *py. */
 static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out_y, u32 *out_w, u32 *out_h) {
-    u32 I = g->tint, B = g->tbool, F = g->tfloat;
+    u32 I = g->tint, B = g->tbool, F = g->tfloat, U = g->tuint;
     u32 z0 = ci(g, 0), z1 = ci(g, 1), z2 = ci(g, 2), z3 = ci(g, 3);
     u32 size = load(g, g->tvec2, g_access(g, ptr(g, SpvSCPushConstant, g->tvec2), pc_var, &z0, 1));
     u32 ivec2 = spv_type_vec(&g->s, I, 2);
     u32 start = load(g, ivec2, g_access(g, ptr(g, SpvSCPushConstant, ivec2), pc_var, &z1, 1));
     u32 ring = load(g, I, g_access(g, ptr(g, SpvSCPushConstant, I), pc_var, &z2, 1));
     u32 mode = load(g, I, g_access(g, ptr(g, SpvSCPushConstant, I), pc_var, &z3, 1));
+    store(g, g->flood_pass_var, mode);
     u32 W = op1(g, SpvOpConvertFToS, I, extract(g, F, size, 0)), H = op1(g, SpvOpConvertFToS, I, extract(g, F, size, 1));
     u32 sx = extract(g, I, start, 0), sy = extract(g, I, start, 1);
     u32 uvec3 = spv_type_vec(&g->s, g->tuint, 3);
     u32 gid = op1(g, SpvOpBitcast, I, extract(g, g->tuint, load(g, uvec3, gid_var), 0));
-    u32 is_cold = op2(g, SpvOpIEqual, B, mode, ci(g, 1));
-    /* ring pass: the gid-th pixel of the ring; cold pass: pixel gid in row order */
+    u32 is_cold = op2(g, SpvOpIEqual, B, mode, ci(g, FLOOD_PASS_COLD));
+    u32 is_ring = op2(g, SpvOpIEqual, B, mode, ci(g, FLOOD_PASS_RING));
+    u32 is_decide = op2(g, SpvOpIEqual, B, mode, ci(g, FLOOD_PASS_DECIDE));
+    u32 is_mend = op2(g, SpvOpIEqual, B, mode, ci(g, FLOOD_PASS_MEND));
+    /* ring pass: the gid-th pixel of the ring; other passes: pixel gid in row order */
     u32 two_d = imax_(g, op2(g, SpvOpIMul, I, ci(g, 2), ring), ci(g, 1));
     u32 side = op2(g, SpvOpSDiv, I, gid, two_d);
     u32 j = op2(g, SpvOpISub, I, gid, op2(g, SpvOpIMul, I, side, two_d));
@@ -1174,17 +1364,47 @@ static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out
     u32 ry = isel(g, s0, ym, isel(g, s1, ry1, isel(g, s2, yp, ry3)));
     u32 ring_n = isel(g, op2(g, SpvOpIEqual, B, ring, z0), z1, op2(g, SpvOpIMul, I, ci(g, 8), ring));
     u32 cx = op2(g, SpvOpSMod, I, gid, imax_(g, W, z1)), cy = op2(g, SpvOpSDiv, I, gid, imax_(g, W, z1));
-    u32 x = isel(g, is_cold, cx, rx), y = isel(g, is_cold, cy, ry);
-    u32 count = isel(g, is_cold, op2(g, SpvOpIMul, I, W, H), ring_n);
+    u32 x = isel(g, is_ring, rx, cx), y = isel(g, is_ring, ry, cy);
+    u32 count = isel(g, is_ring, ring_n, op2(g, SpvOpIMul, I, W, H));
     u32 outside = op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSGreaterThanEqual, B, gid, count),
                       op2(g, SpvOpLogicalOr, B, op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSLessThan, B, x, z0), op2(g, SpvOpSLessThan, B, y, z0)),
                           op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSGreaterThanEqual, B, x, W), op2(g, SpvOpSGreaterThanEqual, B, y, H))));
     return_if(g, outside);
     u32 idx = op2(g, SpvOpIAdd, I, op2(g, SpvOpIMul, I, y, W), x);
     store(g, g->pixel_var, idx);
-    u32 sti[3] = {z0, idx, z1};
-    u32 status = load(g, g->tuint, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->field_var, sti, 3));
-    return_if(g, op2(g, SpvOpINotEqual, B, status, spv_const_u32(&g->s, g->tuint, 0 /* FLOOD_PENDING */)));
+    u32 sti[3] = {z0, idx, z1}, padi[3] = {z0, idx, z2}; /* members: t, status, pad */
+    u32 status = load(g, U, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, sti, 3));
+    u32 is_done = op2(g, SpvOpIEqual, B, status, spv_const_u32(&g->s, U, 1 /* FLOOD_DONE */));
+    /* decide pass: pad = the pixel to continue from (+ 1) if this one is in a band to mend */
+    {
+        u32 yes = new_label(g), go = new_label(g);
+        spv_selection_merge(&g->s, go);
+        spv_branch_cond(&g->s, is_decide, yes, go);
+        label(g, yes);
+        u32 pad = spv_op3(&g->s, SpvOpSelect, U, is_done, mend_source(g, x, y, W, H, sx, sy), spv_const_u32(&g->s, U, 0));
+        store(g, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, padi, 3), pad);
+        spv_void(&g->s, SpvOpReturn, NULL, 0);
+        label(g, go);
+    }
+    /* mend pass: a converged pixel with a pad, whose source is converged and not being mended itself */
+    u32 pad = load(g, U, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, padi, 3));
+    u32 u0 = spv_const_u32(&g->s, U, 0), last = op2(g, SpvOpISub, I, op2(g, SpvOpIMul, I, W, H), z1);
+    u32 src = ext3(g, I, GLSLSClamp, op2(g, SpvOpISub, I, op1(g, SpvOpBitcast, I, pad), z1), z0, last);
+    u32 srcpi[3] = {z0, src, z2};
+    u32 src_pad = load(g, U, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, srcpi, 3));
+    for (int hop = 0; hop < FLOOD_MEND_HOPS; hop++) { /* the source is mended too: its source (...) */
+        u32 next = ext3(g, I, GLSLSClamp, op2(g, SpvOpISub, I, op1(g, SpvOpBitcast, I, src_pad), z1), z0, last);
+        u32 more = op2(g, SpvOpINotEqual, B, src_pad, u0);
+        src = isel(g, more, next, src);
+        u32 npi[3] = {z0, src, z2};
+        src_pad = load(g, U, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, npi, 3));
+    }
+    u32 srci[3] = {z0, src, z1};
+    u32 src_st = load(g, U, g_access(g, ptr(g, SpvSCUniform, U), g->field_var, srci, 3));
+    u32 mend_ok = band(g, band(g, is_done, op2(g, SpvOpINotEqual, B, pad, u0)),
+                       band(g, op2(g, SpvOpIEqual, B, src_pad, u0), op2(g, SpvOpIEqual, B, src_st, spv_const_u32(&g->s, U, 1))));
+    u32 waiting = op2(g, SpvOpIEqual, B, status, u0 /* FLOOD_PENDING */);
+    return_if(g, bnot(g, op2(g, SpvOpLogicalOr, B, band(g, is_mend, mend_ok), band(g, bnot(g, is_mend), waiting))));
     /* neighbour: rings d-1 and d+1 only, converged, d-1 first, then closest to the ray from the start */
     static const int dxs[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
     static const int dys[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -1213,19 +1433,20 @@ static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out
     u32 has_nb = op2(g, SpvOpSGreaterThanEqual, B, best, z0);
     u32 at_start = op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpIEqual, B, x, sx), op2(g, SpvOpIEqual, B, y, sy));
     /* a ring pixel without a converged neighbour waits (unless it is the start) */
-    return_if(g, op2(g, SpvOpLogicalAnd, B, op1(g, SpvOpLogicalNot, B, is_cold),
+    return_if(g, op2(g, SpvOpLogicalAnd, B, is_ring,
                      op2(g, SpvOpLogicalAnd, B, op1(g, SpvOpLogicalNot, B, has_nb), op1(g, SpvOpLogicalNot, B, at_start))));
-    u32 fmode = isel(g, is_cold, ci(g, FLOOD_DIRECT), isel(g, has_nb, ci(g, FLOOD_CONTINUE), ci(g, FLOOD_START)));
+    u32 fmode = isel(g, is_mend, ci(g, FLOOD_CONTINUE),
+                     isel(g, is_cold, ci(g, FLOOD_DIRECT), isel(g, has_nb, ci(g, FLOOD_CONTINUE), ci(g, FLOOD_START))));
     store(g, g->flood_mode_var, fmode);
-    u32 bsafe = imax_(g, best, z0);
-    u32 nti[3] = {z0, bsafe, z0};
+    u32 nb = isel(g, is_mend, src, imax_(g, best, z0));
+    u32 nti[3] = {z0, nb, z0};
     store(g, g->flood_seed_var, load(g, g->tvec2, g_access(g, ptr(g, SpvSCUniform, g->tvec2), g->field_var, nti, 3)));
     *out_x = x;
     *out_y = y;
     *out_w = extract(g, F, size, 0);
     *out_h = extract(g, F, size, 1);
     /* the neighbour's point is computed after the globals are loaded (flood_from is set by the caller) */
-    g->flood_nb = bsafe;
+    g->flood_nb = nb;
     g->flood_W = W;
 }
 
@@ -1323,6 +1544,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, u32 *nword
         g->flood_from_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tvec2), SpvSCPrivate, spv_const_null(s, g->tvec2));
         g->flood_out_t_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tvec2), SpvSCPrivate, spv_const_null(s, g->tvec2));
         g->flood_out_ok_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, -1));
+        g->flood_pass_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
         g->pixel_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
     }
 
@@ -1423,9 +1645,9 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
 }
 
 /* Generate the flood-fill compute shader of viewer `v` (it must have a `continuing` solve): one
- * invocation per pixel of a ring (or of the image for the last pass), see flood.c.
+ * invocation per pixel of a ring (or of the image for the other passes), see flood.c.
  * Bindings: 0 state, 1 field (FloodEntry[]), 2 colours (packed RGBA8 per pixel);
- * push constants: vec2 size, ivec2 start, int ring, int mode (0 ring, 1 last pass). */
+ * push constants: vec2 size, ivec2 start, int ring, int mode (FLOOD_PASS_*). */
 u32 *codegen_viewer_flood(Program *p, Section *v, u32 *nwords, char *err, int errcap) {
     if (!v->flood) {
         if (err) snprintf(err, (size_t)errcap, "this viewer has no 'continuing' solve");

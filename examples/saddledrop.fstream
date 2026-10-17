@@ -12,7 +12,9 @@
 # Black: the critical point does not escape (within .maxIterations): there is no critical point,
 # the set K of bounded orbits is connected. White: Newton's method did not converge.
 # Where the colours jump along a line, the continuation went around the black set on both sides
-# and came back with different critical points (as in the original program).
+# and came back with different critical points (as in the original program).  The thin bands the
+# original program also left behind (rows passing between two nearby branch points, where the
+# critical point meets another one) are mended: solved again from the rows on either side.
 #
 # The view "Unstable manifold" shows W^u(p) for the parameter .c picked in the parameter plane
 # (with Pick point, or "Explore" (E), which follows the mouse).

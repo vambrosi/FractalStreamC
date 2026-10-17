@@ -458,9 +458,62 @@ TEST(flood_gpu_matches_cpu) {
 #endif
 }
 
+/* Mending: two nearby branch points of a square root (the continuation along the rows between them
+ * comes back with the other root and would carry it to the edge) leave only a short cut. */
+static int band_jumps(const FloodEntry *f, int W, int H, int x0) {
+    int jumps = 0;
+    for (int x = x0; x < W; x++)
+        for (int y = 0; y + 1 < H; y++) {
+            const FloodEntry *a = &f[y * W + x], *b = &f[(y + 1) * W + x];
+            if (a->status == FLOOD_DONE && b->status == FLOOD_DONE && fabsf(a->t[0] - b->t[0]) + fabsf(a->t[1] - b->t[1]) > 0.3f)
+                jumps++;
+        }
+    return jumps;
+}
+
+TEST(flood_mends_bands) {
+    const char *src =
+        "@config\nv.center = 0\nv.radius = 1.5\n"
+        "@global\nstart := -1.2\n"
+        "@viewer v c\n"
+        "w := root t -> t^2 - (c - 0.5 - 0.05i) (c - 0.5 + 0.05i) with seed -1.7 continuing from c = start\n"
+        "color = if .stuck then .white else rainbow(arg(w) / tau)\n";
+    Program *p = program_load(src, "band");
+    CHECK(p->nerrors == 0 && p->viewers[0]->flood);
+    if (p->nerrors) { print_diags(p); program_free(p); return; }
+    const int W = 64, H = 48; /* the branch points are at x = 40, between rows 23 and 24 */
+    u8 *a = (u8 *)xmalloc(W * H * 4), *b = (u8 *)xmalloc(W * H * 4);
+    FloodEntry *fa = (FloodEntry *)xmalloc(sizeof(FloodEntry) * W * H), *fb = (FloodEntry *)xmalloc(sizeof(FloodEntry) * W * H);
+    flood_render_cpu(p, p->initial_state, p->viewers[0], W, H, b, fb);
+    int done = 0;
+    for (int k = 0; k < W * H; k++) done += fb[k].status == FLOOD_DONE;
+    CHECK_MSG(done == W * H, "only %d of %d pixels converged", done, W * H);
+    /* right of the branch points the roots are continuous down every column (the cut is at most a few pixels long) */
+    CHECK_MSG(band_jumps(fb, W, H, 46) == 0, "%d jumps right of the branch points", band_jumps(fb, W, H, 46));
+    /* and the rows between them carry the same root as those above and below */
+    CHECK(fb[23 * W + 60].t[0] * fb[10 * W + 60].t[0] > 0 && fb[24 * W + 60].t[0] * fb[40 * W + 60].t[0] > 0);
+#ifdef FS_HAVE_GFX
+    char err[512];
+    GfxInitDesc d = {0};
+    if (gfx_preinit_loader() && gfx_init(&d, err, sizeof err)) {
+        gfx_set_globals(p->initial_state, (u32)p->state_words * 4);
+        CHECK_MSG(flood_render_gpu(p, p->initial_state, p->viewers[0], W, H, a, fa, err, sizeof err), "%s", err);
+        int bad = 0;
+        for (int k = 0; k < W * H; k++)
+            if (fa[k].status != fb[k].status || fabsf(fa[k].t[0] - fb[k].t[0]) > 1e-3f || fabsf(fa[k].t[1] - fb[k].t[1]) > 1e-3f) bad++;
+        CHECK_MSG(bad <= 2, "%d of %d pixels differ between the GPU and the CPU", bad, W * H);
+        CHECK_MSG(band_jumps(fa, W, H, 46) == 0, "GPU: %d jumps right of the branch points", band_jumps(fa, W, H, 46));
+        gfx_shutdown();
+    }
+#endif
+    free(a); free(b); free(fa); free(fb);
+    program_free(p);
+}
+
 static const TestCase tests_codegen[] = {
     TESTCASE(flood_spirv_validates),
     TESTCASE(flood_gpu_matches_cpu),
+    TESTCASE(flood_mends_bands),
     TESTCASE(spirv_validates),
     TESTCASE(msl_function_names),
     TESTCASE(gpu_matches_cpu),
