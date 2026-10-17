@@ -1,11 +1,19 @@
 /* base.c - implementation of base.h */
 #include "base.h"
+#include <ctype.h>
 
 #if FS_OS_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #include <time.h>
+#include <dirent.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+#if FS_OS_MACOS
+#include <mach-o/dyld.h>
 #endif
 
 void fs_fatal(const char *fmt, ...) {
@@ -187,6 +195,103 @@ const char *fs_basename(const char *path) {
     for (const char *p = path; *p; p++)
         if (*p == '/' || *p == '\\') b = p + 1;
     return b;
+}
+
+bool fs_is_dir(const char *path) {
+#if FS_OS_WINDOWS
+    DWORD a = GetFileAttributesA(path);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+static int fs_dir_entry_cmp(const void *a, const void *b) {
+    const FsDirEntry *x = (const FsDirEntry *)a, *y = (const FsDirEntry *)b;
+    if (x->is_dir != y->is_dir) return x->is_dir ? -1 : 1;
+    for (const char *p = x->name, *q = y->name;; p++, q++) {
+        int c = tolower((unsigned char)*p), d = tolower((unsigned char)*q);
+        if (c != d || !c) return c != d ? c - d : strcmp(x->name, y->name);
+    }
+}
+
+FsDirEntry *fs_list_dir(const char *dir, int *n) {
+    VEC(FsDirEntry) v = {0};
+    *n = 0;
+#if FS_OS_WINDOWS
+    char pat[4096];
+    snprintf(pat, sizeof pat, "%s\\*", dir[0] ? dir : ".");
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    do {
+        if (fd.cFileName[0] == '.' || (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
+        FsDirEntry e = {xstrdup(fd.cFileName), (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0};
+        vec_push(v, e);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir[0] ? dir : ".");
+    if (!d) return NULL;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char path[4096];
+        snprintf(path, sizeof path, "%s/%s", dir[0] ? dir : ".", de->d_name);
+        FsDirEntry e = {xstrdup(de->d_name), fs_is_dir(path)};
+        vec_push(v, e);
+    }
+    closedir(d);
+#endif
+    if (v.len) qsort(v.data, (size_t)v.len, sizeof(FsDirEntry), fs_dir_entry_cmp);
+    *n = v.len;
+    if (!v.data) return (FsDirEntry *)xcalloc(1, sizeof(FsDirEntry)); /* (an empty folder: not NULL) */
+    return v.data;
+}
+
+void fs_free_dir(FsDirEntry *entries, int n) {
+    for (int i = 0; i < n; i++) free(entries[i].name);
+    free(entries);
+}
+
+const char *fs_exe_dir(void) {
+    static char dir[4096];
+    static bool done;
+    if (done) return dir;
+    done = true;
+    char buf[4096];
+    buf[0] = 0;
+#if FS_OS_WINDOWS
+    DWORD k = GetModuleFileNameA(NULL, buf, (DWORD)sizeof buf);
+    if (k == 0 || k >= sizeof buf) buf[0] = 0;
+#elif FS_OS_MACOS
+    char raw[4096];
+    uint32_t size = sizeof raw;
+    if (_NSGetExecutablePath(raw, &size) == 0 && !realpath(raw, buf)) snprintf(buf, sizeof buf, "%s", raw);
+#else
+    ssize_t k = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    buf[k > 0 ? k : 0] = 0;
+#endif
+    snprintf(dir, sizeof dir, "%s", buf);
+    char *slash = NULL;
+    for (char *p = dir; *p; p++)
+        if (*p == '/' || *p == '\\') slash = p;
+    if (slash) *slash = 0;
+    else dir[0] = 0;
+    return dir;
+}
+
+bool fs_absolute(const char *path, char *out, int cap) {
+#if FS_OS_WINDOWS
+    char buf[4096];
+    bool ok = _fullpath(buf, path[0] ? path : ".", sizeof buf) != NULL;
+#else
+    char buf[PATH_MAX];
+    bool ok = realpath(path[0] ? path : ".", buf) != NULL;
+#endif
+    snprintf(out, (size_t)cap, "%s", ok ? buf : path);
+    return ok;
 }
 
 /* ---- UTF-8 --------------------------------------------------------- */

@@ -119,6 +119,16 @@ const char *sb_cstr(StrBuf *sb); /* "" if empty */
 char *fs_read_file(const char *path, size_t *len_out); /* NUL-terminated, NULL on failure */
 bool fs_write_file(const char *path, const void *data, size_t len);
 const char *fs_basename(const char *path);
+bool fs_is_dir(const char *path);
+/* The entries of a folder, without "." and ".." and hidden names (starting with a dot), folders first, then by name
+ * (ignoring case).  NULL and *n = 0 if it can't be read.  fs_free_dir frees them. */
+typedef struct FsDirEntry { char *name; bool is_dir; } FsDirEntry;
+FsDirEntry *fs_list_dir(const char *dir, int *n);
+void fs_free_dir(FsDirEntry *entries, int n);
+/* the folder of the running program (symlinks resolved, no trailing separator); "" if unknown */
+const char *fs_exe_dir(void);
+/* the absolute form of an existing path ("." and ".." resolved); false (out = path) if it can't be had */
+bool fs_absolute(const char *path, char *out, int cap);
 
 /* ---- UTF-8 ---------------------------------------------------------
  * utf8_decode returns the byte length of the sequence at s (>=1 when

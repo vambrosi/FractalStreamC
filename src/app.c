@@ -13,6 +13,7 @@
 #include <strings.h>
 #else
 #define strcasecmp _stricmp
+#define strncasecmp _strnicmp
 #endif
 
 #define MAX_TILES 12
@@ -127,9 +128,14 @@ typedef struct App {
     /* the formula being edited in the config pane: its text, and where it is in the script */
     char formula_buf[512];
     int formula_start, formula_end;
-    int modal;              /* 0, 1 save as, 2 open */
-    bool modal_focus;
+    int modal;              /* 0, 1 save as, 2 open, 3 save a picture */
+    bool modal_focus, modal_select_all;
+    bool modal_confirm;     /* saving over a file: the next OK replaces it */
     char modal_buf[1024];
+    char browse_dir[1024];  /* the folder listed in the dialog, and its entries */
+    FsDirEntry *browse;
+    int nbrowse;
+    float browse_scroll;
     /* interaction */
     int drag;
     int drag_viewer, drag_node, drag_tool;
@@ -1109,17 +1115,30 @@ static void default_save_path(char *out, int cap) {
     snprintf(out, (size_t)cap, "%s/untitled.fstream", stat(docs, &st) == 0 ? docs : home);
 }
 
+static void open_modal(int kind, const char *path);
+static const char *examples_dir(void);
+static const char *home_dir(void);
+
 static void ask_save_as(void) {
-    A.modal = 1;
-    A.modal_focus = true;
-    if (A.path[0]) snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
-    else default_save_path(A.modal_buf, sizeof A.modal_buf);
+    char path[1024];
+    if (A.path[0]) snprintf(path, sizeof path, "%s", A.path);
+    else default_save_path(path, sizeof path);
+    open_modal(1, path);
 }
 
+/* the dialog starts in the folder of the script open now, else at the examples (else at home) */
 static void ask_open(void) {
-    A.modal = 2;
-    A.modal_focus = true;
-    snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
+    char dir[1024], abs[1024], path[1100];
+    if (A.path[0]) {
+        const char *slash = strrchr(A.path, '/');
+        if (!slash) slash = strrchr(A.path, '\\');
+        snprintf(dir, sizeof dir, "%.*s", slash ? (int)(slash - A.path) : 0, A.path);
+        fs_absolute(dir[0] ? dir : ".", abs, sizeof abs);
+    } else {
+        snprintf(abs, sizeof abs, "%.1000s", examples_dir()[0] ? examples_dir() : home_dir() ? home_dir() : ".");
+    }
+    snprintf(path, sizeof path, "%.1000s/", abs);
+    open_modal(2, path);
 }
 
 /* the size of the picture of viewer v: `scale` times its size on the screen (within the GPU's limit) */
@@ -1142,8 +1161,6 @@ static void export_size(int v, int scale, int *w, int *h) {
 
 /* save the picture of viewer v, `scale` times the size of its tile */
 static void ask_export(int v, int scale) {
-    A.modal = 3;
-    A.modal_focus = true;
     A.export_viewer = v;
     A.export_scale = scale;
     char dir[1024];
@@ -1163,8 +1180,9 @@ static void ask_export(int v, int scale) {
     snprintf(stem, sizeof stem, "%.200s", base);
     char *dot = strrchr(stem, '.');
     if (dot) *dot = 0;
-    snprintf(A.modal_buf, sizeof A.modal_buf, "%.700s/%.200s-%.60s%s.png", dir, stem, A.prog->viewers[v]->name,
-             scale > 1 ? "-large" : "");
+    char path[1100];
+    snprintf(path, sizeof path, "%.700s/%.200s-%.60s%s.png", dir, stem, A.prog->viewers[v]->name, scale > 1 ? "-large" : "");
+    open_modal(3, path);
 }
 
 /* render viewer v again, offscreen, and write it to a PNG file */
@@ -2970,25 +2988,216 @@ static void help_overlay(float W, float H) {
     ui_layer(prev);
 }
 
+/* ---- the open / save dialogs: a path, and the folder it is in ------------------------------------------------- */
+static bool contains_nocase(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    for (; *hay; hay++)
+        if (!strncasecmp(hay, needle, n)) return true;
+    return !n;
+}
+
+static bool has_ext(const char *name, const char *ext) {
+    size_t n = strlen(name), e = strlen(ext);
+    return n > e && !strcasecmp(name + n - e, ext);
+}
+
+/* "a/b/c" -> folder "a/b", name "c"; "a/b/" -> "a/b", ""; "c" -> "", "c"; "/c" -> "/", "c" */
+static const char *split_path(const char *path, char *dir, int cap) {
+    const char *slash = NULL;
+    for (const char *q = path; *q; q++)
+        if (*q == '/' || *q == '\\') slash = q;
+    if (!slash) {
+        dir[0] = 0;
+        return path;
+    }
+    int n = slash == path ? 1 : (int)(slash - path);
+    snprintf(dir, (size_t)cap, "%.*s", n, path);
+    return slash + 1;
+}
+
+/* the examples that come with the program: next to it, above it (build/), or in the app bundle's Resources */
+static const char *examples_dir(void) {
+    static char dir[1100];
+    static bool done;
+    if (done) return dir;
+    done = true;
+    const char *exe = fs_exe_dir();
+    static const char *rel[] = {"/examples", "/../examples", "/../Resources/examples", "/../../examples"};
+    for (int k = 0; exe[0] && k < ARRAY_COUNT(rel); k++) {
+        char p[1100];
+        snprintf(p, sizeof p, "%.1000s%s", exe, rel[k]);
+        if (fs_is_dir(p) && fs_absolute(p, dir, sizeof dir)) return dir;
+    }
+    dir[0] = 0;
+    return dir;
+}
+
+static const char *home_dir(void) {
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) home = getenv("USERPROFILE");
+    return home && home[0] ? home : NULL;
+}
+
+/* the dialog's path becomes `path` (a folder: its contents are listed), the caret at its end */
+static void browse_to(const char *path, bool folder) {
+    char abs[1024];
+    if (folder && fs_absolute(path, abs, sizeof abs)) path = abs;
+    size_t n = strlen(path);
+    snprintf(A.modal_buf, sizeof A.modal_buf, "%s%s", path, folder && n && path[n - 1] != '/' && path[n - 1] != '\\' ? "/" : "");
+    A.modal_focus = true;
+    A.modal_confirm = false;
+    A.browse_scroll = 0;
+}
+
+static void open_modal(int kind, const char *path) {
+    A.modal = kind;
+    A.modal_focus = true;
+    A.modal_select_all = false; /* (the caret at the end: type a name, or more of it) */
+    A.modal_confirm = false;
+    A.browse_scroll = 0;
+    snprintf(A.modal_buf, sizeof A.modal_buf, "%.1020s", path);
+}
+
 static void modal_dialog(float W, float H) {
-    if (!A.modal) return;
+    if (!A.modal) {
+        if (A.browse) fs_free_dir(A.browse, A.nbrowse);
+        A.browse = NULL;
+        A.nbrowse = 0;
+        A.browse_dir[0] = 0;
+        return;
+    }
     int prev = ui_layer(UI_LAYER_POPUP);
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
-    float pw = FS_MIN(px(640), W - px(40)), ph = px(130);
+    bool saving = A.modal != 2;
+    const char *ext = A.modal == 3 ? ".png" : ".fstream";
+    float rh = px(26), pad = px(16);
+    float pw = FS_MIN(px(720), W - px(40)), ph = FS_MIN(px(560), H - px(40));
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
-    ui_text(UI_FONT_SANS, pr.x + px(16), pr.y + px(14),
-            A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):" : "Open:", -1, UI_COL_TEXT);
-    int r = ui_text_field_ex("##modal_path", pr.x + px(16), pr.y + px(44), pr.w - px(32), px(30), A.modal_buf,
-                             (int)sizeof A.modal_buf, UI_TF_SELECT_ALL, "path of the file");
+    ui_text(UI_FONT_SANS, pr.x + pad, pr.y + px(14),
+            A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):" : "Open a script:", -1, UI_COL_TEXT);
+    char before[1024];
+    snprintf(before, sizeof before, "%s", A.modal_buf);
+    int r = ui_text_field_ex("##modal_path", pr.x + pad, pr.y + px(44), pr.w - 2 * pad, px(30), A.modal_buf,
+                             (int)sizeof A.modal_buf, A.modal_select_all ? UI_TF_SELECT_ALL : 0, "path of the file");
     if (A.modal_focus) {
         ui_set_focus(ui_id("##modal_path"));
         A.modal_focus = false;
+    } else {
+        A.modal_select_all = false;
     }
-    bool ok = ui_button_ex("OK##modal_ok", pr.x + pr.w - px(196), pr.y + ph - px(44), px(84), px(30), UI_ACCENT);
-    bool cancel = ui_button_ex("Cancel##modal_cancel", pr.x + pr.w - px(100), pr.y + ph - px(44), px(84), px(30), 0);
+    if (strcmp(before, A.modal_buf) != 0) A.modal_confirm = false;
+    /* places */
+    float x = pr.x + pad, y = pr.y + px(84);
+    char doc_dir[1100], script_dir[1100];
+    const char *home = home_dir();
+    doc_dir[0] = script_dir[0] = 0;
+    if (home) snprintf(doc_dir, sizeof doc_dir, "%s/Documents", home);
+    if (!doc_dir[0] || !fs_is_dir(doc_dir)) doc_dir[0] = 0;
+    if (A.path[0]) split_path(A.path, script_dir, sizeof script_dir);
+    const char *places[4][3] = {{"Home", "home", home}, {"Documents", "folder", doc_dir[0] ? doc_dir : NULL},
+                                {"Examples", "school", examples_dir()[0] ? examples_dir() : NULL},
+                                {"The script's folder", "folder_open", A.path[0] ? (script_dir[0] ? script_dir : ".") : NULL}};
+    for (int k = 0; k < 4; k++) {
+        if (!places[k][2]) continue;
+        char id[64];
+        snprintf(id, sizeof id, "%s##place%d", places[k][0], k);
+        float bw = ui_text_width(UI_FONT_SANS, places[k][0], -1) + px(24);
+        if (x + bw > pr.x + pr.w - pad) break;
+        if (ui_button_ex(id, x, y, bw, px(26), UI_FLAT)) browse_to(places[k][2], true);
+        x += bw + px(6);
+    }
+    /* the folder of the path, listed (again when it changes) */
+    char dir[1024];
+    const char *name = split_path(A.modal_buf, dir, sizeof dir);
+    if (!A.browse || strcmp(dir, A.browse_dir) != 0) {
+        if (A.browse) fs_free_dir(A.browse, A.nbrowse);
+        A.browse = fs_list_dir(dir, &A.nbrowse);
+        snprintf(A.browse_dir, sizeof A.browse_dir, "%s", dir);
+        A.browse_scroll = 0;
+    }
+    Rect lr = {pr.x + pad, y + px(34), pr.w - 2 * pad, pr.y + pr.h - px(56) - (y + px(34))};
+    ui_rrect(lr.x, lr.y, lr.w, lr.h, px(6), UI_RGBA(16, 18, 23, 255));
+    ui_rrect_outline(lr.x, lr.y, lr.w, lr.h, px(6), 1, UI_COL_BORDER);
+    int rows[4096], nrows = 0; /* entries shown: -1 is "..", then folders and the files of the kind */
+    if (A.browse) rows[nrows++] = -1;
+    for (int i = 0; i < A.nbrowse && nrows < ARRAY_COUNT(rows); i++) {
+        FsDirEntry *e = &A.browse[i];
+        if (!e->is_dir && !has_ext(e->name, ext)) continue;
+        if (!saving && name[0] && !contains_nocase(e->name, name)) continue; /* (opening: typing filters) */
+        rows[nrows++] = i;
+    }
+    float content = nrows * rh;
+    A.browse_scroll = FS_CLAMP(A.browse_scroll + ui_scroll_area(lr.x, lr.y, lr.w, lr.h), 0.0f, FS_MAX(0.0f, content - lr.h + px(8)));
+    ui_push_clip(lr.x + 1, lr.y + 1, lr.w - 2, lr.h - 2);
+    bool submit_file = false;
+    for (int k = 0; k < nrows; k++) {
+        float ry = lr.y + px(4) + k * rh - A.browse_scroll;
+        if (ry + rh < lr.y || ry > lr.y + lr.h) continue;
+        int i = rows[k];
+        bool is_dir = i < 0 || A.browse[i].is_dir;
+        const char *label = i < 0 ? ".. (the folder above)" : A.browse[i].name;
+        char id[64];
+        snprintf(id, sizeof id, "##brow%d", k);
+        UiInteract it = ui_interact(id, lr.x + px(4), ry, lr.w - px(8), rh);
+        bool chosen = i >= 0 && !strcmp(A.browse[i].name, name);
+        if (it.hovered || chosen) ui_rrect(lr.x + px(4), ry, lr.w - px(8), rh, px(4), chosen ? UI_COL_ACCENT_DIM : UI_COL_WIDGET_HOVER);
+        ui_icon(i < 0 ? "arrow_upward" : is_dir ? "folder" : A.modal == 3 ? "image" : "description", NULL, lr.x + px(10),
+                ry + px(3), rh - px(6), is_dir ? UI_COL_ACCENT : UI_COL_TEXT_DIM);
+        ui_label(lr.x + px(14) + rh, ry, lr.w - rh - px(24), rh, label, UI_ALIGN_LEFT, i < 0 ? UI_COL_TEXT_DIM : UI_COL_TEXT);
+        if (!it.pressed) continue;
+        char path[2100];
+        if (i < 0) { /* the folder above */
+            char abs[1024];
+            fs_absolute(dir[0] ? dir : ".", abs, sizeof abs);
+            char up[1024];
+            split_path(abs, up, sizeof up);
+            browse_to(up[0] ? up : "/", true);
+        } else if (is_dir) {
+            snprintf(path, sizeof path, "%s%s%s", dir, dir[0] && strcmp(dir, "/") ? "/" : "", A.browse[i].name);
+            browse_to(path, true);
+        } else {
+            snprintf(path, sizeof path, "%s%s%s", dir, dir[0] && strcmp(dir, "/") ? "/" : "", A.browse[i].name);
+            browse_to(path, false);
+            if (it.double_clicked) submit_file = true;
+        }
+    }
+    ui_pop_clip();
+    if (!A.browse) ui_label(lr.x, lr.y, lr.w, px(40), "(this folder can't be read)", UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
+    /* OK: open or save; a folder is opened in the list instead */
+    float by = pr.y + pr.h - px(44);
+    if (A.modal_confirm)
+        ui_label(pr.x + pad, by, pr.w - px(230), px(30), "That file exists: OK replaces it.", UI_ALIGN_LEFT, UI_COL_WARNING);
+    bool ok = ui_button_ex("OK##modal_ok", pr.x + pr.w - px(196), by, px(84), px(30), UI_ACCENT);
+    bool cancel = ui_button_ex("Cancel##modal_cancel", pr.x + pr.w - px(100), by, px(84), px(30), 0);
     if (r & UI_TEXT_SUBMIT) ok = true;
+    ok = ok || submit_file;
     if ((r & UI_TEXT_CANCEL) || ui_shortcut(UI_KEY_ESCAPE, 0)) cancel = true;
+    if (ok && A.modal_buf[0]) {
+        size_t n = strlen(A.modal_buf);
+        bool trailing = A.modal_buf[n - 1] == '/' || A.modal_buf[n - 1] == '\\';
+        if (fs_is_dir(A.modal_buf)) {
+            if (!trailing) browse_to(A.modal_buf, true);
+            else set_status(true, "That is a folder: choose a file in it%s", saving ? ", or type a name" : "");
+            ok = false;
+        } else if (saving && !has_ext(A.modal_buf, ext) && n + strlen(ext) < sizeof A.modal_buf) {
+            strcat(A.modal_buf, ext); /* (the file gets its extension) */
+        }
+        if (ok && saving && !A.modal_confirm) {
+            struct stat st;
+            if (stat(A.modal_buf, &st) == 0 && !(A.modal == 1 && !strcmp(A.modal_buf, A.path))) {
+                A.modal_confirm = true; /* ask once */
+                ok = false;
+            }
+        }
+        if (ok && !saving) {
+            struct stat st;
+            if (stat(A.modal_buf, &st) != 0) {
+                set_status(true, "There is no file %s", A.modal_buf);
+                ok = false;
+            }
+        }
+    }
     if (ok && A.modal_buf[0]) {
         if (A.modal == 1) save_file(A.modal_buf);
         else if (A.modal == 3) {

@@ -284,9 +284,43 @@ TEST(app_write_values_into_script) {
     app_test_end();
 }
 
+/* the open / save dialogs: folders listed, paths split */
+TEST(app_folder_listing) {
+    int n = 0;
+    FsDirEntry *e = fs_list_dir("examples", &n);
+    CHECK(e != NULL && n > 10);
+    bool templates = false, mandel = false, sorted = true;
+    for (int i = 0; e && i < n; i++) {
+        if (!strcmp(e[i].name, "templates")) templates = e[i].is_dir && i == 0; /* folders first */
+        if (!strcmp(e[i].name, "mandelbrot.fstream")) mandel = !e[i].is_dir;
+        if (i > 1 && strcasecmp(e[i - 1].name, e[i].name) > 0) sorted = false;
+        CHECK(e[i].name[0] != '.');
+    }
+    CHECK(templates && mandel && sorted);
+    if (e) fs_free_dir(e, n);
+    e = fs_list_dir("no/such/folder", &n);
+    CHECK(e == NULL && n == 0);
+    CHECK(fs_is_dir("examples") && !fs_is_dir("examples/mandelbrot.fstream") && !fs_is_dir("no/such"));
+    CHECK(fs_exe_dir()[0] != 0);
+    char dir[256];
+    CHECK_STR(split_path("a/b/c.fstream", dir, sizeof dir), "c.fstream");
+    CHECK_STR(dir, "a/b");
+    CHECK_STR(split_path("a/b/", dir, sizeof dir), "");
+    CHECK_STR(dir, "a/b");
+    CHECK_STR(split_path("c", dir, sizeof dir), "c");
+    CHECK_STR(dir, "");
+    CHECK_STR(split_path("/c", dir, sizeof dir), "c");
+    CHECK_STR(dir, "/");
+    CHECK(contains_nocase("SaddleDrop.fstream", "ledr") && !contains_nocase("julia", "mandel") && contains_nocase("x", ""));
+    CHECK(has_ext("a.FStream", ".fstream") && !has_ext(".fstream", ".fstream") && !has_ext("a.png", ".fstream"));
+    char abs[1024];
+    CHECK(fs_absolute("examples/../examples", abs, sizeof abs) && abs[0] != 0 && !strstr(abs, ".."));
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
     TESTCASE(app_copy_paste_location),
     TESTCASE(app_write_values_into_script),
+    TESTCASE(app_folder_listing),
 };
