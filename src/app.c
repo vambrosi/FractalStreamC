@@ -2622,6 +2622,7 @@ static void write_values(void) {
         *nl = 0;
         const char *lines[2] = {loc, nl + 1};
         Sym *syms[2] = {vs->center, vs->radius};
+        int written = 0;
         for (int k = 0; k < 2; k++) {
             char *l = (char *)lines[k];
             l[strcspn(l, "\n")] = 0;
@@ -2631,11 +2632,15 @@ static void write_values(void) {
             if (st && literal_like(st->value) && expr_span(text, len, ls.data, nlines, st->value, &a, &b)) {
                 KeepEdit e = {a, b - a, edits.len, xstrdup(value)};
                 vec_push(edits, e);
+                written++;
+            } else if (st) { /* a formula gives it: a line of ours would change nothing (or the formula) */
+                sb_printf(&skipped, "%s%s", skipped.len ? ", " : "", syms[k]->name);
             } else {
                 sb_printf(&added, "%s\n", l);
+                written++;
             }
         }
-        nviews++;
+        if (written) nviews++;
     }
     if (added.len) {
         KeepEdit e = {0, 0, edits.len, NULL};
