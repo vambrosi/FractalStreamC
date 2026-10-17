@@ -1594,13 +1594,13 @@ static void mend_jumps(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, int s
     label(g, body);
     FloodPix b = {load(g, B, v_bdone), load(g, V2, v_bt)};
     FloodPix bp = mend_pix(g, x, y, W, H, op2(g, SpvOpIMul, I, s, op2(g, SpvOpIAdd, I, k, ci(g, 1))), ux, uy);
-    u32 far = cf(g, 1e30f);
+    u32 vfar = cf(g, 1e30f);
     u32 d = load(g, F, v_dab), dbn = mend_diff(g, b, bp);
     u32 gg = fmin_(g, load(g, F, v_dam), dbn);
     u32 size = op2(g, SpvOpFAdd, F, load(g, F, v_ma), load(g, F, v_mb));
     u32 lim = op2(g, SpvOpFAdd, F, op2(g, SpvOpFMul, F, cf(g, 8.0f), gg), op2(g, SpvOpFMul, F, cf(g, 1e-4f), size));
-    u32 jump = band(g, band(g, b.done, op2(g, SpvOpFOrdLessThan, B, d, far)),
-                    band(g, op2(g, SpvOpFOrdLessThan, B, gg, far), op2(g, SpvOpFOrdGreaterThan, B, d, lim)));
+    u32 jump = band(g, band(g, b.done, op2(g, SpvOpFOrdLessThan, B, d, vfar)),
+                    band(g, op2(g, SpvOpFOrdLessThan, B, gg, vfar), op2(g, SpvOpFOrdGreaterThan, B, d, lim)));
     u32 nv = load(g, I, n);
     for (int i = 0; i < FLOOD_MEND_JUMPS; i++)
         store(g, kv[i], isel(g, band(g, jump, op2(g, SpvOpIEqual, B, nv, ci(g, i))), k, load(g, I, kv[i])));
@@ -1640,7 +1640,7 @@ static u32 mend_axis(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, u32 kma
         omo[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpISub, I, nkm[i], z1), ux, uy);
         omi[i] = mend_pix(g, x, y, W, H, op2(g, SpvOpIAdd, I, nkm[i], z1), ux, uy);
     }
-    u32 far = cf(g, 1e30f);
+    u32 vfar = cf(g, 1e30f);
     u32 best = z0, bestk = z0;
     for (int i = 0; i < NJ; i++)
         for (int j = 0; j < NJ; j++) {
@@ -1655,7 +1655,7 @@ static u32 mend_axis(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, u32 kma
             u32 t1 = op1(g, SpvOpConvertSToF, F, op2(g, SpvOpIAdd, I, t, z1));
             u32 lim = op2(g, SpvOpFAdd, F, op2(g, SpvOpFMul, F, op2(g, SpvOpFMul, F, cf(g, 4.0f), t1), gg),
                           op2(g, SpvOpFMul, F, cf(g, 1e-4f), size));
-            u32 agree = band(g, op2(g, SpvOpFOrdLessThan, B, gg, far), op2(g, SpvOpFOrdLessThanEqual, B, d, lim));
+            u32 agree = band(g, op2(g, SpvOpFOrdLessThan, B, gg, vfar), op2(g, SpvOpFOrdLessThanEqual, B, d, lim));
             u32 take = band(g, band(g, valid, better), agree);
             best = isel(g, take, t, best);
             bestk = isel(g, take, isel(g, op2(g, SpvOpSLessThanEqual, B, kp[i], km[j]), kp[i], nkm[j]), bestk);
@@ -1664,12 +1664,12 @@ static u32 mend_axis(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 ux, u32 uy, u32 kma
     u32 cp = z0, cm = z0;
     for (int i = NJ - 1; i >= 0; i--) {
         u32 cleanp = band(g, op2(g, SpvOpSGreaterThan, B, kp[i], z0),
-                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, op[i], opo[i]), far),
+                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, op[i], opo[i]), vfar),
                                op2(g, SpvOpFOrdLessThanEqual, B, op2(g, SpvOpFMul, F, cf(g, 8.0f), mend_diff(g, op[i], opo[i])),
                                    mend_diff(g, opi[i], op[i]))));
         cp = isel(g, cleanp, kp[i], cp);
         u32 cleanm = band(g, op2(g, SpvOpSGreaterThan, B, km[i], z0),
-                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, om[i], omo[i]), far),
+                          band(g, op2(g, SpvOpFOrdLessThan, B, mend_diff(g, om[i], omo[i]), vfar),
                                op2(g, SpvOpFOrdLessThanEqual, B, op2(g, SpvOpFMul, F, cf(g, 8.0f), mend_diff(g, om[i], omo[i])),
                                    mend_diff(g, omi[i], om[i]))));
         cm = isel(g, cleanm, km[i], cm);
