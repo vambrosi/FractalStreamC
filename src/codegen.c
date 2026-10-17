@@ -107,7 +107,7 @@ static u32 local_var_id(Gen *g, u32 type) { return spv_local_var(&g->s, ptr(g, S
 static u32 new_label(Gen *g) { return spv_new_id(&g->s); }
 static void label(Gen *g, u32 l) { spv_label(&g->s, l); g->dead = false; }
 static void branch(Gen *g, u32 l) { spv_branch(&g->s, l); }
-static u32 access(Gen *g, u32 ptype, u32 base, const u32 *idx, int n) {
+static u32 g_access(Gen *g, u32 ptype, u32 base, const u32 *idx, int n) {
     u32 o[8] = {base};
     for (int i = 0; i < n; i++) o[1 + i] = idx[i];
     return spv_op(&g->s, SpvOpAccessChain, ptype, o, 1 + n);
@@ -306,18 +306,18 @@ static u32 lv_ptr(Gen *g, Expr *e, u32 *sc) {
     switch (bt->kind) {
     case T_VEC: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->n));
-        return access(g, ptr(g, *sc, ty(g, bt->elem)), base, &i, 1);
+        return g_access(g, ptr(g, *sc, ty(g, bt->elem)), base, &i, 1);
     }
     case T_COMPLEX: case T_QUAT: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->kind == T_COMPLEX ? 2 : 4));
-        return access(g, ptr(g, *sc, g->tfloat), base, &i, 1);
+        return g_access(g, ptr(g, *sc, g->tfloat), base, &i, 1);
     }
     case T_LIST: {
         u32 z = ci(g, 0);
-        u32 len = load(g, g->tint, access(g, ptr(g, *sc, g->tint), base, &z, 1));
+        u32 len = load(g, g->tint, g_access(g, ptr(g, *sc, g->tint), base, &z, 1));
         u32 hi = ext2(g, g->tint, GLSLSMax, len, ci(g, 1));
         u32 idx[2] = {ci(g, 1), g_clamp_index(g, k, ci(g, 1), hi)};
-        return access(g, ptr(g, *sc, ty(g, bt->elem)), base, idx, 2);
+        return g_access(g, ptr(g, *sc, ty(g, bt->elem)), base, idx, 2);
     }
     default: return base;
     }
@@ -345,18 +345,18 @@ static u32 gen_index(Gen *g, Expr *e) {
     switch (bt->kind) {
     case T_VEC: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->n));
-        return load(g, ty(g, bt->elem), access(g, ptr(g, sc, ty(g, bt->elem)), base, &i, 1));
+        return load(g, ty(g, bt->elem), g_access(g, ptr(g, sc, ty(g, bt->elem)), base, &i, 1));
     }
     case T_COMPLEX: case T_QUAT: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->kind == T_COMPLEX ? 2 : 4));
-        return load(g, g->tfloat, access(g, ptr(g, sc, g->tfloat), base, &i, 1));
+        return load(g, g->tfloat, g_access(g, ptr(g, sc, g->tfloat), base, &i, 1));
     }
     case T_LIST: {
         u32 z = ci(g, 0);
-        u32 len = load(g, g->tint, access(g, ptr(g, sc, g->tint), base, &z, 1));
+        u32 len = load(g, g->tint, g_access(g, ptr(g, sc, g->tint), base, &z, 1));
         u32 hi = ext2(g, g->tint, GLSLSMax, len, ci(g, 1));
         u32 idx[2] = {ci(g, 1), g_clamp_index(g, k, ci(g, 1), hi)};
-        u32 v = load(g, ty(g, bt->elem), access(g, ptr(g, sc, ty(g, bt->elem)), base, idx, 2));
+        u32 v = load(g, ty(g, bt->elem), g_access(g, ptr(g, sc, ty(g, bt->elem)), base, idx, 2));
         u32 nonempty = op2(g, SpvOpSGreaterThan, g->tbool, len, ci(g, 0));
         u32 et = ty(g, bt->elem);
         if (bt->elem->kind == T_COMPLEX || bt->elem->kind == T_QUAT) {
@@ -392,7 +392,7 @@ static u32 gen_intrinsic(Gen *g, Expr *e) {
         u32 sc;
         u32 base = lv_ptr(g, e->args[0], &sc);
         u32 z = ci(g, 0);
-        u32 lenp = access(g, ptr(g, sc, g->tint), base, &z, 1);
+        u32 lenp = g_access(g, ptr(g, sc, g->tint), base, &z, 1);
         if (id == I_CLEAR) {
             store(g, lenp, ci(g, 0));
             return 0;
@@ -405,7 +405,7 @@ static u32 gen_intrinsic(Gen *g, Expr *e) {
         spv_branch_cond(&g->s, room, yes, merge);
         label(g, yes);
         u32 idx[2] = {ci(g, 1), len};
-        store(g, access(g, ptr(g, sc, ty(g, lt->elem)), base, idx, 2), v);
+        store(g, g_access(g, ptr(g, sc, ty(g, lt->elem)), base, idx, 2), v);
         store(g, lenp, op2(g, SpvOpIAdd, g->tint, len, ci(g, 1)));
         branch(g, merge);
         label(g, merge);
@@ -719,6 +719,7 @@ static void loop_body(Gen *g, LoopVars *L, Block *b) {
 
 static void loop_end(Gen *g, LoopVars *L) {
     label(g, L->merge);
+    if (g->fn && g->fn->prelude) return; /* library loops don't touch .stuck/.iterations */
     store(g, g->iter_var, load(g, g->tint, L->cnt));
     store(g, g->stuck_var, load(g, g->tbool, L->stk));
 }
@@ -835,7 +836,7 @@ static void gen_stmt(Gen *g, Stmt *s) {
             len = ci(g, ct->n);
         } else {
             u32 z = ci(g, 0);
-            len = load(g, g->tint, access(g, ptr(g, SpvSCFunction, g->tint), coll, &z, 1));
+            len = load(g, g->tint, g_access(g, ptr(g, SpvSCFunction, g->tint), coll, &z, 1));
         }
         u32 jv = local_var_id(g, g->tint);
         store(g, jv, ci(g, 0));
@@ -853,10 +854,10 @@ static void gen_stmt(Gen *g, Stmt *s) {
         u32 et = ty(g, ct->elem);
         u32 ep;
         if (ct->kind == T_VEC) {
-            ep = access(g, ptr(g, SpvSCFunction, et), coll, &j, 1);
+            ep = g_access(g, ptr(g, SpvSCFunction, et), coll, &j, 1);
         } else {
             u32 idx[2] = {ci(g, 1), j};
-            ep = access(g, ptr(g, SpvSCFunction, et), coll, idx, 2);
+            ep = g_access(g, ptr(g, SpvSCFunction, et), coll, idx, 2);
         }
         store(g, s->sym->spv_var, load(g, et, ep));
         store(g, jv, op2(g, SpvOpIAdd, g->tint, j, ci(g, 1)));
@@ -1066,7 +1067,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         Sym *gs = p->globals.data[i];
         if (!gs->used) continue;
         u32 idx = ci(g, i);
-        u32 bp = access(g, ptr(g, SpvSCUniform, bty(g, gs->type)), g->state_var, &idx, 1);
+        u32 bp = g_access(g, ptr(g, SpvSCUniform, bty(g, gs->type)), g->state_var, &idx, 1);
         store(g, gs->spv_var, from_buffer(g, gs->type, load(g, bty(g, gs->type), bp)));
     }
     /* pixel -> plane */
@@ -1074,8 +1075,8 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         u32 f = g->tfloat;
         u32 fc = load(g, g->tvec4, g->fragcoord);
         u32 z0 = ci(g, 0), z1 = ci(g, 1);
-        u32 size = load(g, g->tvec2, access(g, ptr(g, SpvSCPushConstant, g->tvec2), g->pc_var, &z0, 1));
-        u32 off = load(g, g->tvec2, access(g, ptr(g, SpvSCPushConstant, g->tvec2), g->pc_var, &z1, 1));
+        u32 size = load(g, g->tvec2, g_access(g, ptr(g, SpvSCPushConstant, g->tvec2), g->pc_var, &z0, 1));
+        u32 off = load(g, g->tvec2, g_access(g, ptr(g, SpvSCPushConstant, g->tvec2), g->pc_var, &z1, 1));
         u32 px = op2(g, SpvOpFAdd, f, extract(g, f, fc, 0), extract(g, f, off, 0));
         u32 py = op2(g, SpvOpFAdd, f, extract(g, f, fc, 1), extract(g, f, off, 1));
         u32 w = extract(g, f, size, 0), h = extract(g, f, size, 1);

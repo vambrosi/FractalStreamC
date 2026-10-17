@@ -34,6 +34,7 @@ typedef struct Interp {
     int signal;
     DrawItemVec *draws;
     double steps, step_limit;
+    int quiet; /* > 0 inside prelude functions: their loops don't touch .stuck/.iterations */
     char error[256];
 } Interp;
 
@@ -380,6 +381,7 @@ static void call_func(Interp *I, Func *f, Expr **args, u32 *out) {
     if (I->signal == SIG_ABORT) { I->sp = mark; return; }
     u32 *saved = I->frame;
     I->frame = nf;
+    if (f->prelude) I->quiet++;
     if (f->body_expr) {
         ev(I, f->body_expr, out);
     } else {
@@ -392,6 +394,7 @@ static void call_func(Interp *I, Func *f, Expr **args, u32 *out) {
                 memcpy(out + tuple_offset(f->ret, i), nf + f->outputs[i]->slot, sizeof(u32) * (size_t)f->outputs[i]->type->size);
         }
     }
+    if (f->prelude) I->quiet--;
     I->frame = saved;
     I->sp = mark;
 }
@@ -657,7 +660,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             exec_block(I, &s->body);
             if (after_body(I)) break;
         }
-        if (I->signal == SIG_NONE) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_DOWHILE: {
@@ -675,7 +678,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             stuck = !ok && c;
             if (!(ok && c)) break;
         }
-        if (I->signal == SIG_NONE) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_FOR: {
@@ -699,7 +702,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             if (after_body(I)) break;
             k[0] = k[0] + st;
         }
-        if (I->signal == SIG_NONE) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_FOREACH: {
@@ -724,7 +727,7 @@ static void exec_stmt(Interp *I, Stmt *s) {
             exec_block(I, &s->body);
             if (after_body(I)) break;
         }
-        if (I->signal == SIG_NONE) { I->iterations = n; I->stuck = stuck; }
+        if (I->signal == SIG_NONE && !I->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
     case S_BREAK: I->signal = SIG_BREAK; break;

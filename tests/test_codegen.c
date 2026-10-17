@@ -134,6 +134,17 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "    x += 0.4\n"
      "end\n"
      "color = [0.5 + 0.4 sin(a), b / 4 + x, 0.5]\n", 0.002},
+    {"variable_powers",
+     "@config\nd : Z = 3 in 2..8\n"
+     "@viewer v z\n"
+     "n : Z = d\n"
+     "w := z^n + z^(-n) * 0.01 + (re(z) * 0.5 + 1)^n\n"
+     "it : Z = 0\n"
+     "for k in 1..3 do\n"
+     "    it += 1\n"
+     "end\n"
+     "q := z^n\n"
+     "color = [0.5 + 0.4 sin(re(w)), 0.5 + 0.4 cos(im(w)), .iterations / 4]\n", 0.01},
     {"mandelbrot",
      "@config\n.maxIterations = 200\nplane.center = -0.5\nplane.radius = 1.5\n"
      "@viewer plane c\n"

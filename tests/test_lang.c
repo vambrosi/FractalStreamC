@@ -456,7 +456,34 @@ TEST(runaway_tool_is_stopped) {
     program_free(p);
 }
 
+TEST(variable_integer_powers) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "n : Z = 5\n"
+        "m : Z = -3\n"
+        "a := (1 + i)^n\n"
+        "b := (1 + i)^m\n"
+        "x : R = (-2)^n\n"
+        "y : R = 2^m\n"
+        "w := 0\n"
+        "while w not escapes do\n"
+        "    w = w^n + 0.1\n"
+        "end\n"
+        "it : Z = .iterations\n"
+        "st := .stuck\n");
+    CHECK_NEAR(gnum(p, "a", 0), -4, 1e-5);
+    CHECK_NEAR(gnum(p, "a", 1), -4, 1e-5);
+    CHECK_NEAR(gnum(p, "b", 0), -0.25, 1e-6);
+    CHECK_NEAR(gnum(p, "b", 1), -0.25, 1e-6);
+    CHECK_NEAR(gnum(p, "x", 0), -32, 1e-5);
+    CHECK_NEAR(gnum(p, "y", 0), 0.125, 1e-7);
+    CHECK_NEAR(gnum(p, "it", 0), 1000, 0); /* the library loop inside ^ must not change .iterations */
+    CHECK_NEAR(gnum(p, "st", 0), 1, 0);
+    program_free(p);
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(variable_integer_powers),
     TESTCASE(default_viewer), TESTCASE(mandelbrot), TESTCASE(brief_example), TESTCASE(types_and_conversions),
     TESTCASE(implicit_multiplication), TESTCASE(complex_functions), TESTCASE(loops_and_stuck),
     TESTCASE(epsilon_comparisons), TESTCASE(vectors_colors_lists), TESTCASE(functions_and_overloads),

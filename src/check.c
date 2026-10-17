@@ -449,6 +449,14 @@ static Type *chk_power(Checker *c, Expr *e) {
         ERR(c, e, "quaternion powers need a constant integer exponent, as in q^3");
         return t_error;
     }
+    if (tb == t_int && type_is_scalar_real(ta)) {
+        mk_call(c, e, "__powri", e->a, e->b);
+        return chk_call(c, e);
+    }
+    if (tb == t_int && ta == t_complex) {
+        mk_call(c, e, "__powci", e->a, e->b);
+        return chk_call(c, e);
+    }
     if (type_is_scalar_real(ta) && type_is_scalar_real(tb)) {
         mk_call(c, e, "__powr", e->a, e->b);
         return chk_call(c, e);

@@ -923,8 +923,8 @@ static void hamburger(float W, float H) {
     float s = px(36), m = px(10);
     Rect b = {A.area.x + m, A.area.y + m, s, s};
     float mx = A.in.mouse_x, my = A.in.mouse_y;
-    bool near = mx < b.x + px(140) && my < b.y + px(140) && mx >= A.area.x && A.in.mouse_in_window;
-    bool show = near || A.menu_open || fs_time_seconds() < A.menu_hint_until;
+    bool is_near = mx < b.x + px(140) && my < b.y + px(140) && mx >= A.area.x && A.in.mouse_in_window;
+    bool show = is_near || A.menu_open || fs_time_seconds() < A.menu_hint_until;
     if (!show) return;
     int prev = ui_layer(UI_LAYER_PANEL);
     ui_rrect(b.x, b.y, b.w, b.h, px(6), UI_RGBA(20, 22, 28, 200));
