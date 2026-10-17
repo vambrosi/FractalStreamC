@@ -355,6 +355,41 @@ TEST(app_recent_files) {
 #endif
 }
 
+/* which values are settings: @config variables (even when @prepare adjusts them), not what @prepare computes */
+TEST(app_settings_and_prepare) {
+    Program *p = program_load("@config\n"
+                              "a : C = 0.3\n"
+                              "@global\n"
+                              "w0 := 1\n"
+                              "k : Z = 2\n"
+                              "@prepare\n"
+                              "t := a\n"
+                              "a = 0\n"
+                              "a = t\n"
+                              "if k > 0 then\n"
+                              "    w0 = w0 + 1\n"
+                              "end\n"
+                              "@viewer m c\n"
+                              "color = .black\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    Sym *a = NULL, *w0 = NULL, *k = NULL;
+    for (int i = 0; i < p->globals.len; i++) {
+        Sym *g = p->globals.data[i];
+        if (!strcmp(g->name, "a")) a = g;
+        if (!strcmp(g->name, "w0")) w0 = g;
+        if (!strcmp(g->name, "k")) k = g;
+    }
+    CHECK(a && w0 && k);
+    if (a && w0 && k) {
+        CHECK(script_setting(p, a));
+        CHECK(!script_setting(p, w0)); /* (assigned inside an if of @prepare) */
+        CHECK(script_setting(p, k));
+        CHECK(!script_setting(p, p->s_mouse) && !script_setting(p, p->viewers[0]->center));
+    }
+    program_free(p);
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -362,4 +397,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_write_values_into_script),
     TESTCASE(app_folder_listing),
     TESTCASE(app_recent_files),
+    TESTCASE(app_settings_and_prepare),
 };

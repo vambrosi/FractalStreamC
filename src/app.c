@@ -2403,9 +2403,10 @@ static bool prepared(Program *p, Sym *s) {
     return false;
 }
 
-/* a setting of the script (not a view's place, not something the app or @prepare keeps up to date) */
+/* a setting of the script: not a view's place, not something the app or @prepare keeps up to date (a variable of
+   @config is a setting even if @prepare changes it too) */
 static bool script_setting(Program *p, Sym *s) {
-    return s->kind == SYM_GLOBAL && !app_managed(p, s) && !view_geometry(p, s) && !prepared(p, s);
+    return s->kind == SYM_GLOBAL && !app_managed(p, s) && !view_geometry(p, s) && (s->is_config || !prepared(p, s));
 }
 
 static bool value_changed(Program *p, Sym *s) {
