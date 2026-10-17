@@ -1,0 +1,24 @@
+# Test of list values: the circle picture, plus a tool that draws a unit circle around
+# each point of a list of centres.
+# Ported from FractalStream examples/list-test.yaml
+
+@config
+.title = "Circle"
+.width = 512
+.height = 512
+myList : List of C = [0, 1, i]      # "Centers" (edit the list here: the config panel can't)
+
+@viewer plane z "Circle" "Ctrl + 1"
+if |z| < 1 then
+    color = .red
+else if im z > 0 then
+    color = .green
+else
+    color = .blue
+end
+
+@plane.tool "Show circles" "S" "bubble_chart"
+# the original redrew the circles whenever the config changed; here, click anywhere
+for center in myList do
+    draw circle at center with radius 1
+end

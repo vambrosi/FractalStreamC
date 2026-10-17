@@ -1,0 +1,33 @@
+# Only a test of the old setup dialog (check boxes and text boxes laid out in rows).
+# The four values are config variables here; the viewer shows them in the four quadrants.
+# Ported from FractalStream examples/setup-ui-test.yaml
+
+@config
+.title = "Test window"
+.width = 400
+.height = 200
+cb1 : Bool = true            # "check1?"
+te1 : R = 1                  # "tb1: "
+te2 : R = 1 - 1              # "tb2: "
+cb2 : Bool = false           # "check2?"
+
+@viewer plane z "Values" "Ctrl + 1"
+on : Bool = false
+if im z > 0 then
+    if re z < 0 then
+        on = cb1
+        color = gray(0.2)
+    else
+        color = gray(te1)
+    end
+else
+    if re z < 0 then
+        color = gray(te2)
+    else
+        on = cb2
+        color = gray(0.2)
+    end
+end
+if on then
+    color = .white
+end

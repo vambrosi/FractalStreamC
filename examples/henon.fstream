@@ -1,0 +1,75 @@
+# The complex Hénon map (x, y) -> (x^2 + b - a y, x), started at the fixed point (p, p)
+# moved by a step along its unstable eigenvector (lambda, 1): coloured by escape time.
+# In the a- and b-planes the step is 0 (only rounding errors move the orbit); in the
+# dynamical plane it is zoom z, which shows the unstable manifold of the fixed point.
+# Ported from FractalStream examples/henon.yaml
+
+@config
+.title = "Hénon map"
+.width = 512
+.height = 512
+.maxIterations = 100
+.escapeRadius = 10
+.a = 0.3                      # "a = " (pick it in the a-plane)
+.b = 0.6 + 0.2i               # "b = " (pick it in the b-plane)
+zoom : R = 0.001
+
+@global
+# the old built-in cycle(t, c1, c2): c2 at t = 0, c1 at t = 1/2, back to c2 at t = 1
+define cycle(t : R, c1 : Color, c2 : Color) = mix(c2, c1, 1 - |2 fract(t) - 1|)
+
+# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
+define rainbow(t : R) = c : Color where
+    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
+    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
+    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
+    s : R = 8 fract(t)
+    k : Z = floor(s) + 1
+    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
+end
+
+# iterate the Hénon map from the fixed point moved by `step` along the unstable direction;
+# returns whether it escaped and after how many steps
+define henon(a, b, step) = (escaped : Bool, n : Z) where
+    aa := (a + 1) / 2
+    disc := aa^2 - b
+    p := sqrt(disc) + aa
+    disc = p^2 - a
+    lambda := sqrt(disc) + p
+    x := p + lambda step
+    y := p + step
+    do
+        t := x
+        x = x^2 + b - a y
+        y = t
+    while x not escapes end
+    escaped = x escapes
+    n = .iterations
+end
+
+@viewer aplane a "a-plane" "Ctrl + 1"
+escaped : Bool = false
+n : Z = 0
+(escaped, n) = henon(a, .b, 0)
+color = .black
+if escaped then
+    color = cycle(n / 10, .blue, .white)
+end
+
+@viewer bplane b "b-plane" "Ctrl + 2"
+escaped : Bool = false
+n : Z = 0
+(escaped, n) = henon(.a, b, 0)
+color = .black
+if escaped then
+    color = cycle(n / 10, .blue, .white)
+end
+
+@viewer dynamics z "Hénon dynamics" "Ctrl + 3"
+escaped : Bool = false
+n : Z = 0
+(escaped, n) = henon(.a, .b, z zoom)
+color = .black
+if escaped then
+    color = rainbow(n / 10)
+end

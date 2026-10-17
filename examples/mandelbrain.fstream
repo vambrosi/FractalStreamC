@@ -1,0 +1,75 @@
+# Newton's method for the cubic with roots 1, -1/2 + a and -1/2 - a. The parameter plane
+# (a) follows the free critical point 0 of the Newton map; the dynamical plane shows the
+# basins of the three roots. Shading counts the steps; black: no convergence.
+# Ported from FractalStream examples/mandelbrain.yaml
+
+@config
+.title = "Newton's method"
+.width = 512
+.height = 512
+.maxIterations = 100
+.epsilon = 0.01               # "closeness"
+.a = 0                        # "a =" (pick it in the parameter plane)
+
+@global
+define dark(c : Color) = mix(c, .black, 1/3)
+define light(c : Color) = mix(c, .white, 1/3)
+
+# one Newton step for (z - r1)(z - r2)(z - r3)
+define newton(z, a) = next where
+    r1 := 1
+    r2 := -0.5 + a
+    r3 := -0.5 - a
+    f := (z - r1) (z - r2) (z - r3)
+    df := (z - r2) (z - r3) + (z - r1) (z - r3) + (z - r1) (z - r2)
+    next = z - f / df
+end
+
+# colour by the root reached, shaded by the number of steps n
+define basin(z, a, n : Z) = c : Color where
+    c = .gray
+    if z == 1 then
+        c = .red
+    else if z == -0.5 + a then
+        c = .green
+    else if z == -0.5 - a then
+        c = .blue
+    end
+    s : R = cos(n pi / 10)^2
+    c = mix(light(c), dark(c), s)
+end
+
+@viewer parameter a "Parameter plane" "Ctrl + 1"
+z := 0
+lastZ := 0
+do
+    lastZ = z
+    z = newton(z, a)
+while z != lastZ end
+if z == lastZ then
+    color = basin(z, a, .iterations)
+else
+    color = .black
+end
+
+@viewer dynamical z "Newton's method dynamics" "Ctrl + 2"
+lastZ := 0
+do
+    lastZ = z
+    z = newton(z, .a)
+while z != lastZ end
+if z == lastZ then
+    color = basin(z, .a, .iterations)
+else
+    color = .black
+end
+
+@dynamical.tool "Trace" "T" "timeline"
+lastZ := 0
+while z != lastZ do
+    lastZ = z
+    z = newton(z, .a)
+    draw point at lastZ
+    draw line between lastZ and z
+end
+draw point at z

@@ -1,0 +1,136 @@
+# Tour of the colour maps of the old FractalStream: pick one with `index` and see it on a
+# linear gradient, a cyclic gradient, the Mandelbrot set and a Julia set (escape time,
+# optionally smooth, optionally with a phase shift above the real axis: "checkers").
+#   0 rainbow  1 arenberg  2 romao  3 bamo  4 broco  5 corko  6 viko  7 ice  8 fire
+#   9 rose  10 wheat  11 forest  12 ocean  13 winter  14 spring  15 summer  16 fall
+# Ported from FractalStream examples/color-test.fs
+
+@config
+.title = "Color test"
+.width = 640
+.height = 480
+.maxIterations = 100          # "Iterations limit"
+.escapeRadius = 10
+index : Z = 0 in 0..16        # "Color scheme" (see the list above)
+speed : Z = 20 in 1..100      # "Iterations per color cycle"
+smooth : Bool = true          # "Use smooth coloring?"
+checkers : Bool = false       # "Use checkers?"
+checker_shift : R = 0.333     # "Checker phase shift"
+.C = -0.11 + 0.78i            # "C = " (pick it in the Mandelbrot set)
+mandelbrot.radius = 1.34      # 1/150 per pixel in the old 450x402 window
+julia.radius = 1.31           # 1/150 per pixel in the old 429x393 window
+
+@global
+# a wheel of 8 colours given as 0..255 RGB triples, one turn per unit of t
+define wheel(t : R, c1 : R^3, c2 : R^3, c3 : R^3, c4 : R^3,
+             c5 : R^3, c6 : R^3, c7 : R^3, c8 : R^3) = c : Color where
+    s : R = 8 fract(t)
+    u : R = fract(s)
+    k : Z = floor(s)
+    if k == 0 then
+        c = mix(c1, c2, u)
+    else if k == 1 then
+        c = mix(c2, c3, u)
+    else if k == 2 then
+        c = mix(c3, c4, u)
+    else if k == 3 then
+        c = mix(c4, c5, u)
+    else if k == 4 then
+        c = mix(c5, c6, u)
+    else if k == 5 then
+        c = mix(c6, c7, u)
+    else if k == 6 then
+        c = mix(c7, c8, u)
+    else
+        c = mix(c8, c1, u)
+    end
+    c = c / 255
+end
+
+# a "sawtooth" map: 5 colours there and back again
+define saw(t : R, c1 : R^3, c2 : R^3, c3 : R^3, c4 : R^3, c5 : R^3) = wheel(t, c1, c2, c3, c4, c5, c4, c3, c2)
+
+define colorize(t : R) = c : Color where
+    if index == 0 then        # rainbow
+        c = wheel(t, [255, 0, 0], [255, 100, 0], [255, 255, 0], [0, 180, 0],
+                     [0, 128, 128], [0, 0, 255], [128, 0, 128], [255, 0, 160])
+    else if index == 1 then   # arenberg: 8 points of the Arenberg phase wheel
+        c = wheel(t, [255, 80, 81], [255, 174, 0], [152, 190, 0], [0, 183, 74],
+                     [0, 237, 232], [0, 172, 255], [184, 161, 255], [255, 134, 226])
+    # romao ... viko: from https://s-ink.org/scientific-colour-maps
+    else if index == 2 then   # romao
+        c = wheel(t, [201, 218, 169], [196, 163, 72], [164, 103, 43], [137, 64, 53],
+                     [116, 57, 88], [93, 84, 140], [81, 135, 185], [136, 197, 201])
+    else if index == 3 then   # bamo
+        c = wheel(t, [208, 200, 189], [212, 162, 196], [178, 110, 160], [118, 59, 102],
+                     [78, 45, 63], [79, 69, 59], [105, 110, 75], [177, 186, 150])
+    else if index == 4 then   # broco
+        c = wheel(t, [201, 203, 179], [139, 162, 190], [89, 115, 155], [57, 65, 100],
+                     [57, 46, 55], [69, 63, 41], [109, 105, 60], [166, 165, 118])
+    else if index == 5 then   # corko
+        c = wheel(t, [165, 196, 173], [134, 157, 185], [86, 111, 148], [64, 68, 93],
+                     [64, 62, 57], [69, 79, 43], [79, 115, 58], [117, 164, 111])
+    else if index == 6 then   # viko
+        c = wheel(t, [210, 179, 161], [119, 157, 187], [61, 104, 151], [60, 53, 103],
+                     [80, 25, 59], [105, 24, 34], [150, 62, 35], [203, 135, 99])
+    else if index == 7 then   # ice
+        c = saw(t, [30, 203, 255], [95, 216, 251], [137, 227, 249], [173, 239, 249], [207, 249, 252])
+    else if index == 8 then   # fire
+        c = saw(t, [255, 61, 61], [255, 123, 57], [255, 171, 71], [255, 212, 103], [255, 250, 148])
+    else if index == 9 then   # rose
+        c = saw(t, [255, 0, 153], [255, 88, 98], [247, 146, 65], [213, 191, 77], [179, 226, 131])
+    else if index == 10 then  # wheat
+        c = saw(t, [0, 179, 255], [102, 175, 229], [138, 172, 203], [243, 215, 164], [237, 242, 0])
+    else if index == 11 then  # forest
+        c = saw(t, [12, 73, 0], [66, 87, 18], [103, 100, 44], [134, 114, 74], [159, 131, 107])
+    else if index == 12 then  # ocean
+        c = saw(t, [10, 0, 73], [0, 52, 106], [4, 94, 125], [84, 135, 140], [152, 173, 167])
+    else if index == 13 then  # winter
+        c = saw(t, [247, 250, 255], [195, 203, 223], [148, 157, 192], [107, 113, 160], [70, 70, 128])
+    else if index == 14 then  # spring
+        c = saw(t, [103, 223, 130], [136, 207, 87], [164, 188, 49], [189, 167, 14], [211, 142, 8])
+    else if index == 15 then  # summer
+        c = saw(t, [48, 92, 206], [0, 135, 180], [0, 161, 177], [0, 193, 149], [35, 227, 0])
+    else if index == 16 then  # fall
+        c = saw(t, [128, 55, 3], [158, 99, 26], [186, 143, 55], [212, 189, 90], [235, 236, 131])
+    else
+        c = .gray
+    end
+end
+
+# escape-time parameter of an escaped orbit (z after n steps)
+define escape_t(z, n : Z) = t : R where
+    t = n
+    if smooth then
+        t = n + 1 - log(log(|z|^2) / (2 log(10))) / log(2)
+    end
+    t = t / speed
+    if checkers and im z > 0 then
+        t = t + checker_shift
+    end
+end
+
+@viewer mandelbrot C "Mandelbrot set" "Ctrl + 1"
+z := 0
+while z not escapes do
+    z = z^2 + C
+end
+color = .black
+if z escapes then
+    color = colorize(escape_t(z, .iterations))
+end
+
+@viewer julia z "Julia set" "Ctrl + 2"
+while z not escapes do
+    z = z^2 + .C
+end
+color = .black
+if z escapes then
+    color = colorize(escape_t(z, .iterations))
+end
+
+@viewer linear x "Linear gradient" "Ctrl + 3"
+color = colorize(re x / 4)
+
+@viewer cyclic w "Cyclic gradient" "Ctrl + 4"
+color = colorize(arg w / (2 pi))

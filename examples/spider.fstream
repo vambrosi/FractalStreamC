@@ -1,0 +1,303 @@
+# Thurston's spider algorithm for θ = p/q (an unfinished experiment in the original).
+# "Draw standard spider" draws the legs at angles 2^k θ, finds the preperiod and period of
+# θ under doubling and its kneading sequence (no text here: the A/B half planes are orange
+# and cyan dots, the sequence a row of dots under the circle, white/gray for ★1/★2, with a
+# bar before the periodic part). "Reset spider" and "Apply spider map" pull the spider back.
+# Ported from FractalStream examples/spider.yaml
+
+@config
+.title = "Spider algorithm"
+.width = 512
+.height = 512
+.maxIterations = 1000         # "Max. iterations"
+p : Z = 9                     # θ = p / q
+q : Z = 56
+foot : R = 0.03               # "Foot radius"
+preperiod : Z = 0             # computed by "Draw standard spider"
+period : Z = 0
+encloses_zero : Bool = false  # computed by "Reset spider": does γ wind around 0?
+spider_ready : Bool = false
+
+@global
+colA : Color = .orange
+colB : Color = .cyan
+define dark(c : Color) = mix(c, .black, 1/3)
+define light(c : Color) = mix(c, .white, 1/3)
+
+# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
+define rainbow(t : R) = c : Color where
+    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
+    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
+    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
+    s : R = 8 fract(t)
+    k : Z = floor(s) + 1
+    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
+end
+
+# kneading sequence: 0 = ★1, 1 = ★2, 2 = A, 3 = B
+kneading : List of Z = []
+
+# The spider: legs of K points each, one after the other in one list (lists hold at most
+# 64 items, and there are no lists of lists), each leg going from its foot outwards.
+spider : List of C = []
+K : Z = 0
+contour : List of C = []
+
+# the preimage of w under P(z) = z2 (1 + z/2)^2 closest to `near`
+define pullback(w, z2, near) = pre where
+    pre = -2 + 2 sqrt(w / z2)
+    other := -2 - 2 sqrt(w / z2)
+    if |other - near| < |pre - near| then
+        pre = other
+    end
+end
+
+@viewer standard z "Standard spider" "Ctrl + 1"
+color = .white
+
+@viewer iterated z "Iterated spider" "Ctrl + 2"
+color = .white
+
+@standard.tool "Draw standard spider" "S" "pest_control"
+.panning = true
+# Work with 2p / 2q, so that the two preimages of θ are h1 / 2q and h2 / 2q.
+P2 : Z = 2 p
+Q2 : Z = 2 q
+h2 : Z = p
+h1 : Z = p + q
+
+draw circle at 0 with radius 1 and color .gray
+star1 := cis(2 pi h1 / Q2)
+star2 := cis(2 pi h2 / Q2)
+draw line between star1 and star2 with color .gray
+draw disk at i star2 / 2 with radius 4 px and color colA      # write "A"
+draw disk at -i star2 / 2 with radius 4 px and color colB     # write "B"
+
+# Brent's cycle detection algorithm
+power : Z = 1
+period = 1
+tortoise : Z = P2
+hare : Z = (2 P2) mod Q2
+while tortoise != hare do
+    if power == period then
+        tortoise = hare
+        power = 2 power
+        period = 0
+    end
+    hare = (2 hare) mod Q2
+    period += 1
+end
+tortoise = P2
+hare = P2
+for k in 1..period do
+    hare = (2 hare) mod Q2
+end
+preperiod = 0
+while tortoise != hare do
+    tortoise = (2 tortoise) mod Q2
+    hare = (2 hare) mod Q2
+    preperiod += 1
+end
+
+# The legs, coloured around the rainbow, and the kneading sequence
+n : Z = preperiod + period
+clear(kneading)
+t : Z = P2
+for k in 1..n do
+    omega := cis(2 pi t / Q2)
+    if t == h1 then
+        append(kneading, 0)
+    else if t == h2 then
+        append(kneading, 1)
+    else if re(i star2 conj(omega)) > 0 then
+        append(kneading, 2)
+    else
+        append(kneading, 3)
+    end
+    c : Color = rainbow((k - 1) / n)
+    draw line between omega and 10 omega with color dark(c)
+    draw disk at omega with radius foot and color light(c)
+    draw circle at omega with radius foot and color dark(c)
+    t = (2 t) mod Q2
+end
+
+# the kneading sequence, as a row of dots under the circle
+for k in 1..n do
+    x : R = -1 + 2 (k - 0.5) / n
+    s : Z = kneading[k]
+    c : Color = .gray
+    if s == 0 then
+        c = .white
+    else if s == 2 then
+        c = colA
+    else if s == 3 then
+        c = colB
+    end
+    draw disk at x - 1.3i with radius 5 px and color c
+    draw circle at x - 1.3i with radius 5 px and color .black
+end
+xbar : R = -1 + 2 preperiod / n
+draw line between xbar - 1.2i and xbar - 1.4i with color .black and width 2 px
+
+clear(spider)
+spider_ready = false
+
+@iterated.tool "Reset spider" "R" "restart_alt"
+.panning = true
+n : Z = preperiod + period
+if n == 0 then
+    return                    # run "Draw standard spider" first
+end
+K = floor(64 / n)
+R : R = 10
+clear(spider)
+
+# Move the first foot of the spider to 0: leg j is t -> R^(1 - t) omega_j + b t
+b := -cis(2 pi p / q)
+omega := cis(2 pi p / q)
+for j in 1..n do
+    for k in 1..K do
+        t : R = 1 - (k - 1) / (K - 1)
+        append(spider, R^(1 - t) omega + b t)
+    end
+    omega = omega^2
+end
+spider_ready = true
+
+# the contour γ: the preimage of the first leg, closed on the right (see below)
+z2 := spider[K + 1]
+clear(contour)
+half : List of C = []
+last_pre := -2 + 2 sqrt(spider[1] / z2)
+for k in 1..K do
+    last_pre = pullback(spider[k], z2, last_pre)
+    append(half, last_pre)
+end
+for k in K..1 by -1 do
+    append(contour, half[k])
+end
+last_pre = -2 - 2 sqrt(spider[1] / z2)
+for k in 1..K do
+    last_pre = pullback(spider[k], z2, last_pre)
+    append(contour, last_pre)
+end
+first_pt := contour[1]
+last_pt := contour[|contour|]
+append(contour, 10 + i im last_pt)
+append(contour, 10 + i im first_pt)
+append(contour, first_pt)
+
+# Determine if the contour encloses 0 or not
+integral := 0
+for k in 2..|contour| do
+    integral += (contour[k] - contour[k - 1]) / contour[k - 1]
+end
+encloses_zero = im integral > 0
+
+# draw the spider and the contour
+for j in 1..n do
+    c : Color = rainbow((j - 1) / n)
+    for k in 2..K do
+        draw line between spider[(j - 1) K + k - 1] and spider[(j - 1) K + k] with color dark(c)
+    end
+    draw line between spider[j K] and 2 spider[j K] with color dark(c)
+    draw disk at spider[(j - 1) K + 1] with radius foot and color light(c)
+    draw circle at spider[(j - 1) K + 1] with radius foot and color dark(c)
+end
+for k in 2..|contour| do
+    draw line between contour[k - 1] and contour[k] with color .gray
+end
+draw disk at -2 with radius 3 px and color .gray      # write "-2" at -2.2
+
+@iterated.tool "Apply spider map" "A" "redo"
+.panning = true
+n : Z = preperiod + period
+if not spider_ready or |spider| != n K then
+    return                    # run "Reset spider" first
+end
+z_2 := spider[K + 1]
+zero_winding : Z = -1
+if encloses_zero then
+    zero_winding = 1
+end
+scale : R = sqrt(10)          # rescale the new spider to roughly the size of the old one
+new_spider : List of C = []
+for j in 1..n do
+    # leg j + 1 (cyclically), and its foot z_(j+1)
+    base : Z = (j mod n) K
+    z_jp1 := spider[base + 1]
+
+    # see which preimage -2 + 2 sqrt(z_(j+1) / z_2) is inside the contour
+    w := -2 + 2 sqrt(z_jp1 / z_2)
+    integral := 0
+    for k in 2..|contour| do
+        integral += (contour[k] - contour[k - 1]) / (contour[k] - w)
+    end
+    sqrt_sign : Z = -1
+    if im integral > 0 then
+        sqrt_sign = 1
+    end
+
+    # pick the preimage inside or outside the contour from the j-th kneading symbol
+    # (TODO in the original: deal with the ★ symbols)
+    symbol : Z = kneading[j]
+    last_pre := 0
+    if symbol == 2 then
+        last_pre = -2 + 2 sqrt_sign zero_winding sqrt(z_jp1 / z_2)
+    else if symbol == 3 then
+        last_pre = -2 - 2 sqrt_sign zero_winding sqrt(z_jp1 / z_2)
+    end
+    append(new_spider, scale last_pre)
+    for k in 2..K do
+        last_pre = pullback(spider[base + k], z_2, last_pre)
+        append(new_spider, scale last_pre)
+    end
+    # the original added one more segment to reach radius 10; the legs have a fixed
+    # number of points here, so the last point is moved out instead
+    if |last_pre| < 10 then
+        new_spider[|new_spider|] = 10 scale last_pre / |last_pre|
+    end
+end
+spider = new_spider
+
+# redraw the spider
+for j in 1..n do
+    c : Color = rainbow((j - 1) / n)
+    for k in 2..K do
+        draw line between spider[(j - 1) K + k - 1] and spider[(j - 1) K + k] with color dark(c)
+    end
+    draw disk at spider[(j - 1) K + 1] with radius foot and color light(c)
+    draw circle at spider[(j - 1) K + 1] with radius foot and color dark(c)
+end
+
+# recompute the contour γ
+z2 := spider[K + 1]
+clear(contour)
+half : List of C = []
+last_pre = -2 + 2 sqrt(spider[1] / z2)
+for k in 1..K do
+    last_pre = pullback(spider[k], z2, last_pre)
+    append(half, last_pre)
+end
+for k in K..1 by -1 do
+    append(contour, half[k])
+end
+last_pre = -2 - 2 sqrt(spider[1] / z2)
+for k in 1..K do
+    last_pre = pullback(spider[k], z2, last_pre)
+    append(contour, last_pre)
+end
+first_pt := contour[1]
+last_pt := contour[|contour|]
+append(contour, 10 + i im last_pt)
+append(contour, 10 + i im first_pt)
+append(contour, first_pt)
+integral2 := 0
+for k in 2..|contour| do
+    integral2 += (contour[k] - contour[k - 1]) / contour[k - 1]
+end
+encloses_zero = im integral2 > 0
+for k in 2..|contour| do
+    draw line between contour[k - 1] and contour[k] with color .gray
+end
+draw disk at -2 with radius 3 px and color .gray

@@ -1,0 +1,21 @@
+# Test of the old "preparation" step (code run once before the pixels, whose results the
+# viewer can read): a blue disk of the configured radius on a background of the
+# configured colour. Here the viewer simply reads the config variable itself.
+# Ported from FractalStream examples/prep-test.yaml
+
+@config
+.title = "Voronoi"
+.width = 150
+.height = 150
+plane.radius = 0.5859        # 1/128 per pixel in a 150x150 window
+myList : List of C = [0, 1, i]   # "Centers" (unused, as in the original)
+radius : R = 0.2
+myColor : Color = .yellow
+
+@viewer plane z "Voronoi" "Ctrl + 1"
+computed : Color = myColor       # was computed once, in the preparation step
+if |z| < radius then
+    color = .blue
+else
+    color = computed
+end

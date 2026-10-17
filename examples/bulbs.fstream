@@ -1,0 +1,106 @@
+# The Mandelbrot set, with a "Bulb info" tool: click a point of the Mandelbrot set to find
+# the period of its attracting cycle. The result goes into the `period` config variable,
+# and every clicked point is marked with that many dots around it (a red cross: outside
+# the Mandelbrot set, a gray circle: period larger than max_period).
+# Ported from FractalStream examples/bulbs.yaml
+
+@config
+.title = "Mandelbrot set"
+.width = 512
+.height = 512
+.maxIterations = 100
+.escapeRadius = 10
+warmup : Z = 10000            # "Warmup iterations"
+max_period : Z = 1000         # "Maximum period"
+tol : R = 0.0001              # "Tolerance when checking for cycles"
+period : Z = 0                # result of the last click: 0 outside, -1 unknown
+
+@global
+# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
+define rainbow(t : R) = c : Color where
+    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
+    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
+    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
+    s : R = 8 fract(t)
+    k : Z = floor(s) + 1
+    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
+end
+
+# the annotations so far (the old tool wrote the period as text at each clicked point)
+marks : List of C = []
+periods : List of Z = []
+
+@viewer plane C "Mandelbrot set" "Ctrl + 1"
+z := 0
+while z not escapes do
+    z = z^2 + C
+end
+if z escapes then
+    color = rainbow(.iterations / 20)
+else
+    color = .black
+end
+
+@plane.tool "Bulb info" "B" "info"
+.panning = true               # clicks only: dragging pans
+saved : Z = .maxIterations
+.maxIterations = max(warmup, max_period)   # these loops are longer than the viewer's
+
+# Iterate z^2 + C many times so that we end up with z close to one of the points on
+# the attracting cycle.
+z := 0
+for k in 1..warmup do
+    if z escapes then
+        break
+    end
+    z = z^2 + C
+end
+
+# Now count how many times we need to apply z^2 + C until we get back to z again.
+if z escapes then
+    period = 0
+else
+    target := z
+    n : Z = 0
+    do
+        z = z^2 + C
+        n += 1
+    while |z - target| >= tol and n < max_period end
+    if |z - target| >= tol then
+        period = -1
+    else
+        period = n
+    end
+end
+.maxIterations = saved
+
+if |marks| == 64 then          # lists hold at most 64 items
+    clear(marks)
+    clear(periods)
+end
+append(marks, C)
+append(periods, period)
+
+# redraw all the annotations
+h : R = plane.radius / 25
+for k in 1..|marks| do
+    m := marks[k]
+    n : Z = periods[k]
+    if n == 0 then
+        draw line between m - h - h i and m + h + h i with color .red
+        draw line between m - h + h i and m + h - h i with color .red
+    else if n < 0 then
+        draw circle at m with radius 4 px and color .gray
+    else
+        draw point at m
+        for j in 1..n do
+            draw disk at m + h cis(tau j / n) with radius 1.5 px and color .white
+        end
+    end
+end
+
+@plane.tool "Erase annotations" "E" "delete"
+# forget the annotations (a tool can't erase another tool's drawings, so the marks go
+# away at the next "Bulb info" click)
+clear(marks)
+clear(periods)

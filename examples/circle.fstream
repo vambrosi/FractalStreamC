@@ -1,0 +1,16 @@
+# The simplest picture: red inside the unit circle, green above it, blue below.
+# Ported from FractalStream examples/circle.yaml
+
+@config
+.title = "Circle"
+.width = 512
+.height = 512
+
+@viewer plane z "Circle" "Ctrl + 1"
+if |z| < 1 then
+    color = .red
+else if im z > 0 then
+    color = .green
+else
+    color = .blue
+end

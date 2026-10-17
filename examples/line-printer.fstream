@@ -1,0 +1,31 @@
+# "Mandelbrot set throwback": the plane is cut into character cells, and each cell whose
+# corner parameter is in the Mandelbrot set gets a black asterisk, like an old line printer.
+# Ported from FractalStream examples/line-printer.yaml
+
+@config
+.title = "Mandelbrot set throwback"
+.width = 752
+.height = 546
+.maxIterations = 250
+.escapeRadius = 10
+plane.center = -0.75
+plane.radius = 1.241         # 1/220 per pixel in a 752x546 window
+xsize : R = 0.035            # "Cell width"
+shift : R = -0.05            # "Parameter shift"
+
+@viewer plane w "Mandelbrot set throwback" "Ctrl + 1"
+ysize : R = 1.66 xsize
+
+C := xsize floor(re w / xsize) + i ysize floor(im w / ysize)
+r := 2 ((w - C) / xsize) - 1 - 1.66i
+C += shift
+
+z := 0
+while z not escapes do
+    z = z^2 + C
+end
+
+color = rgb(0.980, 0.976, 0.965)
+if .stuck and |r|^2 < (1.5 - cos(6 arg r)) / 3 then
+    color = .black
+end

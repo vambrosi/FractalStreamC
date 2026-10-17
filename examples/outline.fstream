@@ -1,0 +1,58 @@
+# Outlines of the Mandelbrot set and of a Julia set: a point is on the boundary when a
+# distance estimate (orbit divided by its derivative) drops below a fraction of a pixel.
+# Ported from FractalStream examples/outline.yaml
+
+@config
+.title = "Outlines"
+.width = 512
+.height = 512
+.maxIterations = 100
+.escapeRadius = 10            # "Max. radius"
+.epsilon = 0.001              # "Min. radius"
+.C = -0.1226 + 0.7449i        # "Selected value of C" (pick it in the parameter plane)
+fatness : R = 0.1 in 0.01..2
+boundary_color : Color = .black
+exterior_color : Color = .white
+interior_color : Color = rgb(0.926, 0.863, 0.927)
+
+@viewer parameter C "Parameter plane" "Ctrl + 1"
+# the size of a pixel: the old viewer knew it; here it is estimated from the view radius
+# (256 pixels per radius in the initial 512x512 window)
+pixel : R = parameter.radius / 256
+z := 0
+tol : R = pixel fatness / 2
+dzdc := 0
+der := 1
+
+do
+    dzdc = 1 + 2 z dzdc
+    z = z^2 + C
+    der = 2 z der
+while not (|z / dzdc| < tol or z escapes or der vanishes) end
+
+if z escapes then
+    color = exterior_color
+else if |z / dzdc| < tol then
+    color = boundary_color
+else
+    color = interior_color
+end
+
+@viewer dynamical z "Dynamical plane" "Ctrl + 2"
+pixel : R = dynamical.radius / 256
+dz := 1
+w := z
+tol : R = 2 pixel fatness
+
+do
+    dz = 2 z dz
+    z = z^2 + .C
+while not (z escapes or |z / dz - w / dz| < tol or dz vanishes) end
+
+if z escapes then
+    color = exterior_color
+else if |z / dz - w / dz| < tol then
+    color = boundary_color
+else
+    color = interior_color
+end

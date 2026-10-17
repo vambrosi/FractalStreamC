@@ -1,0 +1,41 @@
+# The Mandelbrot set tiled by Julia sets: the plane is cut into small squares, and each
+# square shows (a zoom of) the Julia set of the parameter at its centre.
+# Ported from FractalStream examples/tiled-mandelbrot.yaml
+
+@config
+.title = "Mandelbrot set tiled by Julia sets"
+.width = 512
+.height = 512
+.maxIterations = 100
+.escapeRadius = 10
+size : R = 0.05               # "Julia set size"
+scale : R = 2.5               # "Julia set zoom level"
+
+@global
+# the old built-in rainbow: red, orange, yellow, green, teal, blue, purple, violet, red
+define rainbow(t : R) = c : Color where
+    r : R^9 = [1, 1, 1, 0, 0, 0, 0.5, 1, 1]
+    g : R^9 = [0, 0.39, 1, 0.71, 0.5, 0, 0, 0, 0]
+    b : R^9 = [0, 0, 0, 0, 0.5, 1, 0.5, 0.63, 0]
+    s : R = 8 fract(t)
+    k : Z = floor(s) + 1
+    c = mix(rgb(r[k], g[k], b[k]), rgb(r[k + 1], g[k + 1], b[k + 1]), fract(s))
+end
+
+@viewer plane w "Tiled Mandelbrot set" "Ctrl + 1"
+x : R = re(w) mod size
+y : R = im(w) mod size
+
+C := w - (x + i y) + (1 + i) size / 2
+z := (x + i y - (1 + i) size / 2) scale / size
+
+while z not escapes do
+    z = z^2 + C
+end
+
+if .stuck then
+    color = .black
+else
+    m : R = .iterations + 1 - log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
+    color = rainbow(m / 20)
+end
