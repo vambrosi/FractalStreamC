@@ -438,6 +438,38 @@ TEST(app_reference_parse) {
     rd_free_blocks(&blocks);
 }
 
+/* what the editor says about a word under the mouse */
+TEST(app_hover_info) {
+    Program *p = program_load("@config\n"
+                              "a : R = 0.3 in 0..1 \"The a\"\n"
+                              "define f(z, n : Z) = z^n\n"
+                              "@viewer mandel c \"Parameter plane\"\n"
+                              "color = hsv(re(f(c, 2)), 1, 1)\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    const char *h = hover_info(NULL, ".maxIterations");
+    CHECK(h && strstr(h, "iteration limit"));
+    h = hover_info(NULL, "a");
+    CHECK(h && strstr(h, "a : R in 0..1") && strstr(h, "The a") && strstr(h, "config"));
+    h = hover_info(NULL, "f");
+    CHECK(h && strstr(h, "f(z : C, n : Z) : C"));
+    h = hover_info(NULL, "hsv");
+    CHECK_MSG(h && strstr(h, "hsv("), "%s", h ? h : "(null)");
+    h = hover_info(NULL, "re");
+    CHECK(h && strstr(h, "re(C) : R"));
+    h = hover_info(NULL, "mandel.center");
+    CHECK(h && strstr(h, "the centre"));
+    h = hover_info(NULL, "mandel");
+    CHECK(h && strstr(h, "Parameter plane"));
+    h = hover_info(NULL, ".c");
+    CHECK(h && strstr(h, ".c : C"));
+    CHECK(hover_info(NULL, "nothing_here") == NULL);
+    h = hover_info(NULL, "c"); /* (the viewer's variable: a local of the section) */
+    CHECK_MSG(h && strstr(h, "c : C"), "%s", h ? h : "(null)");
+    app_test_end();
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -447,4 +479,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_recent_files),
     TESTCASE(app_settings_and_prepare),
     TESTCASE(app_reference_parse),
+    TESTCASE(app_hover_info),
 };

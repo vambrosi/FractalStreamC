@@ -931,6 +931,122 @@ static void update_completions(Program *p) {
     sb_free(&sb);
 }
 
+/* ---- what a word of the script is (the editor shows it when the mouse rests on the word) ----------------------- */
+static const char *hover_info(void *user, const char *word) {
+    static char out[700];
+    static const struct { const char *name, *text; } words[] = {
+        {".maxIterations", ".maxIterations : Z\nthe iteration limit of while and do loops (default 1000)"},
+        {".epsilon", ".epsilon : R\nthe tolerance of == and of vanishes (default 1e-6)"},
+        {".escapeRadius", ".escapeRadius : R\nz escapes means |z| > .escapeRadius (default 2)"},
+        {".stuck", ".stuck : Bool\ntrue when the last loop hit .maxIterations, or Newton's method failed"},
+        {".iterations", ".iterations : Z\nhow many times the last loop ran"},
+        {".lastClick", ".lastClick : C\nthe point of the last click or drag"},
+        {".dragStart", ".dragStart : C\nwhere the mouse button went down (tools: on drag, on release)"},
+        {".mouse", ".mouse : C\nthe point under the mouse"},
+        {".time", ".time : R\nseconds since the script started (the views using it are animated)"},
+        {".pixel", ".pixel : R\nthe size of a pixel of the view, in the plane (in a tool: of the view clicked)"},
+        {".width", ".width : Z\nthe initial width of the window"},
+        {".height", ".height : Z\nthe initial height of the window"},
+        {".title", ".title\nthe title of the window"},
+        {".panning", ".panning (in a tool)\ntrue: dragging pans the view and a click runs the tool"},
+        {".hover", ".hover (in a tool)\ntrue: the tool runs whenever the mouse moves"},
+        {".keep", ".keep (in a tool)\ntrue: the drawings build up until erase"},
+        {".j", ".j : H\nthe quaternion unit j"},
+        {".k", ".k : H\nthe quaternion unit k"},
+        {"escapes", "z escapes\n|z| > .escapeRadius"},
+        {"vanishes", "z vanishes\n|z| < .epsilon"},
+        {"critical", "critical t -> f(t) with seed s\na zero of the derivative of f (a critical point), by Newton's method from s; "
+                     ".stuck if it fails. Add `continuing from c = P` in a viewer to follow it from pixel to pixel."},
+        {"root", "root t -> f(t) with seed s\na zero of f, by Newton's method from s; .stuck if it fails"},
+        {"derivative", "derivative t -> f(t) at x\nf'(x), by automatic differentiation"},
+        {"continuing", "... continuing from c = P\nthe solution is found at the pixel of P, then followed to the other pixels "
+                       "(each one starts from a neighbour's)"},
+        {"seed", "with seed s\nwhere Newton's method starts"},
+        {"while", "while COND do ... end\nruns at most .maxIterations times; .stuck tells whether it hit the limit and "
+                  ".iterations how many times it ran"},
+        {"do", "do ... while COND (or: while COND do ... end)"},
+        {"for", "for k in a..b do ... end\nall of the range (by STEP: another step); for x in LIST do ... end"},
+        {"draw", "draw line between P and Q, draw point at P, draw circle at P with radius r, draw disk ..., "
+                 "draw text \"...\" + value at P; with color c (in tools)"},
+        {"erase", "erase\nthis tool's drawings (erase all: every tool's; erase \"Name\": that tool's)"},
+        {"define", "define f(x) = expression\nor: define f(x) = y where ... end (the results are named after =)"},
+        {"where", "define f(x) = y where ... end\nthe body that computes the results"},
+        {"px", "N px\nN pixels of the view (a radius or a distance on the screen)"},
+        {"mod", "a mod b\nthe remainder, with the sign of b"},
+        {"palette", "palette(\"name\", t) : Color\nthe maps rainbow arenberg romao bamo broco corko viko (cyclic) and ice fire "
+                    "wheat rose forest ocean winter spring summer fall; period 1 in t"},
+        {"on", "on press / drag / release / click / hover / show / hide do ... end\nthe part of a tool that runs on that event"},
+        {"color", "color\nwhat a viewer sets for its pixel (it starts black)"},
+    };
+    for (int k = 0; k < ARRAY_COUNT(words); k++)
+        if (!strcmp(words[k].name, word)) return words[k].text;
+    Program *p = A.prog;
+    if (!p) return NULL;
+    StrBuf sb = {0};
+    const char *dot = strchr(word, '.');
+    if (dot && dot != word) { /* NAME.center, NAME.radius */
+        for (int v = 0; v < p->nviewers; v++) {
+            Section *vs = p->viewers[v];
+            size_t n = (size_t)(dot - word);
+            if (strlen(vs->name) != n || strncmp(vs->name, word, n)) continue;
+            if (!strcmp(dot + 1, "center")) sb_printf(&sb, "%s : C\nthe centre of the view %s", word, vs->name);
+            else if (!strcmp(dot + 1, "radius")) sb_printf(&sb, "%s : R\nthe radius of the largest disk around the centre that fits in the view", word);
+        }
+    } else if (word[0] == '.') { /* the script's internals: picked points */
+        for (int i = 0; i < p->globals.len && !sb.len; i++) {
+            Sym *g = p->globals.data[i];
+            if (g->is_internal && !strcmp(g->name, word + 1))
+                sb_printf(&sb, "%s : %s%s%s", word, type_str(g->type), g->doc ? "\n" : "", g->doc ? g->doc : "");
+        }
+    } else {
+        for (int i = 0; i < p->globals.len && !sb.len; i++) { /* the script's variables */
+            Sym *g = p->globals.data[i];
+            if (g->is_internal || strcmp(g->name, word) != 0) continue;
+            sb_printf(&sb, "%s : %s", g->name, type_str(g->type));
+            if (g->has_range) sb_printf(&sb, " in %g..%g", g->range_lo, g->range_hi);
+            if (g->label) sb_printf(&sb, "\n\"%s\"", g->label);
+            sb_printf(&sb, "\n%s", g->is_config ? "a variable of @config (in the config panel)" : "a global variable");
+        }
+        bool var = sb.len > 0;
+        int shown = 0;
+        for (int i = 0; i < p->funcs.len && !var && shown < 4; i++) { /* functions (several for the overloads) */
+            Func *f = p->funcs.data[i];
+            if (strcmp(f->name, word) != 0) continue;
+            sb_printf(&sb, "%s%s(", shown ? "\n" : "", f->name);
+            for (int k = 0; k < f->nparams; k++)
+                sb_printf(&sb, "%s%s : %s", k ? ", " : "", f->params[k]->name, f->params[k]->type ? type_str(f->params[k]->type) : "?");
+            sb_printf(&sb, ")%s%s", f->ret ? " : " : "", f->ret ? type_str(f->ret) : "");
+            shown++;
+        }
+        for (int k = 0; k < ARRAY_COUNT(intrinsics) && !sb.len; k++) { /* built-ins */
+            const IntrinsicInfo *in = &intrinsics[k];
+            if (strcmp(in->name, word) != 0) continue;
+            sb_printf(&sb, "%s(", in->name);
+            for (int j = 0; j < in->nparams; j++) sb_printf(&sb, "%s%c", j ? ", " : "", in->params[j] == '*' ? 'x' : in->params[j]);
+            sb_printf(&sb, ")");
+            if (in->ret != '*') sb_printf(&sb, " : %c", in->ret);
+        }
+        for (int i = 0; i < p->sections.len && !sb.len; i++) { /* a local of a section (the first one met) */
+            Section *sec = p->sections.data[i];
+            for (int k = 0; k < sec->locals.len && !sb.len; k++) {
+                Sym *l = sec->locals.data[k];
+                if (l->name && !strcmp(l->name, word) && l->type)
+                    sb_printf(&sb, "%s : %s\na local variable (of the section)", word, type_str(l->type));
+            }
+        }
+        for (int v = 0; v < p->nviewers && !sb.len; v++) /* views */
+            if (!strcmp(p->viewers[v]->name, word))
+                sb_printf(&sb, "the view %s%s%s%s\n%s is the point of the pixel; %s.center and %s.radius are where it looks",
+                           word, p->viewers[v]->display ? " (\"" : "", p->viewers[v]->display ? p->viewers[v]->display : "",
+                           p->viewers[v]->display ? "\")" : "", p->viewers[v]->var ? p->viewers[v]->var : "z", word, word);
+    }
+    snprintf(out, sizeof out, "%s", sb_cstr(&sb));
+    sb_free(&sb);
+    size_t n = strlen(out);
+    while (n && out[n - 1] == '\n') out[--n] = 0;
+    return out[0] ? out : NULL;
+}
+
 /* ---- values of the script -------------------------------------------------------------------- */
 /* globals the app sets by itself */
 static bool app_managed(Program *p, Sym *s) {
@@ -4124,6 +4240,7 @@ int app_run(const char *script_path) {
         for (int k = 0; k < ARRAY_COUNT(pre) && n < 256; k++) names[n++] = pre[k];
         editor_set_builtins(A.ed, names, n);
         update_completions(NULL); /* (the script's own names come when it compiles) */
+        editor_set_hover(A.ed, hover_info, NULL);
     }
     const char *text = src ? src : welcome_script;
     editor_set_text(A.ed, text, (int)strlen(text));

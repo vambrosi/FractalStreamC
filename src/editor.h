@@ -105,6 +105,10 @@ void editor_set_builtins(Editor *ed, const char *const *names, int n); /* functi
 /* Names offered while a word is typed (2 characters or more): "name", or "name\tdetail" to show a detail
  * (e.g. "palette\tfunction").  Up / Down choose, Tab or Enter take one, Esc closes the list. */
 void editor_set_completions(Editor *ed, const char *const *names, int n);
+/* What a word is, shown when the mouse rests on it (".maxIterations", "f", "mandel.center"...): `fn` returns a text
+ * (kept until the next call) or NULL. */
+typedef const char *(*EditorHoverFn)(void *user, const char *word);
+void editor_set_hover(Editor *ed, EditorHoverFn fn, void *user);
 
 /* Search (one line of text; match_case false folds ASCII letters).  The searched text is highlighted in the
  * rows while editor_set_search holds it (NULL or "" stops). */

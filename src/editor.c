@@ -15,6 +15,7 @@
 #define EDP_MAX_UNDO 4000
 #define EDP_BLINK 0.53     /* caret blink half-period, seconds */
 #define EDP_TIP_DELAY 0.35 /* hover time before a diagnostic tooltip appears */
+#define EDP_HOVER_DELAY 0.6 /* ... and before what a word is (editor_set_hover) */
 
 /* ======================================================================================================
  * 1. data and buffer
@@ -87,6 +88,9 @@ struct Editor {
     int comp_sel;            /* the highlighted one, in comp_list */
     bool comp_nav;           /* chosen with Up / Down (or the mouse): Enter takes it (else Enter is a new line) */
     int comp_list[8], ncomp_list;
+    /* what a word under the mouse is (editor_set_hover) */
+    EditorHoverFn hover_fn;
+    void *hover_user;
 };
 
 Editor *editor_create(void) {
@@ -594,6 +598,11 @@ static bool edp_opens_block(const Editor *ed, const char *s, int n) {
         return edp_in_list(openers, 4, s + toks[i].start, toks[i].end - toks[i].start);
     }
     return false;
+}
+
+void editor_set_hover(Editor *ed, EditorHoverFn fn, void *user) {
+    ed->hover_fn = fn;
+    ed->hover_user = user;
 }
 
 void editor_set_completions(Editor *ed, const char *const *names, int n) {
@@ -1746,6 +1755,7 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
         ed->hover_y = in->mouse_y;
         ed->hover_since = in->time;
     }
+    bool tipped = false;
     if (ed->drag_mode == 0 && ed->diags.len > 0 && ui_mouse_over(x, y, w, L.th)) {
         int line = FS_CLAMP((int)floorf((in->mouse_y - L.ty + ed->scroll_y) / L.row_h), 0, L.nlines - 1);
         bool in_gutter = in->mouse_x < L.tx;
@@ -1761,7 +1771,34 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
             double waited = in->time - ed->hover_since;
             if (waited >= EDP_TIP_DELAY) ui_tooltip_now(d->message);
             else ui_wake_in(EDP_TIP_DELAY - waited);
+            tipped = true;
             break;
+        }
+    }
+    /* ---- resting on a word for a moment: what it is (see editor_set_hover) ---- */
+    if (!tipped && ed->hover_fn && ed->drag_mode == 0 && !ed->comp_open && rt.hovered) {
+        double waited = in->time - ed->hover_since;
+        if (waited < EDP_HOVER_DELAY) {
+            ui_wake_in(EDP_HOVER_DELAY - waited);
+        } else {
+            int off = edp_hit(ed, &L, in->mouse_x, in->mouse_y), a = off, b = off;
+            while (a > 0 && edp_word_char(ed->text[a - 1])) a--;
+            while (b < ed->len && edp_word_char(ed->text[b])) b++;
+            if (a > 0 && ed->text[a - 1] == '.') { /* .internal, or NAME.member */
+                a--;
+                if (a > 0 && edp_word_char(ed->text[a - 1]))
+                    while (a > 0 && edp_word_char(ed->text[a - 1])) a--;
+            }
+            int line = edp_line_of(ed, off), ls = edp_ls(ed, line);
+            float x0 = L.tx + L.pad - ed->scroll_x;
+            bool on_word = b > a && b - a < 120 && in->mouse_x >= x0 + edp_col_x(ed, ls, a) &&
+                           in->mouse_x < x0 + edp_col_x(ed, ls, b);
+            if (on_word) {
+                char word[128];
+                snprintf(word, sizeof word, "%.*s", b - a, ed->text + a);
+                const char *info = ed->hover_fn(ed->hover_user, word);
+                if (info && info[0]) ui_tooltip_now(info);
+            }
         }
     }
     return ed->version != version0;

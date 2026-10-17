@@ -29,8 +29,8 @@ end
 - `fractalstream script.fstream` opens a script. The script pane folds into a thin bar on the
   left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
   edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script; while you
-  type a name, the editor offers the ones it could be (Tab takes one). Changes made to the file
-  in another editor are picked up automatically.
+  type a name, the editor offers the ones it could be (Tab takes one), and resting the mouse on a
+  name says what it is. Changes made to the file in another editor are picked up automatically.
 - The coordinates of the point under the mouse show at the bottom left of the view; Ctrl+Shift+A
   (or the view's menu) adds the axes and grid lines with their values. Zooming deep (radius below
   about 1e-4) switches the view to double-single precision automatically.
