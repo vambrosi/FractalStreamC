@@ -31,6 +31,7 @@ static const char *test_skip_reason_ = NULL;
 #include "test_gfx.c"
 #include "test_ui.c"
 #include "test_editor.c"
+#include "test_app.c"
 
 typedef struct TestSuite { const char *name; const TestCase *cases; int count; } TestSuite;
 #define SUITE(arr) { #arr, arr, (int)(sizeof(arr) / sizeof(arr[0])) }
@@ -43,6 +44,7 @@ int main(int argc, char **argv) {
         SUITE(tests_gfx),
         SUITE(tests_ui),
         SUITE(tests_editor),
+        SUITE(tests_app),
         { "none", NULL, 0 }
     };
     int run = 0, failed = 0;

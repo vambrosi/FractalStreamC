@@ -246,6 +246,9 @@ bool ui_slider_int(const char *label, float x, float y, float w, float h, int *v
  * for 10x finer); double-click to type a number (Enter or click elsewhere accepts, Escape cancels).
  * If lo < hi the value is clamped to [lo, hi]. */
 bool ui_drag_double(const char *label, float x, float y, float w, float h, double *v, double speed, double lo, double hi, const char *fmt);
+/* The same for a positive value on a logarithmic scale: each logical pixel multiplies it by exp(speed). */
+bool ui_drag_double_log(const char *label, float x, float y, float w, float h, double *v, double speed, double lo, double hi,
+                        const char *fmt);
 bool ui_drag_float(const char *label, float x, float y, float w, float h, float *v, float speed, float lo, float hi, const char *fmt);
 bool ui_drag_int(const char *label, float x, float y, float w, float h, int *v, float speed, int lo, int hi);
 

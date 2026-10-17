@@ -161,6 +161,11 @@ static void plat_deliver_button(const PlatButtonEvent *e) {
 
 static void plat_on_mouse_button(int button, int action, int glfw_mods, double now) {
     plat.in.mods = plat_map_mods(glfw_mods);
+    if ((button == GLFW_MOUSE_BUTTON_4 || button == GLFW_MOUSE_BUTTON_5) && action == GLFW_PRESS) { /* side buttons */
+        if (button == GLFW_MOUSE_BUTTON_4) plat.in.mouse_back = true;
+        else plat.in.mouse_forward = true;
+        return;
+    }
     if (button < 0 || button > 2 || (action != GLFW_PRESS && action != GLFW_RELEASE)) return;
     PlatButtonEvent e = { button, action == GLFW_PRESS, now };
     plat_deliver_button(&e);
@@ -202,6 +207,7 @@ static bool plat_begin_frame(void) {
     memset(p->mouse_pressed, 0, sizeof p->mouse_pressed);
     memset(p->mouse_released, 0, sizeof p->mouse_released);
     p->scroll_x = p->scroll_y = 0;
+    p->mouse_back = p->mouse_forward = false;
     p->nkeys = 0;
     p->ntext = 0;
     for (int i = 0; i < plat.ndropped; i++) free(plat.dropped[i]);

@@ -78,6 +78,7 @@ typedef struct UiInput {
     bool mouse_pressed[3], mouse_released[3]; /* edges this frame; a press and the release of one button never share a
                                                  frame (a click that arrives within one poll is delivered over two) */
     int click_count;                          /* 1, 2, 3 for single/double/triple click on the last left press */
+    bool mouse_back, mouse_forward;           /* the side buttons of the mouse (4 and 5) were pressed this frame */
     float scroll_x, scroll_y;                 /* wheel delta this frame (lines; positive y = away from the user) */
     UiKeyEvent keys[64];                      /* ordered key presses, repeats and typed characters this frame */
     int nkeys;

@@ -38,40 +38,13 @@ static int cli_load(const char *path, Program **out) {
     return p->nerrors ? 1 : 0;
 }
 
-/* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-2i" */
-static bool parse_complex_literal_d(const char *s, double *re, double *im);
+/* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-2i" (parse_complex_literal_d is in program.c) */
 static bool parse_complex_literal(const char *s, float *re, float *im) {
     double r, i;
     bool ok = parse_complex_literal_d(s, &r, &i);
     *re = (float)r;
     *im = (float)i;
     return ok;
-}
-
-static bool parse_complex_literal_d(const char *s, double *re, double *im) {
-    char *end;
-    *re = *im = 0;
-    double a = strtod(s, &end);
-    if (end == s) {
-        if (*s == 'i') { *im = 1; return s[1] == 0; }
-        if (*s == '-' && s[1] == 'i' && !s[2]) { *im = -1; return true; }
-        return false;
-    }
-    if (*end == 'i' && end[1] == 0) { *im = a; return true; }
-    if (*end == 0) { *re = a; return true; }
-    if (*end != '+' && *end != '-') return false;
-    const char *t = end;
-    double b;
-    if (t[1] == 'i') { /* "1+i", "1-i" */
-        b = *t == '-' ? -1 : 1;
-        end = (char *)t + 1;
-    } else {
-        b = strtod(t, &end);
-    }
-    if (*end != 'i' || end[1] != 0) return false;
-    *re = a;
-    *im = b;
-    return true;
 }
 
 static Sym *cli_find_global(Program *p, const char *name) {

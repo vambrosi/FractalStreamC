@@ -21,8 +21,12 @@
 
 #if FS_OS_MACOS
 #define MODKEY "Cmd" /* the name of UI_MOD_MOD in labels */
+#define BACK_KEY "Cmd+[" /* Back / Forward, as the system's programs have them */
+#define FORWARD_KEY "Cmd+]"
 #else
 #define MODKEY "Ctrl"
+#define BACK_KEY "Alt+Left"
+#define FORWARD_KEY "Alt+Right"
 #endif
 
 enum { TOOL_PAN = -2, TOOL_PICK = -1 };
@@ -33,6 +37,21 @@ enum { DROP_NONE, DROP_REPLACE, DROP_LEFT, DROP_RIGHT, DROP_TOP, DROP_BOTTOM, DR
 typedef struct Rect { float x, y, w, h; } Rect;
 typedef struct LNode { int kind; int a, b; float ratio; int viewer; Rect r; } LNode;
 typedef struct VisTile { int viewer; Rect r; int node; int fl; } VisTile;
+
+/* where a view looks: Back / Forward go through the places a view has been */
+typedef struct ViewPlace {
+    double cx, cy;     /* the centre, with its low part */
+    float radius;
+    float mob[8];      /* projective views: the Möbius map */
+} ViewPlace;
+
+#define VIEW_HISTORY 64
+typedef struct ViewHistory {
+    ViewPlace back[VIEW_HISTORY], fwd[VIEW_HISTORY];
+    int nback, nfwd;
+    int gesture;       /* the navigation going on (NAV_*, or a number per drag): a new one remembers the place */
+    double time;       /* when it last moved the view */
+} ViewHistory;
 
 typedef struct ViewerRT {
     int pipeline;      /* fragment shader (viewers without a `continuing` solve) */
@@ -56,6 +75,7 @@ typedef struct ViewerRT {
     double strip_until; /* show the tool strip until then (after a change by keyboard) */
     u32 *show_snap;    /* the state when the selected tool last ran `on show` (NULL: run it) */
     bool flood_checked; /* flood viewers: the start pixel's result was looked at */
+    ViewHistory *hist;  /* Back / Forward (made on the first move; kept when the script runs again) */
 } ViewerRT;
 
 typedef struct App {
@@ -94,6 +114,7 @@ typedef struct App {
     int export_viewer, export_scale, export_wait;
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
+    float menu_scroll;      /* (the menu scrolls in a small window) */
     bool help_open;
     /* find / replace in the script */
     bool find_open, replace_open, find_focus, find_case, editor_grab;
@@ -114,6 +135,8 @@ typedef struct App {
     int drag_viewer, drag_node, drag_tool;
     float press_x, press_y, last_mx, last_my;
     bool moved;
+    int nav_serial;         /* numbers navigation gestures (each drag, reset...) for the view history */
+    int drag_gesture;       /* the number of the drag going on */
     int hover_viewer;       /* viewer under the mouse (nothing above it) */
     int hover_tile;         /* index in vis[] of the tile under the mouse, by geometry only (-1 none) */
     /* status line */
@@ -321,6 +344,194 @@ static void plane_of_d(int v, Rect r, double x, double y, double *re, double *im
     double sc = (double)wf(A.state[A.prog->viewers[v]->radius->slot]) / (0.5 * FS_MIN(r.w, r.h));
     *re = cx + (x - r.x - 0.5 * r.w) * sc;
     *im = cy + (0.5 * r.h - (y - r.y)) * sc;
+}
+
+/* ---- view history: Back / Forward ------------------------------------------------------ */
+/* gestures: the wheel, the config panel and tools count as one gesture until they pause; each drag, reset or
+   pasted location is a gesture of its own (NAV_SERIAL + a number) */
+enum { NAV_WHEEL = 1, NAV_PANEL, NAV_TOOL, NAV_SERIAL = 16 };
+
+static ViewPlace view_place(int v) {
+    Section *s = A.prog->viewers[v];
+    ViewPlace pl;
+    memset(&pl, 0, sizeof pl);
+    view_center_d(v, &pl.cx, &pl.cy);
+    pl.radius = wf(A.state[s->radius->slot]);
+    if (s->mobius)
+        for (int k = 0; k < 8; k++) pl.mob[k] = wf(A.state[s->mobius->slot + k]);
+    return pl;
+}
+
+static void set_view_place(int v, const ViewPlace *pl) {
+    Section *s = A.prog->viewers[v];
+    set_view_center_d(v, pl->cx, pl->cy);
+    A.state[s->radius->slot] = fw(pl->radius);
+    if (s->mobius)
+        for (int k = 0; k < 8; k++) A.state[s->mobius->slot + k] = fw(pl->mob[k]);
+}
+
+static bool same_place(const ViewPlace *a, const ViewPlace *b) {
+    if (a->cx != b->cx || a->cy != b->cy || a->radius != b->radius) return false;
+    for (int k = 0; k < 8; k++)
+        if (a->mob[k] != b->mob[k]) return false;
+    return true;
+}
+
+static ViewHistory *view_history(int v) {
+    ViewerRT *rt = &A.vrt[v];
+    if (!rt->hist) rt->hist = (ViewHistory *)xcalloc(1, sizeof(ViewHistory));
+    return rt->hist;
+}
+
+static void place_push(ViewPlace *stack, int *n, const ViewPlace *pl) {
+    if (*n == VIEW_HISTORY) { /* forget the oldest */
+        memmove(stack, stack + 1, sizeof *stack * (VIEW_HISTORY - 1));
+        (*n)--;
+    }
+    stack[(*n)++] = *pl;
+}
+
+/* View v is about to move (or has just moved away from `was`): a new gesture remembers where it was, for Back */
+static void nav_note(int v, int gesture, const ViewPlace *was) {
+    ViewHistory *h = view_history(v);
+    double now = fs_time_seconds();
+    bool fresh = gesture != h->gesture || (gesture < NAV_SERIAL && now - h->time > 0.6);
+    h->gesture = gesture;
+    h->time = now;
+    if (!fresh) return;
+    ViewPlace cur = was ? *was : view_place(v);
+    h->nfwd = 0;
+    if (h->nback && same_place(&h->back[h->nback - 1], &cur)) return;
+    place_push(h->back, &h->nback, &cur);
+}
+
+static void nav_begin(int v, int gesture) { nav_note(v, gesture, NULL); }
+static int nav_new_gesture(void) { return NAV_SERIAL + (++A.nav_serial & 0xfffffff); }
+
+/* the places Back (or Forward) can go to: the remembered ones that aren't where the view is now */
+static int nav_count(int v, bool forward) {
+    ViewHistory *h = A.vrt[v].hist;
+    if (!h) return 0;
+    ViewPlace cur = view_place(v);
+    ViewPlace *from = forward ? h->fwd : h->back;
+    int n = forward ? h->nfwd : h->nback;
+    while (n > 0 && same_place(&from[n - 1], &cur)) n--;
+    return n;
+}
+
+/* Back (or Forward): false when there is nowhere to go */
+static bool nav_go(int v, bool forward) {
+    if (!nav_count(v, forward)) return false;
+    ViewHistory *h = A.vrt[v].hist;
+    ViewPlace cur = view_place(v);
+    ViewPlace *from = forward ? h->fwd : h->back, *to = forward ? h->back : h->fwd;
+    int *nfrom = forward ? &h->nfwd : &h->nback, *nto = forward ? &h->nback : &h->nfwd;
+    while (same_place(&from[*nfrom - 1], &cur)) (*nfrom)--;
+    place_push(to, nto, &cur);
+    set_view_place(v, &from[--*nfrom]);
+    h->gesture = 0; /* what comes next is a new gesture */
+    return true;
+}
+
+/* Back / Forward from the keyboard or the mouse's side buttons */
+static void nav_key(int v, bool forward) {
+    if (nav_go(v, forward)) return;
+    Section *s = A.prog->viewers[v];
+    set_status(false, "%s: no %s place to go to", s->display ? s->display : s->name, forward ? "later" : "earlier");
+}
+
+/* ---- the location of a view as text (Copy / Paste location) ------------------------------- */
+/* the shortest text that reads back as the same float */
+static void float_text(char *out, int cap, float f) {
+    for (int d = 6; d <= 9; d++) {
+        snprintf(out, (size_t)cap, "%.*g", d, (double)f);
+        if ((float)strtod(out, NULL) == f) return;
+    }
+}
+
+/* a coordinate of a view's centre, with the digits that matter at this radius */
+static void coord_text(char *out, int cap, double x, double radius, bool deep) {
+    if (!deep || !(radius > 0)) {
+        float_text(out, cap, (float)x);
+        return;
+    }
+    int digits = (int)ceil(log10(FS_MAX(fabs(x), radius) / radius)) + 5;
+    snprintf(out, (size_t)cap, "%.*g", FS_CLAMP(digits, 8, 15), x); /* (about the precision of the deep views) */
+}
+
+/* the centre and radius of a flat view, as written in a script:
+   "mandel.center = -0.74364388703 + 0.13182590421i\nmandel.radius = 1e-08\n" */
+static void location_text(int v, char *out, int cap) {
+    Section *s = A.prog->viewers[v];
+    double cx, cy;
+    view_center_d(v, &cx, &cy);
+    float r = wf(A.state[s->radius->slot]);
+    bool deep = r < 1e-3 * FS_MAX(hypot(cx, cy), 1.0);
+    char re[48], im[48], rs[48];
+    coord_text(re, sizeof re, cx, r, deep);
+    coord_text(im, sizeof im, fabs(cy), r, deep);
+    float_text(rs, sizeof rs, r);
+    snprintf(out, (size_t)cap, "%s.center = %s %c %si\n%s.radius = %s\n", s->name, re, cy < 0 ? '-' : '+', im, s->name, rs);
+}
+
+/* the value after `key` and `=` in `text`, up to the end of the line, without spaces */
+static bool location_value(const char *text, const char *key, char *out, int cap) {
+    for (const char *p = strstr(text, key); p; p = strstr(p + 1, key)) {
+        const char *q = p + strlen(key);
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q != '=') continue;
+        int n = 0;
+        for (q++; *q && *q != '\n' && *q != '\r' && *q != '#' && n < cap - 1; q++)
+            if (*q != ' ' && *q != '\t') out[n++] = *q;
+        out[n] = 0;
+        return n > 0;
+    }
+    return false;
+}
+
+/* Paste location: the centre and the radius in the clipboard (as Copy location writes them, or just a point) */
+static bool paste_location(int v) {
+    Section *s = A.prog->viewers[v];
+    const char *clip = platform_get_clipboard();
+    if (!clip) clip = "";
+    char buf[256];
+    double re = 0, im = 0, r = 0;
+    bool has_c = false, has_r = false;
+    if (location_value(clip, "center", buf, sizeof buf)) {
+        has_c = parse_complex_literal_d(buf, &re, &im);
+    } else { /* the whole text: a point */
+        int n = 0;
+        for (const char *q = clip; *q && n < (int)sizeof buf - 1; q++)
+            if (!isspace((unsigned char)*q)) buf[n++] = *q;
+        buf[n] = 0;
+        has_c = n > 0 && parse_complex_literal_d(buf, &re, &im);
+    }
+    has_c = has_c && isfinite(re) && isfinite(im);
+    if (location_value(clip, "radius", buf, sizeof buf)) {
+        char *end;
+        r = strtod(buf, &end);
+        has_r = end != buf && *end == 0 && r > 0 && r < 1e30;
+    }
+    if (!has_c && !has_r) {
+        set_status(true, "The clipboard has no location for %s (like \"%s.center = -0.5 + 0.1i\" and \"%s.radius = 2\")",
+                   s->name, s->name, s->name);
+        return false;
+    }
+    nav_begin(v, nav_new_gesture());
+    if (has_c) set_view_center_d(v, re, im);
+    if (has_r) A.state[s->radius->slot] = fw((float)r);
+    set_status(false, "%s: moved to the %s in the clipboard", s->display ? s->display : s->name,
+               has_c && has_r ? "location" : has_c ? "point" : "radius");
+    return true;
+}
+
+static void copy_location(int v) {
+    char text[256];
+    location_text(v, text, sizeof text);
+    platform_set_clipboard(text);
+    Section *s = A.prog->viewers[v];
+    set_status(false, "Copied the location of %s (paste it in @config, or in another session with Paste location)",
+               s->display ? s->display : s->name);
 }
 
 /* ---- shortcuts -------------------------------------------------------------- */
@@ -610,6 +821,7 @@ static void free_viewers(void) {
         free(rt->snap);
         free(rt->used);
         free(rt->show_snap);
+        free(rt->hist);
     }
     free(A.vrt);
     A.vrt = NULL;
@@ -648,6 +860,7 @@ static void destroy_rts(ViewerRT *vrt, int n) {
         flood_gpu_destroy(&vrt[k].flood);
         flood_gpu_destroy(&vrt[k].flood_df);
         free(vrt[k].used);
+        free(vrt[k].hist);
     }
     free(vrt);
 }
@@ -716,6 +929,8 @@ static bool load_source(const char *src, bool reset_layout) {
                 memcpy(vrt[v].center_bits, A.vrt[ov].center_bits, sizeof vrt[v].center_bits);
             }
             if (s->mobius && os->mobius) memcpy(state + s->mobius->slot, A.state + os->mobius->slot, 32);
+            vrt[v].hist = A.vrt[ov].hist; /* (Back still works) */
+            A.vrt[ov].hist = NULL;
             if (s->picked && os->picked && s->picked->type == os->picked->type && A.vrt[ov].picked) {
                 memcpy(state + s->picked->slot, A.state + os->picked->slot, sizeof(u32) * (size_t)s->picked->type->size);
                 vrt[v].picked = true;
@@ -957,10 +1172,12 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
     if (ev != TOOL_EV_SHOW && ev != TOOL_EV_HIDE) set_c(p->s_mouse, re, im);
     /* remember the picked points: a tool that moves one makes its marker appear */
     float before[64][2];
+    ViewPlace was[64]; /* (a tool that moves a view: Back returns) */
     for (int v = 0; v < p->nviewers && v < 64; v++) {
         Sym *ps = p->viewers[v]->picked;
         before[v][0] = ps ? wf(A.state[ps->slot]) : 0;
         before[v][1] = ps ? wf(A.state[ps->slot + 1]) : 0;
+        was[v] = view_place(v);
     }
     /* .pixel: the size of a pixel of the viewer, under the mouse */
     A.interp.pixel = 0;
@@ -999,6 +1216,8 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
         if (ps && (wf(A.state[ps->slot]) != before[v][0] || wf(A.state[ps->slot + 1]) != before[v][1]))
             for (int w = 0; w < p->nviewers; w++)
                 if (p->viewers[w]->picked == ps) A.vrt[w].picked = true;
+        ViewPlace now = view_place(v);
+        if (!same_place(&now, &was[v])) nav_note(v, NAV_TOOL, &was[v]);
     }
 }
 
@@ -1046,6 +1265,7 @@ static void pan_by(int v, Rect r, float dx, float dy) {
 
 static void reset_view(int v) {
     Section *s = A.prog->viewers[v];
+    nav_begin(v, nav_new_gesture());
     if (s->mobius) memcpy(A.state + s->mobius->slot, A.prog->initial_state + s->mobius->slot, 32);
     memcpy(A.state + s->center->slot, A.prog->initial_state + s->center->slot, 8);
     if (s->center_lo) memcpy(A.state + s->center_lo->slot, A.prog->initial_state + s->center_lo->slot, 8);
@@ -1155,7 +1375,10 @@ static void viewer_interaction(void) {
         bool any_down = in->mouse_down[0] || in->mouse_down[1] || in->mouse_down[2];
         switch (A.drag) {
         case DRAG_PAN:
-            if (dx || dy) pan_by(t->viewer, t->r, dx, dy);
+            if (dx || dy) {
+                nav_begin(t->viewer, A.drag_gesture);
+                pan_by(t->viewer, t->r, dx, dy);
+            }
             platform_set_cursor(UI_CURSOR_MOVE);
             break;
         case DRAG_PICK:
@@ -1171,7 +1394,10 @@ static void viewer_interaction(void) {
             platform_set_cursor(UI_CURSOR_CROSSHAIR);
             break;
         case DRAG_CLICK: /* a tool with .panning: dragging pans, a click runs the tool */
-            if (A.moved && (dx || dy)) pan_by(t->viewer, t->r, dx, dy);
+            if (A.moved && (dx || dy)) {
+                nav_begin(t->viewer, A.drag_gesture);
+                pan_by(t->viewer, t->r, dx, dy);
+            }
             if (in->mouse_released[0] && !A.moved && A.drag_tool >= 0 && A.drag_tool < p->ntools) {
                 static const int evs[3] = {TOOL_EV_PRESS, TOOL_EV_RELEASE, TOOL_EV_CLICK};
                 for (int k = 0; k < 3; k++)
@@ -1204,7 +1430,11 @@ static void viewer_interaction(void) {
         set_c(p->s_mouse, re, im);
         if (tool_handles(rt->tool, TOOL_EV_HOVER) && (mx != A.last_mx || my != A.last_my)) run_tool(rt->tool, v, TOOL_EV_HOVER, re, im);
     }
-    if (in->scroll_y != 0) zoom_at(v, t->r, mx, my, powf(0.85f, in->scroll_y));
+    if (in->scroll_y != 0) {
+        nav_begin(v, NAV_WHEEL);
+        zoom_at(v, t->r, mx, my, powf(0.85f, in->scroll_y));
+    }
+    if (in->mouse_back || in->mouse_forward) nav_key(v, in->mouse_forward);
     /* the border of a floating view: drag it somewhere else */
     if (t->fl >= 0) {
         float b = px(7);
@@ -1230,6 +1460,7 @@ static void viewer_interaction(void) {
     A.press_y = A.last_my = my;
     A.moved = false;
     A.drag_tool = rt->tool;
+    A.drag_gesture = nav_new_gesture();
     if (button != 0 || space || rt->tool == TOOL_PAN) {
         A.drag = DRAG_PAN;
         if (button == 0) set_c(p->s_last_click, re, im);
@@ -1507,24 +1738,31 @@ static void ensure_target(int v, int w, int h) {
 
 /* ---- the menu of a tile -------------------------------------------------------------- */
 /* a button with a second, dimmer line (shortcut); returns 1 on click, 2 when dragged */
-static int menu_button(const char *id, const char *icon, const char *letter, const char *label, const char *sub, Rect r,
-                       bool selected, bool draggable) {
+static int menu_button_ex(const char *id, const char *icon, const char *letter, const char *label, const char *sub, Rect r,
+                          bool selected, bool draggable, bool disabled) {
     UiInteract it = ui_interact(id, r.x, r.y, r.w, r.h);
+    if (disabled) it.held = it.hovered = it.clicked = false;
     u32 fill = selected ? UI_COL_ACCENT_DIM : it.held ? UI_COL_WIDGET_ACTIVE : it.hovered ? UI_COL_WIDGET_HOVER : UI_COL_WIDGET;
+    u32 ink = disabled ? UI_COL_TEXT_DIM : UI_COL_TEXT;
     ui_rrect(r.x, r.y, r.w, r.h, px(6), fill);
     if (selected) ui_rrect_outline(r.x, r.y, r.w, r.h, px(6), px(1.5f), UI_COL_ACCENT);
     float lh = ui_font_line_height(UI_FONT_SANS);
     float ix = 0;
     if (icon || letter) {
         float is = px(26);
-        ui_icon(icon, letter, r.x + px(10), r.y + (r.h - is) / 2, is, UI_COL_TEXT);
+        ui_icon(icon, letter, r.x + px(10), r.y + (r.h - is) / 2, is, ink);
         ix = is + px(8);
     }
     float ty = sub && sub[0] ? r.y + r.h / 2 - lh + px(1) : r.y + (r.h - lh) / 2;
-    ui_label(r.x + px(8) + ix, ty, r.w - px(16) - ix, lh, label, ix ? UI_ALIGN_LEFT : UI_ALIGN_CENTER, UI_COL_TEXT);
+    ui_label(r.x + px(8) + ix, ty, r.w - px(16) - ix, lh, label, ix ? UI_ALIGN_LEFT : UI_ALIGN_CENTER, ink);
     if (sub && sub[0]) ui_label(r.x + px(8) + ix, ty + lh, r.w - px(16) - ix, lh, sub, ix ? UI_ALIGN_LEFT : UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
     if (draggable && it.held && fabsf(A.in.mouse_x - it.press_x) + fabsf(A.in.mouse_y - it.press_y) > px(8)) return 2;
     return it.clicked ? 1 : 0;
+}
+
+static int menu_button(const char *id, const char *icon, const char *letter, const char *label, const char *sub, Rect r,
+                       bool selected, bool draggable) {
+    return menu_button_ex(id, icon, letter, label, sub, r, selected, draggable, false);
 }
 
 static void menu_overlay(float W, float H) {
@@ -1543,17 +1781,28 @@ static void menu_overlay(float W, float H) {
     if (p->viewers[mv]->picked) tools[ntools++] = TOOL_PICK;
     for (int k = 0; k < p->ntools && ntools < 66; k++)
         if (tool_in_viewer(k, mv)) tools[ntools++] = k;
-    float bw = px(190), bh = px(54), gap = px(12);
+    float bw = W < px(760) ? px(150) : px(190), bh = px(54), gap = px(12), head = px(34);
     int nviews = p->nviewers + 2;
-    int cols = (int)FS_MAX(1.0f, FS_MIN((W - px(80)) / (bw + gap), 5.0f));
-    int rows_top = (nviews + cols - 1) / cols, rows_bot = (ntools + cols - 1) / cols;
+    int cols = (int)FS_MAX(1.0f, FS_MIN((W - px(40)) / (bw + gap), 5.0f));
+    bool flat = !p->viewers[mv]->mobius;
+    int nplace = flat ? 5 : 3; /* back, forward, reset (copy and paste the location) */
+    int rows = (nviews + cols - 1) / cols + (ntools + cols - 1) / cols + 1 + (nplace + cols - 1) / cols;
+    int rows_top = (nviews + cols - 1) / cols, rows_bot = (ntools + cols - 1) / cols, rows_place = (nplace + cols - 1) / cols;
     float pw = cols * (bw + gap) + gap;
-    float head = px(34);
-    float ph = px(12) + 3 * (head - px(10)) + 2 * px(22) + (rows_top + rows_bot + 1) * (bh + gap) +
-               ui_font_line_height(UI_FONT_SANS) + px(14);
-    Rect pr = {(W - pw) / 2, FS_MAX((H - ph) / 2, px(10)), pw, ph};
+    float ph = px(12) + 4 * (head - px(10)) + 3 * px(22) + rows * (bh + gap) + ui_font_line_height(UI_FONT_SANS) + px(14);
+    if (ph > H - px(20)) { /* a small window: smaller buttons (and the panel scrolls if that isn't enough) */
+        bh = px(42);
+        gap = px(8);
+        head = px(30);
+        pw = cols * (bw + gap) + gap;
+        ph = px(12) + 4 * (head - px(10)) + 3 * px(22) + rows * (bh + gap) + ui_font_line_height(UI_FONT_SANS) + px(14);
+    }
+    float vh = FS_MIN(ph, H - px(20));
+    Rect pr = {(W - pw) / 2, FS_MAX((H - vh) / 2, px(10)), pw, vh};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 240), px(10));
-    float y = pr.y + px(12);
+    A.menu_scroll = FS_CLAMP(A.menu_scroll + ui_scroll_area(pr.x, pr.y, pr.w, pr.h), 0.0f, ph - vh);
+    ui_push_clip(pr.x, pr.y, pr.w, pr.h);
+    float y = pr.y + px(12) - A.menu_scroll;
     ui_text(UI_FONT_SANS, pr.x + gap, y, "Views (click: show here, drag: split or float)", -1, UI_COL_TEXT_DIM);
     y += head - px(10);
     char sub[64], id[64], label[160], letter[8];
@@ -1637,10 +1886,49 @@ static void menu_overlay(float W, float H) {
             ui_tooltip(k ? "Render this view again at four times the width and height (for print), and save it"
                          : "Save this view at its size on the screen (rendered at twice the size and smoothed)");
     }
-    y += bh + gap;
+    y += bh + gap + px(8);
+    /* where the view looks: back, forward, home; the location as text */
+    ui_separator(pr.x + gap, y, pr.w - 2 * gap);
+    y += px(14);
+    if (flat) {
+        char loc[256];
+        location_text(mv, loc, sizeof loc);
+        char *nl = strchr(loc, '\n'), *r = nl ? nl + 1 : loc;
+        if (nl) *nl = 0;
+        if ((nl = strchr(r, '\n')) != NULL) *nl = 0;
+        snprintf(label, sizeof label, "Place:  %.90s     %.60s", loc, r == loc ? "" : r);
+    } else {
+        snprintf(label, sizeof label, "Place on the Riemann sphere");
+    }
+    ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS), label, UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+    y += head - px(10);
+    for (int k = 0; k < nplace; k++) {
+        static const char *icons[5] = {"arrow_back", "arrow_forward", "home", "content_copy", "content_paste"};
+        static const char *names[5] = {"Back", "Forward", "Reset view", "Copy location", "Paste location"};
+        static const char *subs[5] = {BACK_KEY, FORWARD_KEY, "Home", "centre and radius", "from the clipboard"};
+        static const char *tips[5] = {
+            "Where this view was before the last zoom, pan or reset (the mouse's back button too)",
+            "Undo Back", "The view the script starts with",
+            "Copy the centre and the radius as script lines (\"mandel.center = ...\"), with all their digits",
+            "Go to the centre and radius in the clipboard (copied with Copy location, or a point like -0.75+0.1i)"};
+        Rect r = {pr.x + gap + (k % cols) * (bw + gap), y + (k / cols) * (bh + gap), bw, bh};
+        char bid[32];
+        snprintf(bid, sizeof bid, "##m_place%d", k);
+        bool off = k < 2 && nav_count(mv, k == 1) == 0;
+        if (menu_button_ex(bid, icons[k], NULL, names[k], subs[k], r, false, false, off) == 1) {
+            if (k < 2) nav_go(mv, k == 1);
+            else if (k == 2) reset_view(mv);
+            else if (k == 3) copy_location(mv);
+            else paste_location(mv);
+            A.menu_viewer = -1;
+        }
+        if (ui_last_hovered()) ui_tooltip(tips[k]);
+    }
+    y += rows_place * (bh + gap);
     ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS),
              "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: help", UI_ALIGN_CENTER,
              UI_COL_TEXT_DIM);
+    ui_pop_clip();
     if (bg.clicked && !in_rect(pr, A.in.mouse_x, A.in.mouse_y)) A.menu_viewer = -1;
     ui_layer(prev);
 }
@@ -2017,8 +2305,58 @@ static bool config_listed(Program *p, Sym *s) {
 /* the views' center and radius, and the iteration settings, unless the script lists them itself */
 static bool config_auto(Program *p, Sym *s, int group) {
     if (config_listed(p, s)) return false;
-    if (group == 1) return s->viewer_index >= 0 && !s->is_internal && !s->is_config;
+    if (group == 1) {
+        if (s->viewer_index < 0 || s->is_internal || s->is_config) return false;
+        Section *v = p->viewers[s->viewer_index]; /* (a view of the Riemann sphere moves by its Möbius map) */
+        return !(v->mobius && (s == v->center || s == v->radius));
+    }
     return s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
+}
+
+/* The centre of a flat view, with its low part, showing as many digits as the radius asks for and dragged by a
+   fraction of the radius.  The two parts go side by side in the value column (x1, width w) when they fit there, else
+   on two rows of their own below the label, from x0.  Returns the height used. */
+static float config_center(int v, float x0, float x1, float y, float w) {
+    Section *s = A.prog->viewers[v];
+    float rh = config_row_h(), h = rh - px(4);
+    double c[2], r = wf(A.state[s->radius->slot]);
+    view_center_d(v, &c[0], &c[1]);
+    int digits = 6;
+    if (r > 0) digits = FS_CLAMP((int)ceil(log10(FS_MAX(hypot(c[0], c[1]), r) / r)) + 3, 6, 16);
+    char fmt[2][24], id[64], text[64];
+    snprintf(fmt[0], sizeof fmt[0], "%%.%dg", digits);
+    snprintf(fmt[1], sizeof fmt[1], "%%+.%dgi", digits);
+    float cw = (w - px(6)) / 2, need = 0;
+    for (int k = 0; k < 2; k++) {
+        snprintf(text, sizeof text, fmt[k], c[k]);
+        need = FS_MAX(need, ui_text_width(UI_FONT_SANS, text, -1) + px(18));
+    }
+    bool stacked = need > cw;
+    float fx = stacked ? x0 + px(12) : x1, fw_ = stacked ? x1 + w - fx : cw;
+    bool changed = false;
+    for (int k = 0; k < 2; k++) {
+        snprintf(id, sizeof id, "##cfg_center_%d_%d", v, k);
+        float bx = stacked ? fx : x1 + k * (cw + px(6)), by = stacked ? y + (k + 1) * rh : y;
+        if (ui_drag_double(id, bx, by, fw_, h, &c[k], 0.004 * FS_MAX(r, 1e-30), -1e30, 1e30, fmt[k])) changed = true;
+        if (ui_last_hovered()) ui_tooltip("Drag to move the view, double-click to type a number");
+    }
+    if (changed && isfinite(c[0]) && isfinite(c[1])) {
+        nav_begin(v, NAV_PANEL);
+        set_view_center_d(v, c[0], c[1]);
+    }
+    return stacked ? 3 * rh : rh;
+}
+
+/* the radius of a flat view: dragged on a logarithmic scale */
+static void config_radius(int v, float x, float y, float w) {
+    Section *s = A.prog->viewers[v];
+    double r = wf(A.state[s->radius->slot]);
+    char id[64];
+    snprintf(id, sizeof id, "##cfg_radius_%d", v);
+    if (ui_drag_double_log(id, x, y, w, config_row_h() - px(4), &r, 0.01, 1e-30, 1e30, "%.4g") && r > 0) {
+        nav_begin(v, NAV_PANEL);
+        A.state[s->radius->slot] = fw((float)r);
+    }
 }
 
 static void config_label(Sym *s, char *out, int cap) {
@@ -2189,7 +2527,13 @@ static void config_pane(float W, float H) {
             if (!config_auto(p, s, group)) continue;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
-            config_number(s, x1, y, ww);
+            int vs = group == 1 ? s->viewer_index : -1;
+            if (vs >= 0 && s == p->viewers[vs]->center) {
+                y += config_center(vs, x0, x1, y, ww);
+                continue;
+            }
+            if (vs >= 0 && s == p->viewers[vs]->radius) config_radius(vs, x1, y, ww);
+            else config_number(s, x1, y, ww);
             y += rh;
         }
         if (group == 1) {
@@ -2209,35 +2553,50 @@ static void config_pane(float W, float H) {
 /* ---- overlays ------------------------------------------------------------------------- */
 static void help_overlay(float W, float H) {
     if (!A.help_open) return;
-    static const char *lines[] = {
-        "Mouse",
-        "  Wheel                      zoom at the mouse",
-        "  Right or middle drag       pan (also Space + drag)",
-        "  Left click / drag          use the view's selected tool",
-        "  Left edge of a view        its tools; the menu button on top switches, splits and floats views",
-        "Keys",
-        "  Esc                        the menu of the view under the mouse (views, tools, save picture)",
-        "  " MODKEY "+Enter or " MODKEY "+R          run the script",
-        "  " MODKEY "+S, " MODKEY "+Shift+S          save, save as",
-        "  " MODKEY "+O                       open a file (or drop it on the window)",
-        "  " MODKEY "+F, " MODKEY "+Alt+F            find, replace in the script (" MODKEY "+G: next)",
-        "  " MODKEY "+E, " MODKEY "+T                show / hide the script, the config",
-        "  " MODKEY "+1, 2, ...               show a view (or the shortcut written in the script)",
-        "  H, P, tool keys            choose a tool of the view under the mouse",
-        "  Home                       reset the view under the mouse",
-        "  F11                        full screen",
-        "  F1                         this help",
+    static const char *lines[][2] = { /* keys, what they do (headings have no second part) */
+        {"Mouse", NULL},
+        {"Wheel", "zoom at the mouse"},
+        {"Right or middle drag", "pan (also Space + drag)"},
+        {"Left click / drag", "use the view's selected tool"},
+        {"Side buttons", "back / forward: where the view was"},
+        {"Left edge of a view", "its tools; the menu button on top switches, splits and floats views"},
+        {"Keys", NULL},
+        {"Esc", "the menu of the view under the mouse (views, tools, pictures, place)"},
+        {MODKEY "+Enter or " MODKEY "+R", "run the script"},
+        {MODKEY "+S, " MODKEY "+Shift+S", "save, save as"},
+        {MODKEY "+O", "open a file (or drop it on the window)"},
+        {MODKEY "+F, " MODKEY "+Alt+F", "find, replace in the script (" MODKEY "+G: next)"},
+        {MODKEY "+E, " MODKEY "+T", "show / hide the script, the config"},
+        {MODKEY "+1, 2, ...", "show a view (or the shortcut written in the script)"},
+        {"H, P, tool keys", "choose a tool of the view under the mouse"},
+        {"Home", "reset the view under the mouse"},
+        {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
+        {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
+        {"F11", "full screen"},
+        {"F1", "this help"},
     };
     int prev = ui_layer(UI_LAYER_POPUP);
     float lh = ui_font_line_height(UI_FONT_MONO) + px(3);
-    float pw = FS_MIN(px(860), W - px(40)), ph = (ARRAY_COUNT(lines) + 2) * lh + px(20);
+    float kw = 0, dw = 0; /* the columns: keys, what they do */
+    for (int i = 0; i < ARRAY_COUNT(lines); i++)
+        if (lines[i][1]) {
+            kw = FS_MAX(kw, ui_text_width(UI_FONT_MONO, lines[i][0], -1));
+            dw = FS_MAX(dw, ui_text_width(UI_FONT_SANS, lines[i][1], -1));
+        }
+    float pw = FS_MIN(px(32) + kw + px(24) + dw + px(24), W - px(40)), ph = (ARRAY_COUNT(lines) + 2) * lh + px(20);
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
     UiInteract bg = ui_interact("##help_bg", 0, 0, W, H);
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 245), px(10));
-    for (int i = 0; i < ARRAY_COUNT(lines); i++)
-        ui_text(lines[i][0] == ' ' ? UI_FONT_MONO : UI_FONT_SANS, pr.x + px(18), pr.y + px(14) + i * lh, lines[i], -1,
-                lines[i][0] == ' ' ? UI_COL_TEXT : UI_COL_ACCENT);
+    for (int i = 0; i < ARRAY_COUNT(lines); i++) {
+        float y = pr.y + px(14) + i * lh;
+        if (!lines[i][1]) {
+            ui_text(UI_FONT_SANS, pr.x + px(18), y, lines[i][0], -1, UI_COL_ACCENT);
+            continue;
+        }
+        ui_text(UI_FONT_MONO, pr.x + px(32), y, lines[i][0], -1, UI_COL_TEXT);
+        ui_text(UI_FONT_SANS, pr.x + px(32) + kw + px(24), y, lines[i][1], -1, UI_COL_TEXT);
+    }
     ui_label(pr.x, pr.y + ph - lh - px(8), pr.w, lh, "click anywhere to close", UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
     if (bg.clicked) A.help_open = false;
     ui_layer(prev);
@@ -2346,6 +2705,10 @@ static void shortcuts(void) {
     if (tv >= 0 && ui_shortcut(UI_KEY_H, 0)) select_tool(tv, TOOL_PAN, true);
     if (tv >= 0 && ui_shortcut(UI_KEY_P, 0) && p->viewers[tv]->picked) select_tool(tv, TOOL_PICK, true);
     if (tv >= 0 && ui_shortcut(UI_KEY_HOME, 0)) reset_view(tv);
+    if (tv >= 0 && (ui_shortcut(UI_KEY_LEFT, UI_MOD_ALT) || ui_shortcut(UI_KEY_LEFT_BRACKET, UI_MOD_MOD))) nav_key(tv, false);
+    if (tv >= 0 && (ui_shortcut(UI_KEY_RIGHT, UI_MOD_ALT) || ui_shortcut(UI_KEY_RIGHT_BRACKET, UI_MOD_MOD))) nav_key(tv, true);
+    if (tv >= 0 && ui_shortcut(UI_KEY_C, UI_MOD_MOD | UI_MOD_SHIFT) && !A.prog->viewers[tv]->mobius) copy_location(tv);
+    if (tv >= 0 && ui_shortcut(UI_KEY_V, UI_MOD_MOD | UI_MOD_SHIFT) && !A.prog->viewers[tv]->mobius) paste_location(tv);
 }
 
 /* @prepare runs whenever the state changed (not for the mouse, the time, the last click) */

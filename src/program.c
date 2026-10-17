@@ -33,6 +33,87 @@ static void collect_global_names(Token *t, int n, NameVec *names) {
     }
 }
 
+/* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-2i" (no spaces) in double precision */
+static bool parse_complex_literal_d(const char *s, double *re, double *im) {
+    char *end;
+    *re = *im = 0;
+    double a = strtod(s, &end);
+    if (end == s) {
+        if (*s == 'i') { *im = 1; return s[1] == 0; }
+        if (*s == '-' && s[1] == 'i' && !s[2]) { *im = -1; return true; }
+        return false;
+    }
+    if (*end == 'i' && end[1] == 0) { *im = a; return true; }
+    if (*end == 0) { *re = a; return true; }
+    if (*end != '+' && *end != '-') return false;
+    const char *t = end;
+    double b;
+    if (t[1] == 'i') { /* "1+i", "1-i" */
+        b = *t == '-' ? -1 : 1;
+        end = (char *)t + 1;
+    } else {
+        b = strtod(t, &end);
+    }
+    if (*end != 'i' || end[1] != 0) return false;
+    *re = a;
+    *im = b;
+    return true;
+}
+
+/* a constant number (literals with + - * /) in double precision */
+static bool const_eval_d(Expr *e, double *re, double *im) {
+    double ar, ai, br, bi;
+    switch (e->kind) {
+    case E_INT: *re = e->ival; *im = 0; return true;
+    case E_REAL: *re = e->rval; *im = 0; return true;
+    case E_IMAG: *re = 0; *im = e->rval; return true;
+    case E_CONVERT: return const_eval_d(e->a, re, im);
+    case E_UNARY:
+        if (e->op != TK_MINUS || !const_eval_d(e->a, &ar, &ai)) return false;
+        *re = -ar;
+        *im = -ai;
+        return true;
+    case E_BINARY:
+        if (!const_eval_d(e->a, &ar, &ai) || !const_eval_d(e->b, &br, &bi)) return false;
+        switch (e->op) {
+        case TK_PLUS: *re = ar + br; *im = ai + bi; return true;
+        case TK_MINUS: *re = ar - br; *im = ai - bi; return true;
+        case TK_STAR: *re = ar * br - ai * bi; *im = ar * bi + ai * br; return true;
+        case TK_SLASH: {
+            double d = br * br + bi * bi;
+            if (d == 0) return false;
+            *re = (ar * br + ai * bi) / d;
+            *im = (ai * br - ar * bi) / d;
+            return true;
+        }
+        default: return false;
+        }
+    default: return false;
+    }
+}
+
+/* Deep zooms: a flat view's centre written in the script with more digits than a float holds
+ * (`mandel.center = -0.743643887037151 + 0.131825904205330i`) keeps them in its low part. */
+static void initial_center_lo(Program *p, Section *v) {
+    if (!v->center_lo) return;
+    Stmt *last = NULL;
+    for (int i = 0; i < p->sections.len; i++) {
+        Section *s = p->sections.data[i];
+        if (s->kind != SEC_CONFIG && s->kind != SEC_GLOBAL) continue;
+        for (int k = 0; k < s->body.n; k++) {
+            Stmt *st = s->body.stmts[k];
+            if (st->kind == S_ASSIGN && st->op == TK_ASSIGN && st->target && st->target->sym == v->center) last = st;
+        }
+    }
+    double re, im;
+    if (!last || !last->value || !const_eval_d(last->value, &re, &im)) return;
+    u32 *c = p->initial_state + v->center->slot;
+    if (fw((float)re) != c[0] || fw((float)im) != c[1]) return; /* (changed afterwards) */
+    u32 *lo = p->initial_state + v->center_lo->slot;
+    lo[0] = fw((float)(re - (double)(float)re));
+    lo[1] = fw((float)(im - (double)(float)im));
+}
+
 /* Parse + check + initial state.  Always returns a Program; check
  * p->nerrors / p->diags.  `source` is copied. */
 Program *program_load(const char *source, const char *path) {
@@ -104,6 +185,7 @@ Program *program_load(const char *source, const char *path) {
             float m8[8] = {r, 0, wf(p->initial_state[s->center->slot]), wf(p->initial_state[s->center->slot + 1]), 0, 0, 1, 0};
             for (int k = 0; k < 8; k++) m[k] = fw(m8[k]);
         }
+        for (int v = 0; v < p->nviewers; v++) initial_center_lo(p, p->viewers[v]);
     }
     return p;
 }

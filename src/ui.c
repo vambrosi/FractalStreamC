@@ -1634,7 +1634,7 @@ static void uip_number_labels(const char *label, float x, float y, float w, floa
 }
 
 static bool uip_drag_core(const char *label, float x, float y, float w, float h, double *v, double speed, double lo, double hi,
-                          const char *fmt, bool is_int) {
+                          const char *fmt, bool is_int, bool log_scale) {
     u32 id = ui_id(label);
     bool changed = false;
     if (uip_number_editing(id, x, y, w, h, v, lo, hi, is_int, &changed)) return changed;
@@ -1644,13 +1644,13 @@ static bool uip_drag_core(const char *label, float x, float y, float w, float h,
         uip_begin_number_edit(id, *v, is_int);
         return false;
     }
-    if (r.pressed) ui.drag_val = *v;
+    if (r.pressed) ui.drag_val = log_scale ? log(FS_MAX(*v, 1e-300)) : *v; /* (log scale: drag the logarithm) */
     if (r.held && r.dx != 0) {
         double sp = speed / ui_scale();
         if (ui.in.mods & UI_MOD_SHIFT) sp *= 0.1;
         ui.drag_val += (double)r.dx * sp;
-        double nv = uip_clamp_range(ui.drag_val, lo, hi, is_int);
-        if (lo < hi) ui.drag_val = FS_CLAMP(ui.drag_val, lo, hi);
+        double nv = uip_clamp_range(log_scale ? exp(ui.drag_val) : ui.drag_val, lo, hi, is_int);
+        if (lo < hi) ui.drag_val = log_scale ? log(nv) : FS_CLAMP(ui.drag_val, lo, hi);
         if (nv != *v) { *v = nv; changed = true; }
     }
     char text[64];
@@ -1663,19 +1663,24 @@ static bool uip_drag_core(const char *label, float x, float y, float w, float h,
 }
 
 bool ui_drag_double(const char *label, float x, float y, float w, float h, double *v, double speed, double lo, double hi, const char *fmt) {
-    return uip_drag_core(label, x, y, w, h, v, speed, lo, hi, fmt, false);
+    return uip_drag_core(label, x, y, w, h, v, speed, lo, hi, fmt, false, false);
+}
+
+bool ui_drag_double_log(const char *label, float x, float y, float w, float h, double *v, double speed, double lo, double hi,
+                        const char *fmt) {
+    return uip_drag_core(label, x, y, w, h, v, speed, FS_MAX(lo, 1e-300), hi, fmt, false, true);
 }
 
 bool ui_drag_float(const char *label, float x, float y, float w, float h, float *v, float speed, float lo, float hi, const char *fmt) {
     double d = *v;
-    bool c = uip_drag_core(label, x, y, w, h, &d, speed, lo, hi, fmt, false);
+    bool c = uip_drag_core(label, x, y, w, h, &d, speed, lo, hi, fmt, false, false);
     if (c) *v = (float)d;
     return c;
 }
 
 bool ui_drag_int(const char *label, float x, float y, float w, float h, int *v, float speed, int lo, int hi) {
     double d = *v;
-    bool c = uip_drag_core(label, x, y, w, h, &d, speed, lo, hi, NULL, true);
+    bool c = uip_drag_core(label, x, y, w, h, &d, speed, lo, hi, NULL, true, false);
     if (c) *v = (int)d;
     return c;
 }

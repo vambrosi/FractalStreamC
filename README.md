@@ -28,10 +28,15 @@ end
   made to the file in another editor are picked up automatically.
 - The coordinates of the point under the mouse show at the bottom left of the view. Zooming deep
   (radius below about 1e-4) switches the view to double-single precision automatically.
+- Each view remembers where it has been: Back and Forward (Alt+Left / Alt+Right, Cmd+[ / Cmd+]
+  on a Mac, or the mouse's side buttons) step through its zooms and pans. Copy location
+  (Ctrl+Shift+C) puts the view's centre and radius on the clipboard as script lines, with all
+  their digits (`mandel.center = -0.74364388703715 + 0.13182590420533i`); Paste location goes
+  there, and the same lines in `@config` open the script at that place.
 - Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
   button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
-  the tools, and saves the picture as a PNG file (as on the screen, or four times larger for
-  print). F1 lists every key.
+  the tools, saves the picture as a PNG file (as on the screen, or four times larger for
+  print) and has the view's place (back, forward, copy, paste). F1 lists every key.
 
 Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
 the parameter space of complex Hénon maps after the program SaddleDrop); the language is

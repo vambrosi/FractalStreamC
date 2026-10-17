@@ -518,6 +518,28 @@ TEST(ui_drag_and_type) {
     CHECK_NEAR(v, 0.25, 0);
 }
 
+TEST(ui_drag_log_scale) {
+    tu_reset(1.0f);
+    double r = 1e-9;
+    tu_move(100, 30);
+    tu_begin(); ui_drag_double_log("Radius", 20, 20, 200, 24, &r, 0.01, 1e-30, 1e30, "%.4g"); tu_end();
+    tu_press(0, 1);
+    tu_begin(); ui_drag_double_log("Radius", 20, 20, 200, 24, &r, 0.01, 1e-30, 1e30, "%.4g"); tu_end();
+    tu_move(169.3147f, 30); /* + 69.3 px: times exp(0.693) = 2 */
+    tu_begin(); bool c = ui_drag_double_log("Radius", 20, 20, 200, 24, &r, 0.01, 1e-30, 1e30, "%.4g"); tu_end();
+    CHECK(c);
+    CHECK_NEAR(r / 2e-9, 1, 1e-4);
+    tu_move(-1000, 30); /* far to the left: tiny, but positive */
+    tu_begin(); ui_drag_double_log("Radius", 20, 20, 200, 24, &r, 0.01, 1e-30, 1e30, "%.4g"); tu_end();
+    CHECK(r > 0);
+    CHECK_NEAR(r / (1e-9 * exp(-0.01 * 1100)), 1, 1e-3);
+    tu_move(100, 30); /* back where the drag started */
+    tu_begin(); ui_drag_double_log("Radius", 20, 20, 200, 24, &r, 0.01, 1e-30, 1e30, "%.4g"); tu_end();
+    CHECK_NEAR(r / 1e-9, 1, 1e-6);
+    tu_release(0);
+    tu_idle();
+}
+
 /* A text field driven for one frame; returns the UI_TEXT_* bits. */
 static int tu_field(char *buf, int cap) {
     tu_begin();
@@ -918,6 +940,19 @@ TEST(platform_mouse_and_clicks) {
     in = pi_frame();
     CHECK(!in.mouse_down[0] && !in.mouse_down[1] && !in.focused);
     CHECK(in.mouse_released[0] && in.mouse_released[1]); /* the app still sees the releases */
+    /* the side buttons (back, forward): one frame each, nothing else changes */
+    plat_begin_frame();
+    plat_on_mouse_button(GLFW_MOUSE_BUTTON_4, GLFW_PRESS, 0, 5.0);
+    in = pi_frame();
+    CHECK(in.mouse_back && !in.mouse_forward && !in.mouse_pressed[0] && !in.mouse_pressed[1] && !in.mouse_pressed[2]);
+    plat_begin_frame();
+    plat_on_mouse_button(GLFW_MOUSE_BUTTON_4, GLFW_RELEASE, 0, 5.1);
+    plat_on_mouse_button(GLFW_MOUSE_BUTTON_5, GLFW_PRESS, 0, 5.2);
+    in = pi_frame();
+    CHECK(!in.mouse_back && in.mouse_forward && !in.mouse_released[0]);
+    plat_begin_frame();
+    in = pi_frame();
+    CHECK(!in.mouse_back && !in.mouse_forward);
 }
 
 /* A click that arrives completely inside one poll (xdotool, a quick tap while the app sleeps in glfwWaitEvents) must
@@ -1838,6 +1873,7 @@ static const TestCase tests_ui[] = {
     TESTCASE(ui_toggle_widget),
     TESTCASE(ui_slider_values),
     TESTCASE(ui_drag_and_type),
+    TESTCASE(ui_drag_log_scale),
     TESTCASE(ui_text_field_editing),
     TESTCASE(ui_text_field_submit_cancel_focus),
     TESTCASE(ui_shortcuts_and_key_order),

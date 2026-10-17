@@ -74,7 +74,9 @@ again in double-single precision (pairs of floats, about 14 digits) — slower, 
 radius of about `1e-12` times the size of the numbers. The coordinates at the bottom of the view
 say "(double precision)" then. Square roots and the four operations get the extra digits; other
 functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what colours need. Tools,
-`@prepare` and `@global` run on the CPU in single precision.
+`@prepare` and `@global` run on the CPU in single precision. A view's centre written as numbers in
+`@config` (`mandel.center = -0.743643887037151 + 0.131825904205330i`, as Copy location writes it)
+keeps all its digits, so a script can open at a deep place.
 
 ## Variables
 
