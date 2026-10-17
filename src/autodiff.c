@@ -953,12 +953,34 @@ static void ad_collect_captures(Expr *e, Sym *var, SymVec *out) {
 }
 
 /* ---- the solve itself ----------------------------------------------------------------- */
-/* Newton loop:  k = 0; conv = false
- *   while k < limit do k += 1; <jets>; step = ...; t -= step
- *     if |step| <= eps (1 + |t|) then conv = true; break end; if not (|step| < 1e30) then break end end */
+/* Newton loop:
+ *   k = 0; conv = false; prev = 1e30
+ *   while k < limit do
+ *       k += 1; <jets>; step = num / den; t -= step; a = |step|; scale = 1 + |t|
+ *       if a <= .epsilon scale then conv = true; break end          -- converged
+ *       if a <= 1e-3 scale and a >= prev / 2 then conv = true; break end
+ *                                    -- steps stopped shrinking: rounding noise of 32-bit floats
+ *       if not (a < 1e30) then break end                             -- diverged (or NaN)
+ *       prev = a
+ *   end */
+static Stmt *ad_if_break(AD *ad, Expr *cond, Sym *set_true) {
+    Stmt *s = ad_stmt_new(ad, S_IF);
+    s->value = cond;
+    StmtVec body = {0};
+    StmtVec *saved = ad->out;
+    ad->out = &body;
+    if (set_true) ad_assign(ad, set_true, ad_bool(ad, true));
+    ad_emit(ad, ad_stmt_new(ad, S_BREAK));
+    s->body = ad_take_block(ad, &body);
+    ad->out = saved;
+    return s;
+}
+
 static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym *total, Expr *limit) {
+    Sym *prev = ad_temp(ad, t_real), *a = ad_temp(ad, t_real), *scale = ad_temp(ad, t_real);
     ad_assign(ad, k, ad_int(ad, 0));
     ad_assign(ad, conv, ad_bool(ad, false));
+    ad_assign(ad, prev, ad_real(ad, 1e30f));
     StmtVec loop = {0};
     StmtVec *saved = ad->out;
     ad->out = &loop;
@@ -978,30 +1000,15 @@ static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym
     Sym *step = ad_temp(ad, t_complex);
     ad_assign(ad, step, ad_bin(ad, TK_SLASH, num, den));
     ad_assign(ad, t, ad_bin(ad, TK_MINUS, ad_name(ad, t), ad_name(ad, step)));
-    /* converged? */
+    ad_assign(ad, a, ad_abs(ad, ad_name(ad, step)));
+    ad_assign(ad, scale, ad_bin(ad, TK_PLUS, ad_real(ad, 1), ad_abs(ad, ad_name(ad, t))));
     Expr *eps = ad_name(ad, ad->p->s_epsilon);
-    Expr *tol = ad_bin(ad, TK_STAR, eps, ad_bin(ad, TK_PLUS, ad_real(ad, 1), ad_abs(ad, ad_name(ad, t))));
-    Stmt *ifc = ad_stmt_new(ad, S_IF);
-    ifc->value = ad_bin(ad, TK_LE, ad_abs(ad, ad_name(ad, step)), tol);
-    {
-        StmtVec body2 = {0};
-        ad->out = &body2;
-        ad_assign(ad, conv, ad_bool(ad, true));
-        ad_emit(ad, ad_stmt_new(ad, S_BREAK));
-        ifc->body = ad_take_block(ad, &body2);
-        ad->out = &loop;
-    }
-    ad_emit(ad, ifc);
-    Stmt *ifn = ad_stmt_new(ad, S_IF);
-    ifn->value = ad_not(ad, ad_bin(ad, TK_LT, ad_abs(ad, ad_name(ad, step)), ad_real(ad, 1e30f)));
-    {
-        StmtVec body2 = {0};
-        ad->out = &body2;
-        ad_emit(ad, ad_stmt_new(ad, S_BREAK));
-        ifn->body = ad_take_block(ad, &body2);
-        ad->out = &loop;
-    }
-    ad_emit(ad, ifn);
+    ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, eps, ad_name(ad, scale))), conv));
+    Expr *small = ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 1e-3f), ad_name(ad, scale)));
+    Expr *stalled = ad_bin(ad, TK_GE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 0.5f), ad_name(ad, prev)));
+    ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_AND, small, stalled), conv));
+    ad_emit(ad, ad_if_break(ad, ad_not(ad, ad_bin(ad, TK_LT, ad_name(ad, a), ad_real(ad, 1e30f))), NULL));
+    ad_assign(ad, prev, ad_name(ad, a));
     ad->out = saved;
     Stmt *wh = ad_stmt_new(ad, S_WHILE);
     wh->quiet = true;
@@ -1032,6 +1039,21 @@ static Type *chk_solve(Checker *c, Expr *e) {
             return t_error;
         }
         cvar = viewer->coord;
+        if (viewer->projective) {
+            ERR(c, e, "'continuing' is not available in projective viewers yet");
+            return t_error;
+        }
+        SymVec none = {0};
+        SymVec used = {0};
+        ad_collect_captures(e->cont_from, NULL, &used);
+        bool uses_local = used.len > 0;
+        vec_free(used);
+        vec_free(none);
+        if (uses_local) {
+            ERR(c, e->cont_from, "the starting point must be the same for every pixel (use global values, like .%s)",
+                viewer->var ? viewer->var : "c");
+            return t_error;
+        }
         if (viewer->flood) {
             ERR(c, e, "a viewer can have only one 'continuing' solve");
             return t_error;
@@ -1254,6 +1276,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
         args[a++] = ad_intrinsic(&at, I_FLOOD_FROM, t_complex, fargs, 2);
         args[a++] = ad_name(&at, cvar);
         viewer->flood = f;
+        viewer->flood_start = e->cont_from;
     } else {
         args[a++] = seed_e;
     }

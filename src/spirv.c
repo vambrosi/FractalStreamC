@@ -11,13 +11,13 @@ enum {
     SpvOpName = 5, SpvOpMemberName = 6, SpvOpExtInstImport = 11, SpvOpExtInst = 12, SpvOpMemoryModel = 14,
     SpvOpEntryPoint = 15, SpvOpExecutionMode = 16, SpvOpCapability = 17,
     SpvOpTypeVoid = 19, SpvOpTypeBool = 20, SpvOpTypeInt = 21, SpvOpTypeFloat = 22, SpvOpTypeVector = 23,
-    SpvOpTypeArray = 28, SpvOpTypeStruct = 30, SpvOpTypePointer = 32, SpvOpTypeFunction = 33,
+    SpvOpTypeArray = 28, SpvOpTypeRuntimeArray = 29, SpvOpTypeStruct = 30, SpvOpTypePointer = 32, SpvOpTypeFunction = 33,
     SpvOpConstantTrue = 41, SpvOpConstantFalse = 42, SpvOpConstant = 43, SpvOpConstantComposite = 44,
     SpvOpConstantNull = 46, SpvOpFunction = 54, SpvOpFunctionParameter = 55, SpvOpFunctionEnd = 56,
     SpvOpFunctionCall = 57, SpvOpVariable = 59, SpvOpLoad = 61, SpvOpStore = 62, SpvOpAccessChain = 65,
     SpvOpDecorate = 71, SpvOpMemberDecorate = 72, SpvOpVectorExtractDynamic = 77, SpvOpVectorShuffle = 79,
     SpvOpCompositeConstruct = 80, SpvOpCompositeExtract = 81, SpvOpCompositeInsert = 82,
-    SpvOpConvertFToS = 110, SpvOpConvertSToF = 111, SpvOpSNegate = 126, SpvOpFNegate = 127,
+    SpvOpConvertFToU = 109, SpvOpConvertFToS = 110, SpvOpConvertSToF = 111, SpvOpBitcast = 124, SpvOpSNegate = 126, SpvOpFNegate = 127,
     SpvOpIAdd = 128, SpvOpFAdd = 129, SpvOpISub = 130, SpvOpFSub = 131, SpvOpIMul = 132, SpvOpFMul = 133,
     SpvOpSDiv = 135, SpvOpFDiv = 136, SpvOpSMod = 139, SpvOpFMod = 141, SpvOpVectorTimesScalar = 142,
     SpvOpDot = 148, SpvOpIsNan = 156, SpvOpIsInf = 157,
@@ -33,7 +33,8 @@ enum {
 enum { SpvSCInput = 1, SpvSCUniform = 2, SpvSCOutput = 3, SpvSCPrivate = 6, SpvSCFunction = 7, SpvSCPushConstant = 9 };
 enum { SpvDecBlock = 2, SpvDecBufferBlock = 3, SpvDecArrayStride = 6, SpvDecBuiltIn = 11, SpvDecNonWritable = 24,
        SpvDecLocation = 30, SpvDecBinding = 33, SpvDecDescriptorSet = 34, SpvDecOffset = 35 };
-enum { SpvBuiltInFragCoord = 15 };
+enum { SpvBuiltInFragCoord = 15, SpvBuiltInGlobalInvocationId = 28 };
+enum { SpvOpShiftLeftLogical = 196, SpvOpBitwiseOr = 197 };
 /* GLSL.std.450 */
 enum {
     GLSLTrunc = 3, GLSLFAbs = 4, GLSLSAbs = 5, GLSLFSign = 6, GLSLSSign = 7, GLSLFloor = 8, GLSLCeil = 9,
@@ -251,6 +252,25 @@ static void spv_end_function(Spv *s) {
     wv_inst(&s->funcs, SpvOpFunctionEnd, NULL, 0);
     vec_clear(s->fvars);
     vec_clear(s->fbody);
+}
+
+/* GLCompute entry point "main" with LocalSize (lx, 1, 1) */
+static void spv_entry_point_compute(Spv *s, u32 fn, const u32 *iface, int n, u32 lx) {
+    u32 o[24];
+    o[0] = 5; /* GLCompute */
+    o[1] = fn;
+    int k = spv_string_words("main", o + 2, 2);
+    for (int i = 0; i < n && i < 16; i++) o[2 + k + i] = iface[i];
+    wv_inst(&s->entry, SpvOpEntryPoint, o, 2 + k + n);
+    u32 em[5] = {fn, 17 /* LocalSize */, lx, 1, 1};
+    wv_inst(&s->exec, SpvOpExecutionMode, em, 5);
+}
+
+static u32 spv_type_runtime_array(Spv *s, u32 elem) {
+    u32 id = spv_new_id(s);
+    u32 o[2] = {id, elem};
+    wv_inst(&s->types, SpvOpTypeRuntimeArray, o, 2);
+    return id;
 }
 
 static void spv_entry_point(Spv *s, u32 fn, const u32 *iface, int n) {

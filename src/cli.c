@@ -173,10 +173,15 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
         return false;
     }
     gfx_set_globals(state, (u32)p->state_words * 4);
-    int vid = gfx_viewer_create(spv, nwords, err, errcap);
+    bool ok;
+    if (v->flood) {
+        ok = flood_render_gpu(p, state, v, w, h, rgba, NULL, err, errcap);
+    } else {
+        int vid = gfx_viewer_create(spv, nwords, err, errcap);
+        ok = vid > 0 && gfx_render_to_memory(vid, w, h, 256, rgba, err, errcap);
+        if (vid > 0) gfx_viewer_destroy(vid);
+    }
     free(spv);
-    bool ok = vid > 0 && gfx_render_to_memory(vid, w, h, 256, rgba, err, errcap);
-    if (vid > 0) gfx_viewer_destroy(vid);
     gfx_shutdown();
     return ok;
 #else
@@ -258,7 +263,8 @@ int cli_main(int argc, char **argv) {
         char err[512] = "";
         bool ok = true;
         double t0 = fs_time_seconds();
-        if (cpu) render_cpu(p, state, v, w, h, rgba);
+        if (cpu && v->flood) flood_render_cpu(p, state, v, w, h, rgba, NULL);
+        else if (cpu) render_cpu(p, state, v, w, h, rgba);
         else ok = render_gpu(p, state, v, w, h, rgba, err, sizeof err);
         if (!ok) {
             fprintf(stderr, "error: %s\n", err);

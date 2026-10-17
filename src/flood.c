@@ -1,0 +1,302 @@
+/* flood.c - rendering viewers that contain a `continuing` solve.
+ *
+ * Such a viewer follows a solution (say a critical point found by Newton's
+ * method) from pixel to pixel: each pixel starts Newton from the solution of
+ * a neighbouring pixel that has already converged, walking the viewer's
+ * variable from the neighbour's point to its own in small steps.  Pixels
+ * where Newton fails do not pass anything on, so the fill goes around them
+ * (as SaddleDrop did).
+ *
+ * The order is fixed so that the CPU reference and the GPU (compute shaders,
+ * codegen_viewer_flood) compute exactly the same thing:
+ *   1. rings around the start pixel (the pixel of the point P after
+ *      `continuing from c = P`), ring d = pixels at Chebyshev distance d,
+ *      outwards; a pixel of ring d continues from a converged neighbour in
+ *      ring d-1 or d+1 (never d, so a ring can be computed in parallel);
+ *   2. FLOOD_SWEEPS - 1 more sweeps over the rings, alternately inwards and
+ *      outwards, for the pixels still waiting (behind failed regions);
+ *   3. one last pass over every pixel still waiting: a plain solve from the
+ *      seed, without continuation.
+ * Every pass only reads entries that earlier passes wrote. */
+
+enum { FLOOD_PENDING = 0, FLOOD_DONE = 1, FLOOD_FAILED = 2 };
+enum { FLOOD_PASS_RING = 0, FLOOD_PASS_COLD = 1 };
+#define FLOOD_SWEEPS 3
+
+/* one entry per pixel; the same layout as the GPU buffer (std430: vec2 + uint + pad) */
+typedef struct FloodEntry {
+    float t[2];
+    u32 status;
+    u32 pad;
+} FloodEntry;
+
+typedef struct FloodPlan {
+    int w, h;    /* pixels */
+    int sx, sy;  /* start pixel */
+    int rings;   /* rings 0 .. rings-1 cover the image */
+} FloodPlan;
+
+static int flood_imax(int a, int b) { return a > b ? a : b; }
+static int flood_iabs(int a) { return a < 0 ? -a : a; }
+
+void flood_plan_init(FloodPlan *fp, int w, int h, int sx, int sy) {
+    fp->w = w;
+    fp->h = h;
+    fp->sx = FS_CLAMP(sx, 0, w - 1);
+    fp->sy = FS_CLAMP(sy, 0, h - 1);
+    fp->rings = 1 + flood_imax(flood_imax(fp->sx, w - 1 - fp->sx), flood_imax(fp->sy, h - 1 - fp->sy));
+}
+
+int flood_pass_count(const FloodPlan *fp) { return FLOOD_SWEEPS * fp->rings + 1; }
+
+/* what pass number `index` does */
+void flood_pass_info(const FloodPlan *fp, int index, int *kind, int *ring) {
+    int sweep = index / fp->rings, k = index % fp->rings;
+    if (sweep >= FLOOD_SWEEPS) {
+        *kind = FLOOD_PASS_COLD;
+        *ring = 0;
+        return;
+    }
+    *kind = FLOOD_PASS_RING;
+    *ring = (sweep & 1) ? fp->rings - 1 - k : k; /* odd sweeps go inwards */
+}
+
+int flood_ring_size(int ring) { return ring == 0 ? 1 : 8 * ring; }
+
+/* i-th pixel of a ring (clockwise from the top-left corner); false if outside the image */
+bool flood_ring_pixel(const FloodPlan *fp, int ring, int i, int *x, int *y) {
+    int px, py;
+    if (ring == 0) {
+        px = fp->sx;
+        py = fp->sy;
+    } else {
+        int side = i / (2 * ring), j = i % (2 * ring);
+        switch (side) {
+        case 0: px = fp->sx - ring + j; py = fp->sy - ring; break;
+        case 1: px = fp->sx + ring; py = fp->sy - ring + j; break;
+        case 2: px = fp->sx + ring - j; py = fp->sy + ring; break;
+        default: px = fp->sx - ring; py = fp->sy + ring - j; break;
+        }
+    }
+    *x = px;
+    *y = py;
+    return px >= 0 && py >= 0 && px < fp->w && py < fp->h;
+}
+
+int flood_ring_of(const FloodPlan *fp, int x, int y) { return flood_imax(flood_iabs(x - fp->sx), flood_iabs(y - fp->sy)); }
+
+/* The converged neighbour (x, y) continues from: in ring d-1 or d+1, preferring d-1, then the one
+ * closest to the line from the start pixel through (x, y).  Returns its index or -1.  codegen.c
+ * emits the same computation for the GPU (keep them in sync). */
+static const int flood_dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+static const int flood_dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+int flood_pick_neighbour(const FloodPlan *fp, const FloodEntry *field, int x, int y) {
+    int d = flood_ring_of(fp, x, y), best = -1, best_score = 0x7fffffff;
+    for (int k = 0; k < 8; k++) {
+        int nx = x + flood_dx[k], ny = y + flood_dy[k];
+        if (nx < 0 || ny < 0 || nx >= fp->w || ny >= fp->h) continue;
+        int dn = flood_ring_of(fp, nx, ny);
+        if (dn == d) continue;
+        if (field[ny * fp->w + nx].status != FLOOD_DONE) continue;
+        int cross = flood_iabs((nx - fp->sx) * (y - fp->sy) - (ny - fp->sy) * (x - fp->sx));
+        int score = (dn < d ? 0 : 1 << 20) + cross;
+        if (score < best_score) {
+            best_score = score;
+            best = ny * fp->w + nx;
+        }
+    }
+    return best;
+}
+
+/* start pixel of a viewer: where the point after `continuing from` is (clamped to the image) */
+bool flood_start_pixel(Program *p, const u32 *state, Section *v, int w, int h, int *sx, int *sy) {
+    u32 *st = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(st, state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, st);
+    u32 val[2] = {0, 0};
+    bool ok = interp_eval_global_expr(&I, v->flood_start, val);
+    interp_free(&I);
+    free(st);
+    float re = wf(val[0]), im = wf(val[1]);
+    float cx = wf(state[v->center->slot]), cy = wf(state[v->center->slot + 1]);
+    float scale = wf(state[v->radius->slot]) / (0.5f * FS_MIN((float)w, (float)h));
+    float px = 0.5f * w + (re - cx) / scale, py = 0.5f * h - (im - cy) / scale;
+    if (!(px == px) || !(py == py)) px = 0.5f * w, py = 0.5f * h;
+    px = FS_CLAMP(px, 0.0f, (float)w - 1);
+    py = FS_CLAMP(py, 0.0f, (float)h - 1);
+    *sx = (int)px;
+    *sy = (int)py;
+    return ok;
+}
+
+/* run one pixel on the CPU; returns false when the pixel is not ready (no converged neighbour) */
+static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section *v, const FloodPlan *fp,
+                            FloodEntry *field, u8 *rgba, int x, int y, int kind) {
+    FloodEntry *e = &field[y * fp->w + x];
+    if (e->status != FLOOD_PENDING) return true;
+    int mode = FLOOD_DIRECT, nb = -1;
+    if (kind == FLOOD_PASS_COLD) {
+        mode = FLOOD_DIRECT;
+    } else {
+        nb = flood_pick_neighbour(fp, field, x, y);
+        if (nb >= 0) mode = FLOOD_CONTINUE;
+        else if (x == fp->sx && y == fp->sy) mode = FLOOD_START;
+        else return false;
+    }
+    memcpy(scratch, state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, scratch);
+    I.flood_mode = mode;
+    if (nb >= 0) {
+        int nx = nb % fp->w, ny = nb / fp->w;
+        I.flood_seed[0] = field[nb].t[0];
+        I.flood_seed[1] = field[nb].t[1];
+        viewer_pixel_to_plane(p, scratch, v, (float)fp->w, (float)fp->h, nx + 0.5f, ny + 0.5f, &I.flood_from[0], &I.flood_from[1]);
+    }
+    I.flood_out_ok = -1;
+    float re, im, c[3];
+    viewer_pixel_to_plane(p, scratch, v, (float)fp->w, (float)fp->h, x + 0.5f, y + 0.5f, &re, &im);
+    interp_eval_viewer(&I, v, re, im, c);
+    e->t[0] = I.flood_out[0];
+    e->t[1] = I.flood_out[1];
+    e->status = I.flood_out_ok == 1 ? FLOOD_DONE : FLOOD_FAILED;
+    interp_free(&I);
+    u8 *px = rgba + 4 * ((size_t)y * fp->w + x);
+    for (int k = 0; k < 3; k++) px[k] = (u8)(c[k] * 255.0f + 0.5f);
+    px[3] = 255;
+    return true;
+}
+
+/* CPU reference rendering of a flood viewer (rows top to bottom, RGBA8). `field_out` may be NULL. */
+void flood_render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, FloodEntry *field_out) {
+    FloodPlan fp;
+    int sx, sy;
+    flood_start_pixel(p, state, v, w, h, &sx, &sy);
+    flood_plan_init(&fp, w, h, sx, sy);
+    FloodEntry *field = field_out ? field_out : (FloodEntry *)xmalloc(sizeof(FloodEntry) * (size_t)w * h);
+    memset(field, 0, sizeof(FloodEntry) * (size_t)w * h);
+    memset(rgba, 0, (size_t)w * h * 4);
+    u32 *scratch = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    int npass = flood_pass_count(&fp);
+    for (int pass = 0; pass < npass; pass++) {
+        int kind, ring;
+        flood_pass_info(&fp, pass, &kind, &ring);
+        if (kind == FLOOD_PASS_COLD) {
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++) flood_cpu_pixel(p, state, scratch, v, &fp, field, rgba, x, y, kind);
+        } else {
+            /* a ring only reads rings d-1 and d+1, so the order inside the ring doesn't matter */
+            int n = flood_ring_size(ring);
+            for (int i = 0; i < n; i++) {
+                int x, y;
+                if (flood_ring_pixel(&fp, ring, i, &x, &y)) flood_cpu_pixel(p, state, scratch, v, &fp, field, rgba, x, y, kind);
+            }
+        }
+    }
+    free(scratch);
+    if (!field_out) free(field);
+}
+
+/* ---- GPU ------------------------------------------------------------------------- */
+/* One flood viewer on the GPU: the compute pipeline (codegen_viewer_flood), the field buffer
+ * (FloodEntry per pixel) and the colour buffer (packed RGBA8 per pixel), and how far the fill got. */
+typedef struct FloodGpu {
+    int pipe;
+    int field, colors;
+    int w, h;
+    FloodPlan plan;
+    int next_pass;  /* next pass to record; == pass count when finished */
+    bool restart;   /* clear the buffers before the next pass */
+} FloodGpu;
+
+typedef struct FloodPush { float w, h; i32 sx, sy; i32 ring, mode; } FloodPush; /* matches codegen */
+
+bool flood_gpu_create(FloodGpu *fg, Program *p, Section *v, char *err, int errcap) {
+    memset(fg, 0, sizeof *fg);
+    u32 n;
+    u32 *words = codegen_viewer_flood(p, v, &n, err, errcap);
+    if (!words) return false;
+    GfxComputeDesc d = {0};
+    d.spirv = words;
+    d.nwords = n;
+    d.nbuffers = 2;
+    d.push_bytes = sizeof(FloodPush);
+    fg->pipe = gfx_compute_create(&d, err, errcap);
+    free(words);
+    return fg->pipe > 0;
+}
+
+void flood_gpu_destroy(FloodGpu *fg) {
+    if (fg->pipe) gfx_compute_destroy(fg->pipe);
+    if (fg->field) gfx_buffer_destroy(fg->field);
+    if (fg->colors) gfx_buffer_destroy(fg->colors);
+    memset(fg, 0, sizeof *fg);
+}
+
+/* (re)start the fill for a w x h image from pixel (sx, sy) */
+bool flood_gpu_start(FloodGpu *fg, int w, int h, int sx, int sy) {
+    if (w != fg->w || h != fg->h || !fg->field) {
+        if (fg->field) gfx_buffer_destroy(fg->field);
+        if (fg->colors) gfx_buffer_destroy(fg->colors);
+        fg->field = gfx_buffer_create((u64)w * h * sizeof(FloodEntry));
+        fg->colors = gfx_buffer_create((u64)w * h * 4);
+        fg->w = w;
+        fg->h = h;
+        if (!fg->field || !fg->colors) return false;
+    }
+    flood_plan_init(&fg->plan, w, h, sx, sy);
+    fg->next_pass = 0;
+    fg->restart = true;
+    return true;
+}
+
+bool flood_gpu_done(const FloodGpu *fg) { return !fg->field || fg->next_pass >= flood_pass_count(&fg->plan); }
+
+/* Record up to `max_passes` passes (and the copy of the colours into `target`, whose picture is kept
+ * where the fill hasn't arrived yet).  Call between gfx_frame_begin and gfx_frame_draw, or in a batch. */
+void flood_gpu_record(FloodGpu *fg, int max_passes, int target) {
+    if (!fg->field || flood_gpu_done(fg)) return;
+    if (fg->restart) {
+        gfx_frame_fill_buffer(fg->field, 0, (u64)fg->w * fg->h * sizeof(FloodEntry), 0);
+        if (target) gfx_frame_target_to_buffer(target, fg->colors, 0);
+        fg->restart = false;
+    }
+    int npass = flood_pass_count(&fg->plan);
+    int bufs[2] = {fg->field, fg->colors};
+    for (int k = 0; k < max_passes && fg->next_pass < npass; k++, fg->next_pass++) {
+        int kind, ring;
+        flood_pass_info(&fg->plan, fg->next_pass, &kind, &ring);
+        FloodPush pc = {(float)fg->w, (float)fg->h, fg->plan.sx, fg->plan.sy, ring, kind == FLOOD_PASS_COLD ? 1 : 0};
+        u32 count = kind == FLOOD_PASS_COLD ? (u32)(fg->w * fg->h) : (u32)flood_ring_size(ring);
+        gfx_frame_dispatch(fg->pipe, bufs, &pc, (count + FLOOD_GROUP_SIZE - 1) / FLOOD_GROUP_SIZE, 1, 1);
+    }
+    if (target) gfx_frame_buffer_to_target(fg->colors, 0, target);
+}
+
+/* Headless: render a flood viewer into memory (rgba8, rows top to bottom). The globals must be set. */
+bool flood_render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, FloodEntry *field_out, char *err,
+                      int errcap) {
+    FloodGpu fg;
+    if (!flood_gpu_create(&fg, p, v, err, errcap)) return false;
+    int sx, sy;
+    flood_start_pixel(p, state, v, w, h, &sx, &sy);
+    int target = gfx_target_create(w, h);
+    bool ok = target > 0 && flood_gpu_start(&fg, w, h, sx, sy);
+    if (!ok) snprintf(err, (size_t)errcap, "could not allocate the GPU buffers for a %dx%d flood fill", w, h);
+    while (ok && !flood_gpu_done(&fg)) { /* a few hundred passes per submission (GPU watchdogs) */
+        if (!gfx_batch_begin()) {
+            snprintf(err, (size_t)errcap, "could not record GPU work");
+            ok = false;
+            break;
+        }
+        flood_gpu_record(&fg, 256, target);
+        ok = gfx_batch_end(err, errcap);
+    }
+    if (ok) ok = gfx_target_read(target, rgba, err, errcap);
+    if (ok && field_out) ok = gfx_buffer_download(fg.field, 0, field_out, (u64)w * h * sizeof(FloodEntry), err, errcap);
+    if (target > 0) gfx_target_destroy(target);
+    flood_gpu_destroy(&fg);
+    return ok;
+}

@@ -130,6 +130,7 @@ struct Expr {
 enum { SOLVE_CRITICAL = 1, SOLVE_ROOT, SOLVE_DERIVATIVE };
 /* how a pixel's `continuing` solve starts (flood.c) */
 enum { FLOOD_DIRECT = 0, FLOOD_START = 1, FLOOD_CONTINUE = 2 };
+#define FLOOD_GROUP_SIZE 64 /* compute workgroup size of flood shaders */
 
 typedef struct Block {
     Stmt **stmts;
@@ -256,6 +257,7 @@ struct Section {
     bool uses_time, uses_mouse; /* viewer depends on .time / .mouse */
     bool implicit;      /* the whole file was this (default) viewer */
     Func *flood;        /* viewer: the function of its `continuing` solve (rendered by flood fill), or NULL */
+    Expr *flood_start;  /* ... and the point the fill starts from (`continuing from c = P`: P) */
 };
 typedef VEC(Section *) SectionVec;
 

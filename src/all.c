@@ -30,6 +30,7 @@
 #include "program.c"
 /* graphics, platform, UI */
 #include "gfx.c"
+#include "flood.c"
 #include "platform.c"
 #include "ui.c"
 #include "editor.c"

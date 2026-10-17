@@ -865,6 +865,16 @@ bool interp_eval_viewer(Interp *I, Section *v, float zre, float zim, float rgb[3
     return interp_finish(I);
 }
 
+/* Evaluate an expression that only uses global values (no locals), e.g. a flood's starting point. */
+bool interp_eval_global_expr(Interp *I, Expr *e, u32 *out) {
+    I->sp = 0;
+    I->signal = SIG_NONE;
+    I->error[0] = 0;
+    I->frame = push_words(I, 16);
+    ev(I, e, out);
+    return interp_finish(I);
+}
+
 /* Default state values, before @global/@config run. */
 void state_set_defaults(Program *p, u32 *state) {
     memset(state, 0, sizeof(u32) * (size_t)p->state_words);

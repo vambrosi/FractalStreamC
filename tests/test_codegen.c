@@ -333,7 +333,101 @@ TEST(gpu_matches_cpu) {
 #endif
 }
 
+TEST(flood_spirv_validates) {
+    if (!cg_have_spirv_val()) SKIP("spirv-val not installed");
+    const char *src =
+        "@global\n"
+        "define esc(t, c) = x where\n"
+        "    x = t\n"
+        "    y := t\n"
+        "    while x not escapes do\n"
+        "        (x, y) = (x^2 + c - 0.3 y, x)\n"
+        "    end\n"
+        "end\n"
+        "@viewer v c\n"
+        "w := critical t -> log(esc(t, c)) with seed 0.5 continuing from c = .lastClick\n"
+        "if .stuck then\n"
+        "    return\n"
+        "end\n"
+        "color = gray(fract(.iterations / 10))\n";
+    Program *p = program_load(src, "flood_spirv");
+    CHECK(p->nerrors == 0);
+    if (p->nerrors) { print_diags(p); program_free(p); return; }
+    u32 n;
+    char err[256];
+    u32 *words = codegen_viewer_flood(p, p->viewers[0], &n, err, sizeof err);
+    CHECK_MSG(words != NULL, "%s", err);
+    if (words) {
+        fs_write_file("build/test_flood.spv", words, n * 4);
+        free(words);
+        int rc = system("spirv-val --target-env vulkan1.0 build/test_flood.spv > build/test_tmp.txt 2>&1");
+        if (rc != 0) {
+            size_t len;
+            char *out = fs_read_file("build/test_tmp.txt", &len);
+            CHECK_MSG(rc == 0, "spirv-val failed:\n%s", out ? out : "");
+            free(out);
+        }
+    }
+    program_free(p);
+}
+
+/* flood fill (continuation): the GPU compute shaders must find the same solutions as the CPU */
+TEST(flood_gpu_matches_cpu) {
+#ifdef FS_HAVE_GFX
+    char err[512];
+    if (!gfx_preinit_loader()) SKIP("no Vulkan loader");
+    GfxInitDesc d = {0};
+    if (!gfx_init(&d, err, sizeof err)) SKIP("no Vulkan device");
+    const char *src =
+        "@config\nv.center = 0.5\nv.radius = 1.5\n"
+        "@global\n"
+        "start := 1 + 0.5i\n"
+        "define f(t, c) = t^3 - 2t + c\n"
+        "@viewer v c\n"
+        "w := root t -> f(t, c) with seed 1.2 continuing from c = start\n"
+        "if .stuck then\n"
+        "    color = .white\n"
+        "else\n"
+        "    color = [0.5 + 0.4 sin(3 re(w)), 0.5 + 0.4 sin(3 im(w)), 0.2]\n"
+        "end\n";
+    Program *p = program_load(src, "flood");
+    CHECK(p->nerrors == 0 && p->viewers[0]->flood);
+    if (p->nerrors) { print_diags(p); program_free(p); gfx_shutdown(); return; }
+    const int W = 37, H = 29;
+    u8 *a = (u8 *)xmalloc(W * H * 4), *b = (u8 *)xmalloc(W * H * 4);
+    FloodEntry *fa = (FloodEntry *)xmalloc(sizeof(FloodEntry) * W * H), *fb = (FloodEntry *)xmalloc(sizeof(FloodEntry) * W * H);
+    gfx_set_globals(p->initial_state, (u32)p->state_words * 4);
+    CHECK_MSG(flood_render_gpu(p, p->initial_state, p->viewers[0], W, H, a, fa, err, sizeof err), "%s", err);
+    flood_render_cpu(p, p->initial_state, p->viewers[0], W, H, b, fb);
+    int bad = 0, done = 0;
+    for (int k = 0; k < W * H; k++) {
+        if (fb[k].status == FLOOD_DONE) done++;
+        bool same = fa[k].status == fb[k].status &&
+                    (fa[k].status != FLOOD_DONE || (fabsf(fa[k].t[0] - fb[k].t[0]) < 1e-3f && fabsf(fa[k].t[1] - fb[k].t[1]) < 1e-3f));
+        if (!same) bad++;
+    }
+    CHECK_MSG(done > W * H * 9 / 10, "only %d of %d pixels converged", done, W * H);
+    CHECK_MSG(bad <= 2, "%d of %d pixels differ", bad, W * H);
+    /* continuity: neighbours (where both converged) found nearby roots */
+    int jumps = 0;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x + 1 < W; x++) {
+            FloodEntry *e0 = &fb[y * W + x], *e1 = &fb[y * W + x + 1];
+            if (e0->status == FLOOD_DONE && e1->status == FLOOD_DONE &&
+                fabsf(e0->t[0] - e1->t[0]) + fabsf(e0->t[1] - e1->t[1]) > 0.3f) jumps++;
+        }
+    CHECK_MSG(jumps < W, "%d jumps between neighbours", jumps);
+    free(a); free(b); free(fa); free(fb);
+    program_free(p);
+    gfx_shutdown();
+#else
+    SKIP("built without gfx");
+#endif
+}
+
 static const TestCase tests_codegen[] = {
+    TESTCASE(flood_spirv_validates),
+    TESTCASE(flood_gpu_matches_cpu),
     TESTCASE(spirv_validates),
     TESTCASE(msl_function_names),
     TESTCASE(gpu_matches_cpu),

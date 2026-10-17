@@ -23,6 +23,8 @@ typedef struct Gen {
     /* compute variant (flood fill): see codegen_viewer_flood */
     bool compute;
     u32 flood_mode_var, flood_seed_var, flood_from_var, flood_out_t_var, flood_out_ok_var;
+    u32 field_var, colors_var, pixel_var; /* storage buffers and this invocation's pixel index */
+    u32 flood_nb, flood_W;                /* the neighbour to continue from (pixel index), image width */
     Func *fn;
     struct { u32 merge, cont; } loops[64];
     int nloops;
@@ -53,9 +55,9 @@ static u32 ty(Gen *g, Type *t) {
         break;
     }
     case T_TUPLE: {
-        u32 m[16];
-        for (int i = 0; i < t->n; i++) m[i] = ty(g, t->items[i]);
-        id = spv_type_struct(&g->s, m, t->n);
+        u32 m[64];
+        for (int i = 0; i < t->n && i < 64; i++) m[i] = ty(g, t->items[i]);
+        id = spv_type_struct(&g->s, m, FS_MIN(t->n, 64));
         break;
     }
     default: id = g->tvoid; break;
@@ -656,9 +658,9 @@ static u32 gen_expr(Gen *g, Expr *e) {
         return construct(g, ty(g, t), items, n);
     }
     case E_TUPLE: {
-        u32 items[16];
-        for (int i = 0; i < e->nargs && i < 16; i++) items[i] = gen_expr(g, e->args[i]);
-        return construct(g, ty(g, e->type), items, e->nargs);
+        u32 items[64];
+        for (int i = 0; i < e->nargs && i < 64; i++) items[i] = gen_expr(g, e->args[i]);
+        return construct(g, ty(g, e->type), items, FS_MIN(e->nargs, 64));
     }
     case E_COLOR_CONST: return const_value(g, e->type, e->cval);
     case E_STRING: case E_SOLVE: return 0;
@@ -677,8 +679,35 @@ static void write_output(Gen *g) {
     store(g, g->out_color, construct(g, g->tvec4, p, 4));
 }
 
+/* compute variant: colour into the colour buffer, solution and status into the field */
+static void write_output_compute(Gen *g) {
+    Section *v = g->viewer;
+    u32 col = load(g, ty(g, t_color), v->color->spv_var);
+    u32 packed = spv_const_u32(&g->s, g->tuint, 0xff000000u);
+    for (int i = 0; i < 3; i++) {
+        u32 c = ext3(g, g->tfloat, GLSLFClamp, extract(g, g->tfloat, col, (u32)i), cf(g, 0), cf(g, 1));
+        u32 b = op1(g, SpvOpConvertFToU, g->tuint, op2(g, SpvOpFAdd, g->tfloat, op2(g, SpvOpFMul, g->tfloat, c, cf(g, 255.0f)), cf(g, 0.5f)));
+        if (i) b = op2(g, SpvOpShiftLeftLogical, g->tuint, b, spv_const_u32(&g->s, g->tuint, (u32)(8 * i)));
+        packed = op2(g, SpvOpBitwiseOr, g->tuint, packed, b);
+    }
+    u32 idx = load(g, g->tint, g->pixel_var);
+    u32 zero = ci(g, 0), one = ci(g, 1);
+    u32 ci_[2] = {zero, idx};
+    store(g, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->colors_var, ci_, 2), packed);
+    u32 ok = load(g, g->tint, g->flood_out_ok_var);
+    u32 status = spv_op3(&g->s, SpvOpSelect, g->tuint, op2(g, SpvOpIEqual, g->tbool, ok, one),
+                         spv_const_u32(&g->s, g->tuint, 1 /* FLOOD_DONE */), spv_const_u32(&g->s, g->tuint, 2 /* FLOOD_FAILED */));
+    u32 ti[3] = {zero, idx, zero};
+    store(g, g_access(g, ptr(g, SpvSCUniform, g->tvec2), g->field_var, ti, 3), load(g, g->tvec2, g->flood_out_t_var));
+    u32 si[3] = {zero, idx, ci(g, 1)};
+    store(g, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->field_var, si, 3), status);
+}
+
 static void gen_return(Gen *g) {
-    if (!g->fn) {
+    if (!g->fn && g->compute) {
+        write_output_compute(g);
+        spv_void(&g->s, SpvOpReturn, NULL, 0);
+    } else if (!g->fn) {
         write_output(g);
         spv_void(&g->s, SpvOpReturn, NULL, 0);
     } else {
@@ -687,9 +716,9 @@ static void gen_return(Gen *g) {
         if (f->noutputs == 1) {
             v = load(g, ty(g, f->outputs[0]->type), f->outputs[0]->spv_var);
         } else {
-            u32 items[16];
-            for (int i = 0; i < f->noutputs && i < 16; i++) items[i] = load(g, ty(g, f->outputs[i]->type), f->outputs[i]->spv_var);
-            v = construct(g, ty(g, f->ret), items, f->noutputs);
+            u32 items[64];
+            for (int i = 0; i < f->noutputs && i < 64; i++) items[i] = load(g, ty(g, f->outputs[i]->type), f->outputs[i]->spv_var);
+            v = construct(g, ty(g, f->ret), items, FS_MIN(f->noutputs, 64));
         }
         spv_void(&g->s, SpvOpReturnValue, &v, 1);
     }
@@ -1037,11 +1066,126 @@ void codegen_viewer_deps(Program *p, Section *v, bool *used) {
 }
 
 /* Generate the fragment shader of viewer `v`.  Returns malloc'd words or NULL. */
-u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) {
+/* if `bad` then return (structured: the return block sits inside a selection) */
+static void return_if(Gen *g, u32 bad) {
+    u32 ret = new_label(g), go = new_label(g);
+    spv_selection_merge(&g->s, go);
+    spv_branch_cond(&g->s, bad, ret, go);
+    label(g, ret);
+    spv_void(&g->s, SpvOpReturn, NULL, 0);
+    label(g, go);
+}
+
+/* plane point of the pixel position (px, py) in a w x h flat (non-projective) view */
+static u32 flat_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
+    Section *v = g->viewer;
+    u32 f = g->tfloat;
+    u32 half = cf(g, 0.5f);
+    u32 m = op2(g, SpvOpFMul, f, half, ext2(g, f, GLSLFMin, w, h));
+    u32 scale = op2(g, SpvOpFDiv, f, global_value(g, v->radius), m);
+    u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
+    u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
+    u32 c = global_value(g, v->center);
+    u32 re = op2(g, SpvOpFAdd, f, extract(g, f, c, 0), op2(g, SpvOpFMul, f, scale, dx));
+    u32 im = op2(g, SpvOpFAdd, f, extract(g, f, c, 1), op2(g, SpvOpFMul, f, scale, dy));
+    return vec2(g, re, im);
+}
+
+static u32 iabs_(Gen *g, u32 x) { return ext1(g, g->tint, GLSLSAbs, x); }
+static u32 imax_(Gen *g, u32 a, u32 b) { return ext2(g, g->tint, GLSLSMax, a, b); }
+static u32 isel(Gen *g, u32 c, u32 a, u32 b) { return spv_op3(&g->s, SpvOpSelect, g->tint, c, a, b); }
+
+/* The flood-fill prologue (see flood.c, which this must match exactly): find this invocation's
+ * pixel, skip it unless it is waiting, pick the neighbour to continue from, set the flood_* variables.
+ * Returns the pixel's (x, y) as ints through *px, *py. */
+static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out_y, u32 *out_w, u32 *out_h) {
+    u32 I = g->tint, B = g->tbool, F = g->tfloat;
+    u32 z0 = ci(g, 0), z1 = ci(g, 1), z2 = ci(g, 2), z3 = ci(g, 3);
+    u32 size = load(g, g->tvec2, g_access(g, ptr(g, SpvSCPushConstant, g->tvec2), pc_var, &z0, 1));
+    u32 ivec2 = spv_type_vec(&g->s, I, 2);
+    u32 start = load(g, ivec2, g_access(g, ptr(g, SpvSCPushConstant, ivec2), pc_var, &z1, 1));
+    u32 ring = load(g, I, g_access(g, ptr(g, SpvSCPushConstant, I), pc_var, &z2, 1));
+    u32 mode = load(g, I, g_access(g, ptr(g, SpvSCPushConstant, I), pc_var, &z3, 1));
+    u32 W = op1(g, SpvOpConvertFToS, I, extract(g, F, size, 0)), H = op1(g, SpvOpConvertFToS, I, extract(g, F, size, 1));
+    u32 sx = extract(g, I, start, 0), sy = extract(g, I, start, 1);
+    u32 uvec3 = spv_type_vec(&g->s, g->tuint, 3);
+    u32 gid = op1(g, SpvOpBitcast, I, extract(g, g->tuint, load(g, uvec3, gid_var), 0));
+    u32 is_cold = op2(g, SpvOpIEqual, B, mode, ci(g, 1));
+    /* ring pass: the gid-th pixel of the ring; cold pass: pixel gid in row order */
+    u32 two_d = imax_(g, op2(g, SpvOpIMul, I, ci(g, 2), ring), ci(g, 1));
+    u32 side = op2(g, SpvOpSDiv, I, gid, two_d);
+    u32 j = op2(g, SpvOpISub, I, gid, op2(g, SpvOpIMul, I, side, two_d));
+    u32 xm = op2(g, SpvOpISub, I, sx, ring), xp = op2(g, SpvOpIAdd, I, sx, ring);
+    u32 ym = op2(g, SpvOpISub, I, sy, ring), yp = op2(g, SpvOpIAdd, I, sy, ring);
+    u32 rx0 = op2(g, SpvOpIAdd, I, xm, j), ry1 = op2(g, SpvOpIAdd, I, ym, j);
+    u32 rx2 = op2(g, SpvOpISub, I, xp, j), ry3 = op2(g, SpvOpISub, I, yp, j);
+    u32 s0 = op2(g, SpvOpIEqual, B, side, z0), s1 = op2(g, SpvOpIEqual, B, side, z1), s2 = op2(g, SpvOpIEqual, B, side, z2);
+    u32 rx = isel(g, s0, rx0, isel(g, s1, xp, isel(g, s2, rx2, xm)));
+    u32 ry = isel(g, s0, ym, isel(g, s1, ry1, isel(g, s2, yp, ry3)));
+    u32 ring_n = isel(g, op2(g, SpvOpIEqual, B, ring, z0), z1, op2(g, SpvOpIMul, I, ci(g, 8), ring));
+    u32 cx = op2(g, SpvOpSMod, I, gid, imax_(g, W, z1)), cy = op2(g, SpvOpSDiv, I, gid, imax_(g, W, z1));
+    u32 x = isel(g, is_cold, cx, rx), y = isel(g, is_cold, cy, ry);
+    u32 count = isel(g, is_cold, op2(g, SpvOpIMul, I, W, H), ring_n);
+    u32 outside = op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSGreaterThanEqual, B, gid, count),
+                      op2(g, SpvOpLogicalOr, B, op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSLessThan, B, x, z0), op2(g, SpvOpSLessThan, B, y, z0)),
+                          op2(g, SpvOpLogicalOr, B, op2(g, SpvOpSGreaterThanEqual, B, x, W), op2(g, SpvOpSGreaterThanEqual, B, y, H))));
+    return_if(g, outside);
+    u32 idx = op2(g, SpvOpIAdd, I, op2(g, SpvOpIMul, I, y, W), x);
+    store(g, g->pixel_var, idx);
+    u32 sti[3] = {z0, idx, z1};
+    u32 status = load(g, g->tuint, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->field_var, sti, 3));
+    return_if(g, op2(g, SpvOpINotEqual, B, status, spv_const_u32(&g->s, g->tuint, 0 /* FLOOD_PENDING */)));
+    /* neighbour: rings d-1 and d+1 only, converged, d-1 first, then closest to the ray from the start */
+    static const int dxs[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    static const int dys[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    u32 d = imax_(g, iabs_(g, op2(g, SpvOpISub, I, x, sx)), iabs_(g, op2(g, SpvOpISub, I, y, sy)));
+    u32 best = ci(g, -1), best_score = ci(g, 0x7fffffff);
+    u32 ysy = op2(g, SpvOpISub, I, y, sy), xsx = op2(g, SpvOpISub, I, x, sx);
+    for (int k = 0; k < 8; k++) {
+        u32 nx = op2(g, SpvOpIAdd, I, x, ci(g, dxs[k])), ny = op2(g, SpvOpIAdd, I, y, ci(g, dys[k]));
+        u32 inb = op2(g, SpvOpLogicalAnd, B,
+                      op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpSGreaterThanEqual, B, nx, z0), op2(g, SpvOpSGreaterThanEqual, B, ny, z0)),
+                      op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpSLessThan, B, nx, W), op2(g, SpvOpSLessThan, B, ny, H)));
+        u32 nxs = op2(g, SpvOpISub, I, nx, sx), nys = op2(g, SpvOpISub, I, ny, sy);
+        u32 dn = imax_(g, iabs_(g, nxs), iabs_(g, nys));
+        u32 safe = op2(g, SpvOpIAdd, I, op2(g, SpvOpIMul, I, ext3(g, I, GLSLSClamp, ny, z0, op2(g, SpvOpISub, I, H, z1)), W),
+                       ext3(g, I, GLSLSClamp, nx, z0, op2(g, SpvOpISub, I, W, z1)));
+        u32 nsi[3] = {z0, safe, z1};
+        u32 nst = load(g, g->tuint, g_access(g, ptr(g, SpvSCUniform, g->tuint), g->field_var, nsi, 3));
+        u32 done = op2(g, SpvOpIEqual, B, nst, spv_const_u32(&g->s, g->tuint, 1 /* FLOOD_DONE */));
+        u32 cross = iabs_(g, op2(g, SpvOpISub, I, op2(g, SpvOpIMul, I, nxs, ysy), op2(g, SpvOpIMul, I, nys, xsx)));
+        u32 score = op2(g, SpvOpIAdd, I, isel(g, op2(g, SpvOpSLessThan, B, dn, d), z0, ci(g, 1 << 20)), cross);
+        u32 ok = op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpLogicalAnd, B, inb, op2(g, SpvOpINotEqual, B, dn, d)),
+                     op2(g, SpvOpLogicalAnd, B, done, op2(g, SpvOpSLessThan, B, score, best_score)));
+        best_score = isel(g, ok, score, best_score);
+        best = isel(g, ok, safe, best);
+    }
+    u32 has_nb = op2(g, SpvOpSGreaterThanEqual, B, best, z0);
+    u32 at_start = op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpIEqual, B, x, sx), op2(g, SpvOpIEqual, B, y, sy));
+    /* a ring pixel without a converged neighbour waits (unless it is the start) */
+    return_if(g, op2(g, SpvOpLogicalAnd, B, op1(g, SpvOpLogicalNot, B, is_cold),
+                     op2(g, SpvOpLogicalAnd, B, op1(g, SpvOpLogicalNot, B, has_nb), op1(g, SpvOpLogicalNot, B, at_start))));
+    u32 fmode = isel(g, is_cold, ci(g, FLOOD_DIRECT), isel(g, has_nb, ci(g, FLOOD_CONTINUE), ci(g, FLOOD_START)));
+    store(g, g->flood_mode_var, fmode);
+    u32 bsafe = imax_(g, best, z0);
+    u32 nti[3] = {z0, bsafe, z0};
+    store(g, g->flood_seed_var, load(g, g->tvec2, g_access(g, ptr(g, SpvSCUniform, g->tvec2), g->field_var, nti, 3)));
+    *out_x = x;
+    *out_y = y;
+    *out_w = extract(g, F, size, 0);
+    *out_h = extract(g, F, size, 1);
+    /* the neighbour's point is computed after the globals are loaded (flood_from is set by the caller) */
+    g->flood_nb = bsafe;
+    g->flood_W = W;
+}
+
+/* Generate the shader of viewer `v`: a fragment shader, or (compute) the flood-fill compute shader. */
+static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, u32 *nwords, char *err, int errcap) {
     Gen G = {0};
     Gen *g = &G;
     g->prog = p;
     g->viewer = v;
+    g->compute = compute;
     reset_ids(p);
     spv_init(&g->s);
     Spv *s = &g->s;
@@ -1075,17 +1219,62 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
     spv_decorate1(s, g->state_var, SpvDecBinding, 0);
     spv_name(s, g->state_var, "state");
 
-    u32 pcm[2] = {g->tvec2, g->tvec2};
-    u32 pct = spv_type_struct(s, pcm, 2);
-    spv_decorate(s, pct, SpvDecBlock, NULL, 0);
-    spv_member_decorate(s, pct, 0, SpvDecOffset, 0, true);
-    spv_member_decorate(s, pct, 1, SpvDecOffset, 8, true);
-    g->pc_var = spv_global_var(s, ptr(g, SpvSCPushConstant, pct), SpvSCPushConstant, 0);
-
-    g->fragcoord = spv_global_var(s, ptr(g, SpvSCInput, g->tvec4), SpvSCInput, 0);
-    spv_decorate1(s, g->fragcoord, SpvDecBuiltIn, SpvBuiltInFragCoord);
-    g->out_color = spv_global_var(s, ptr(g, SpvSCOutput, g->tvec4), SpvSCOutput, 0);
-    spv_decorate1(s, g->out_color, SpvDecLocation, 0);
+    u32 gid_var = 0;
+    if (!compute) {
+        u32 pcm[2] = {g->tvec2, g->tvec2};
+        u32 pct = spv_type_struct(s, pcm, 2);
+        spv_decorate(s, pct, SpvDecBlock, NULL, 0);
+        spv_member_decorate(s, pct, 0, SpvDecOffset, 0, true);
+        spv_member_decorate(s, pct, 1, SpvDecOffset, 8, true);
+        g->pc_var = spv_global_var(s, ptr(g, SpvSCPushConstant, pct), SpvSCPushConstant, 0);
+        g->fragcoord = spv_global_var(s, ptr(g, SpvSCInput, g->tvec4), SpvSCInput, 0);
+        spv_decorate1(s, g->fragcoord, SpvDecBuiltIn, SpvBuiltInFragCoord);
+        g->out_color = spv_global_var(s, ptr(g, SpvSCOutput, g->tvec4), SpvSCOutput, 0);
+        spv_decorate1(s, g->out_color, SpvDecLocation, 0);
+    } else {
+        /* push constants: vec2 size, ivec2 start, int ring, int mode */
+        u32 ivec2 = spv_type_vec(s, g->tint, 2);
+        u32 pcm[4] = {g->tvec2, ivec2, g->tint, g->tint};
+        u32 pct = spv_type_struct(s, pcm, 4);
+        spv_decorate(s, pct, SpvDecBlock, NULL, 0);
+        static const u32 offs[4] = {0, 8, 16, 20};
+        for (int i = 0; i < 4; i++) spv_member_decorate(s, pct, (u32)i, SpvDecOffset, offs[i], true);
+        g->pc_var = spv_global_var(s, ptr(g, SpvSCPushConstant, pct), SpvSCPushConstant, 0);
+        u32 uvec3 = spv_type_vec(s, g->tuint, 3);
+        gid_var = spv_global_var(s, ptr(g, SpvSCInput, uvec3), SpvSCInput, 0);
+        spv_decorate1(s, gid_var, SpvDecBuiltIn, SpvBuiltInGlobalInvocationId);
+        /* binding 1: field entries {vec2 t; uint status; uint pad}; binding 2: packed RGBA8 colours */
+        u32 em[3] = {g->tvec2, g->tuint, g->tuint};
+        u32 entry = spv_type_struct(s, em, 3);
+        spv_member_decorate(s, entry, 0, SpvDecOffset, 0, true);
+        spv_member_decorate(s, entry, 1, SpvDecOffset, 8, true);
+        spv_member_decorate(s, entry, 2, SpvDecOffset, 12, true);
+        u32 earr = spv_type_runtime_array(s, entry);
+        spv_decorate1(s, earr, SpvDecArrayStride, 16);
+        u32 fst = spv_type_struct(s, &earr, 1);
+        spv_decorate(s, fst, SpvDecBufferBlock, NULL, 0);
+        spv_member_decorate(s, fst, 0, SpvDecOffset, 0, true);
+        g->field_var = spv_global_var(s, ptr(g, SpvSCUniform, fst), SpvSCUniform, 0);
+        spv_decorate1(s, g->field_var, SpvDecDescriptorSet, 0);
+        spv_decorate1(s, g->field_var, SpvDecBinding, 1);
+        spv_name(s, g->field_var, "field");
+        u32 carr = spv_type_runtime_array(s, g->tuint);
+        spv_decorate1(s, carr, SpvDecArrayStride, 4);
+        u32 cst = spv_type_struct(s, &carr, 1);
+        spv_decorate(s, cst, SpvDecBufferBlock, NULL, 0);
+        spv_member_decorate(s, cst, 0, SpvDecOffset, 0, true);
+        g->colors_var = spv_global_var(s, ptr(g, SpvSCUniform, cst), SpvSCUniform, 0);
+        spv_decorate1(s, g->colors_var, SpvDecDescriptorSet, 0);
+        spv_decorate1(s, g->colors_var, SpvDecBinding, 2);
+        spv_name(s, g->colors_var, "colors");
+        /* per-invocation flood state */
+        g->flood_mode_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, FLOOD_DIRECT));
+        g->flood_seed_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tvec2), SpvSCPrivate, spv_const_null(s, g->tvec2));
+        g->flood_from_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tvec2), SpvSCPrivate, spv_const_null(s, g->tvec2));
+        g->flood_out_t_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tvec2), SpvSCPrivate, spv_const_null(s, g->tvec2));
+        g->flood_out_ok_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, -1));
+        g->pixel_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
+    }
 
     /* Private copies of the used globals and the per-run internals */
     for (int i = 0; i < p->globals.len; i++) {
@@ -1109,6 +1298,8 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         ls->spv_var = local_var(g, ls->type);
         spv_name_safe(s, ls->spv_var, "v_", ls->name);
     }
+    u32 fx = 0, fy = 0, fw_ = 0, fh_ = 0;
+    if (compute) flood_prologue(g, g->pc_var, gid_var, &fx, &fy, &fw_, &fh_);
     for (int i = 0; i < p->globals.len; i++) {
         Sym *gs = p->globals.data[i];
         if (!gs->used) continue;
@@ -1116,8 +1307,21 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         u32 bp = g_access(g, ptr(g, SpvSCUniform, bty(g, gs->type)), g->state_var, &idx, 1);
         store(g, gs->spv_var, from_buffer(g, gs->type, load(g, bty(g, gs->type), bp)));
     }
-    /* pixel -> plane */
-    {
+    if (compute) {
+        /* this pixel's point and the neighbour's point */
+        u32 f = g->tfloat, half = cf(g, 0.5f);
+        u32 px = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, fx), half);
+        u32 py = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, fy), half);
+        u32 z = flat_plane_point(g, px, py, fw_, fh_);
+        if (v->coord) store(g, v->coord->spv_var, z);
+        u32 W = g->flood_W;
+        u32 nx = op2(g, SpvOpSMod, g->tint, g->flood_nb, ext2(g, g->tint, GLSLSMax, W, ci(g, 1)));
+        u32 ny = op2(g, SpvOpSDiv, g->tint, g->flood_nb, ext2(g, g->tint, GLSLSMax, W, ci(g, 1)));
+        u32 npx = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, nx), half);
+        u32 npy = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, ny), half);
+        store(g, g->flood_from_var, flat_plane_point(g, npx, npy, fw_, fh_));
+    } else {
+        /* pixel -> plane */
         u32 f = g->tfloat;
         u32 fc = load(g, g->tvec4, g->fragcoord);
         u32 z0 = ci(g, 0), z1 = ci(g, 1);
@@ -1126,14 +1330,13 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         u32 px = op2(g, SpvOpFAdd, f, extract(g, f, fc, 0), extract(g, f, off, 0));
         u32 py = op2(g, SpvOpFAdd, f, extract(g, f, fc, 1), extract(g, f, off, 1));
         u32 w = extract(g, f, size, 0), h = extract(g, f, size, 1);
-        u32 half = cf(g, 0.5f);
-        u32 m = op2(g, SpvOpFMul, f, half, ext2(g, f, GLSLFMin, w, h));
-        u32 scale = op2(g, SpvOpFDiv, f, global_value(g, v->radius), m);
-        u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
-        u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
         u32 z;
         if (v->mobius) {
             /* see proj_pixel_to_plane in interp.c */
+            u32 half = cf(g, 0.5f);
+            u32 m = op2(g, SpvOpFMul, f, half, ext2(g, f, GLSLFMin, w, h));
+            u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
+            u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
             u32 T = cf(g, 1.19175359f);
             u32 x = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dx, m), T);
             u32 y = op2(g, SpvOpFMul, f, op2(g, SpvOpFDiv, f, dy, m), T);
@@ -1148,10 +1351,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
             u32 den = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, mc, u), g_cmul(g, md, vv));
             z = g_cdiv(g, num, den);
         } else {
-            u32 c = global_value(g, v->center);
-            u32 re = op2(g, SpvOpFAdd, f, extract(g, f, c, 0), op2(g, SpvOpFMul, f, scale, dx));
-            u32 im = op2(g, SpvOpFAdd, f, extract(g, f, c, 1), op2(g, SpvOpFMul, f, scale, dy));
-            z = vec2(g, re, im);
+            z = flat_plane_point(g, px, py, w, h);
         }
         if (v->coord) store(g, v->coord->spv_var, z);
     }
@@ -1163,12 +1363,33 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
 
     for (int qi = 0; qi < g->queue.len; qi++) emit_func(g, g->queue.data[qi]);
 
-    u32 iface[2] = {g->fragcoord, g->out_color};
-    spv_entry_point(s, mainfn, iface, 2);
+    if (compute) {
+        spv_entry_point_compute(s, mainfn, &gid_var, 1, FLOOD_GROUP_SIZE);
+    } else {
+        u32 iface[2] = {g->fragcoord, g->out_color};
+        spv_entry_point(s, mainfn, iface, 2);
+    }
     u32 *words = spv_finish(s, nwords);
     spv_free(s);
     vec_free(g->queue);
     vec_free(g->visited);
     if (err && errcap > 0) err[0] = 0;
     return words;
+}
+
+/* Generate the fragment shader of viewer `v`.  Returns malloc'd words or NULL. */
+u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) {
+    return codegen_viewer_impl(p, v, false, nwords, err, errcap);
+}
+
+/* Generate the flood-fill compute shader of viewer `v` (it must have a `continuing` solve): one
+ * invocation per pixel of a ring (or of the image for the last pass), see flood.c.
+ * Bindings: 0 state, 1 field (FloodEntry[]), 2 colours (packed RGBA8 per pixel);
+ * push constants: vec2 size, ivec2 start, int ring, int mode (0 ring, 1 last pass). */
+u32 *codegen_viewer_flood(Program *p, Section *v, u32 *nwords, char *err, int errcap) {
+    if (!v->flood) {
+        if (err) snprintf(err, (size_t)errcap, "this viewer has no 'continuing' solve");
+        return NULL;
+    }
+    return codegen_viewer_impl(p, v, true, nwords, err, errcap);
 }
