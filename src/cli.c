@@ -189,7 +189,7 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
 #endif
 }
 
-#if __has_include("app.h")
+#if __has_include("app.c")
 #include "app.h"
 #endif
 
@@ -224,7 +224,7 @@ int cli_main(int argc, char **argv) {
         script = a;
     }
     if (!mode) {
-#if __has_include("app.h")
+#if __has_include("app.c")
         return app_run(script);
 #else
         fprintf(stderr, "this build has no GUI\n");

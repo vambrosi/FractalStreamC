@@ -162,9 +162,11 @@ static u32 spv_type_array(Spv *s, u32 elem, int n) {
 }
 static u32 spv_type_struct(Spv *s, const u32 *members, int n) {
     u32 id = spv_new_id(s);
-    vec_push(s->types, ((u32)(n + 2) << 16) | SpvOpTypeStruct);
-    vec_push(s->types, id);
-    for (int i = 0; i < n; i++) vec_push(s->types, members[i]);
+    u32 *o = (u32 *)xmalloc(sizeof(u32) * (size_t)(n + 1));
+    o[0] = id;
+    if (n > 0) memcpy(o + 1, members, sizeof(u32) * (size_t)n);
+    wv_inst(&s->types, SpvOpTypeStruct, o, n + 1);
+    free(o);
     return id;
 }
 
