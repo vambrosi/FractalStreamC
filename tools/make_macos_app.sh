@@ -11,6 +11,7 @@
 #   FractalStream.app/Contents/Frameworks/MoltenVK_icd.json      (only needed by a Vulkan loader)
 #   FractalStream.app/Contents/Frameworks/LICENSE-MoltenVK.txt   MoltenVK is Apache-2.0
 #   FractalStream.app/Contents/Resources/examples/               the example scripts
+#   FractalStream.app/Contents/Resources/docs/                   the language reference (shown by F2)
 #
 # MoltenVK comes from the first of:
 #   1. $MOLTENVK      libMoltenVK.dylib itself, or a directory containing it (searched)
@@ -79,6 +80,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXE"
 cp -R examples "$APP/Contents/Resources/examples"   # (the Open dialog's "Examples")
+mkdir -p "$APP/Contents/Resources/docs"
+cp docs/*.md "$APP/Contents/Resources/docs/"        # (the language reference, F2)
 cp -L "$DYLIB" "$APP/Contents/Frameworks/libMoltenVK.dylib"
 if [ -n "$ICD" ]; then cp -L "$ICD" "$APP/Contents/Frameworks/MoltenVK_icd.json"; fi
 if [ -n "$LIC" ]; then

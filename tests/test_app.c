@@ -394,6 +394,50 @@ TEST(app_settings_and_prepare) {
     program_free(p);
 }
 
+/* the language reference shown in the app (F2): docs/language.md parsed into blocks */
+TEST(app_reference_parse) {
+    size_t len;
+    char *md = fs_read_file("docs/language.md", &len);
+    CHECK(md != NULL);
+    if (!md) return;
+    RdBlockVec blocks = {0};
+    rd_parse(md, &blocks);
+    int fences = 0;
+    for (const char *p = md; (p = strstr(p, "```")) != NULL; p += 3) fences++;
+    int code = 0, tables = 0, h1 = 0, h2 = 0, bullets = 0;
+    for (int i = 0; i < blocks.len; i++) {
+        RdBlock *b = &blocks.data[i];
+        code += b->kind == RD_CODE;
+        h1 += b->kind == RD_H1;
+        h2 += b->kind == RD_H2;
+        bullets += b->kind == RD_BULLET;
+        if (b->kind == RD_TABLE) {
+            tables++;
+            CHECK(b->rows >= 2 && b->cols >= 2);
+            for (int k = 0; k < b->rows * b->cols; k++) CHECK(b->cells[k] != NULL);
+        }
+    }
+    CHECK_INT(code, fences / 2);
+    CHECK(tables >= 3 && h1 == 1 && h2 >= 8 && bullets >= 20);
+    CHECK(blocks.data[0].kind == RD_H1 && !strcmp(blocks.data[0].text, "The FractalStream language"));
+    rd_free_blocks(&blocks);
+    free(md);
+    /* the bits of Markdown: a paragraph joined over lines, nested bullets, a table, an unclosed code block */
+    rd_parse("Some text\ngoes on.\n\n- one\n  - two\n    more\n| a | b |\n|---|---|\n| 1 | 2 |\n```\ncode", &blocks);
+    CHECK_INT(blocks.len, 5);
+    if (blocks.len == 5) {
+        CHECK_STR(blocks.data[0].text, "Some text goes on.");
+        CHECK(blocks.data[1].kind == RD_BULLET && blocks.data[1].indent == 0);
+        CHECK(blocks.data[2].kind == RD_BULLET && blocks.data[2].indent == 1);
+        CHECK_STR(blocks.data[2].text, "two more");
+        CHECK(blocks.data[3].kind == RD_TABLE && blocks.data[3].rows == 2 && blocks.data[3].cols == 2);
+        CHECK_STR(blocks.data[3].cells[3], "2");
+        CHECK(blocks.data[4].kind == RD_CODE);
+        CHECK_STR(blocks.data[4].text, "code");
+    }
+    rd_free_blocks(&blocks);
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -402,4 +446,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_folder_listing),
     TESTCASE(app_recent_files),
     TESTCASE(app_settings_and_prepare),
+    TESTCASE(app_reference_parse),
 };

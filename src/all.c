@@ -34,6 +34,7 @@
 #include "platform.c"
 #include "ui.c"
 #include "editor.c"
+#include "refdoc.c"
 /* application */
 #include "app.c"
 #include "cli.c"

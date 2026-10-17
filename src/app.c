@@ -117,6 +117,7 @@ typedef struct App {
     int export_viewer, export_scale, export_wait;
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
+    bool ref_open;          /* the language reference (refdoc.c) */
     float menu_scroll;      /* (the menu scrolls in a small window) */
     bool help_open;
     /* find / replace in the script */
@@ -2355,6 +2356,9 @@ static void editor_pane(float H) {
         else open_find(false);
     }
     ui_tooltip("Find and replace (" MODKEY "+F, " MODKEY "+Alt+F)");
+    x += bhh + px(4);
+    if (ui_icon_button_ex("##reference", "menu_book", "?", x, y, bhh, A.ref_open ? UI_SELECTED : 0)) A.ref_open = !A.ref_open;
+    ui_tooltip("The language reference (F2)");
     x += bhh + px(10);
     ui_toggle("Live", x, y + px(3), px(64), bhh - px(6), &A.live);
     ui_tooltip("Run the script automatically shortly after you stop typing");
@@ -3180,7 +3184,7 @@ static void help_overlay(float W, float H) {
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
         {"F11", "full screen"},
-        {"F1", "this help"},
+        {"F1, F2", "this help, the language reference"},
     };
     int prev = ui_layer(UI_LAYER_POPUP);
     float lh = ui_font_line_height(UI_FONT_MONO) + px(3);
@@ -3606,9 +3610,14 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
     if (ui_shortcut(UI_KEY_F1, 0)) A.help_open = !A.help_open;
+    if (ui_shortcut(UI_KEY_F2, 0)) {
+        A.ref_open = !A.ref_open;
+        A.help_open = false;
+    }
     if (ui_shortcut(UI_KEY_ESCAPE, 0)) {
         if (A.drag == DRAG_VIEWER) A.drag = DRAG_NONE;
         else if (A.help_open) A.help_open = false;
+        else if (A.ref_open) A.ref_open = false;
         else if (A.find_open && editor_has_focus(A.ed)) close_find();
         else if (A.menu_viewer >= 0) A.menu_viewer = -1;
         else A.menu_viewer = target_viewer();
@@ -3885,6 +3894,7 @@ static void frame(void) {
     config_pane(W, H);
     menu_overlay(W, H);
     help_overlay(W, H);
+    refdoc_ui(W, H, &A.ref_open);
     modal_dialog(W, H);
     status_line(W, H);
     if (!A.modal) shortcuts();
