@@ -26,7 +26,14 @@ static struct {
     float scroll, content_h;
     char query[128];
     int found;       /* the block found last, -1 none */
+    bool search_now; /* look for the query at the next draw (refdoc_lookup) */
 } rd = {.found = -1};
+
+/* open the reference at `word` (the word under the script's caret) */
+static void refdoc_lookup(const char *word) {
+    snprintf(rd.query, sizeof rd.query, "%s", word);
+    rd.search_now = true;
+}
 
 /* the documentation that comes with the program: next to it, above it (build/), or in the app's Resources */
 static const char *rd_docs_dir(void) {
@@ -327,10 +334,16 @@ static void refdoc_ui(float W, float H, bool *open) {
         return;
     }
     float tw = body.w - 2 * pad;
-    /* search: typing finds the first place, Enter the next one */
-    bool step = (r & UI_TEXT_SUBMIT) != 0, changed = (r & UI_TEXT_CHANGED) != 0;
+    /* search: typing finds the first place, Enter the next one (where the blocks were laid out last) */
+    bool step = (r & UI_TEXT_SUBMIT) != 0, changed = (r & UI_TEXT_CHANGED) != 0, lookup = false;
+    if (rd.search_now && rd.content_h > 0) {
+        changed = lookup = true;
+        rd.search_now = false;
+    }
     if ((step || changed) && rd.query[0]) {
         int start = changed ? 0 : rd.found + 1, n = rd.blocks.len, hit = -1;
+        for (int k = 0; k < n && lookup && hit < 0; k++) /* (a word looked up: where the text explains it first) */
+            if (rd.blocks.data[k].kind != RD_CODE && rd_block_has(&rd.blocks.data[k], rd.query)) hit = k;
         for (int k = 0; k < n && hit < 0; k++) {
             int i = (start + k) % n;
             if (rd_block_has(&rd.blocks.data[i], rd.query)) hit = i;
@@ -340,6 +353,7 @@ static void refdoc_ui(float W, float H, bool *open) {
     } else if (!rd.query[0]) {
         rd.found = -1;
     }
+    if (rd.search_now) ui_request_redraw(); /* (laid out below, searched at the next frame) */
     rd.scroll += ui_scroll_area(body.x, body.y, body.w, body.h);
     if (ui_has_focus(ui_id("##ref_find")) == false) { /* keys scroll when the field doesn't have them */
         if (ui_shortcut(UI_KEY_PAGE_DOWN, 0) || ui_shortcut(UI_KEY_SPACE, 0)) rd.scroll += body.h * 0.9f;

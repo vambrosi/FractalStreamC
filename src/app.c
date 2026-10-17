@@ -3610,9 +3610,21 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
     if (ui_shortcut(UI_KEY_F1, 0)) A.help_open = !A.help_open;
-    if (ui_shortcut(UI_KEY_F2, 0)) {
+    if (ui_shortcut(UI_KEY_F2, 0)) { /* (in the script: the reference at the word under the caret) */
         A.ref_open = !A.ref_open;
         A.help_open = false;
+        if (A.ref_open && editor_has_focus(A.ed)) {
+            int len, c = editor_cursor(A.ed), a, b;
+            const char *t = editor_get_text(A.ed, &len);
+            for (a = c; a > 0 && (isalnum((unsigned char)t[a - 1]) || t[a - 1] == '_'); a--) {}
+            for (b = c; b < len && (isalnum((unsigned char)t[b]) || t[b] == '_'); b++) {}
+            if (a > 0 && (t[a - 1] == '.' || t[a - 1] == '@')) a--;
+            if (b > a && b - a < 64) {
+                char word[64];
+                snprintf(word, sizeof word, "%.*s", b - a, t + a);
+                refdoc_lookup(word);
+            }
+        }
     }
     if (ui_shortcut(UI_KEY_ESCAPE, 0)) {
         if (A.drag == DRAG_VIEWER) A.drag = DRAG_NONE;
