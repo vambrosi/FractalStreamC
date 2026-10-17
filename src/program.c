@@ -146,6 +146,17 @@ static const char *source_line(const char *src, int line, int *len) {
     return s;
 }
 
+/* Deep zooms: does a w x h picture of flat viewer v need double-single precision (codegen_viewer_ex)?
+ * When a pixel is smaller than about 1e-6 of the size of the numbers (single precision gets noisy
+ * from there on); `already` (rendering that way) lowers the threshold a little, to avoid flapping. */
+bool viewer_wants_df(Program *p, const u32 *state, Section *v, int w, int h, bool already) {
+    if (v->mobius || !v->center_lo || w <= 0 || h <= 0) return false;
+    double cx = (double)wf(state[v->center->slot]) + wf(state[v->center_lo->slot]);
+    double cy = (double)wf(state[v->center->slot + 1]) + wf(state[v->center_lo->slot + 1]);
+    double pixel = (double)wf(state[v->radius->slot]) / (0.5 * FS_MIN(w, h));
+    return pixel < (already ? 2e-6 : 1e-6) * FS_MAX(hypot(cx, cy), 1.0);
+}
+
 /* "path:line:col: error: message" followed by the source line and a marker */
 void program_format_diags(Program *p, StrBuf *out) {
     for (int i = 0; i < p->diags.len; i++) {

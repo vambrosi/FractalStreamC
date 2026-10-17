@@ -68,8 +68,13 @@ end
 **Promotion.** Numbers convert automatically along `Z -> R -> C -> H` (and elementwise for
 vectors), never backwards: use `re`, `im`, `|z|`, `floor`, `ceil`, `round` to go down.
 
-**Precision.** Reals are 32-bit floats everywhere (GPUs on macOS have no doubles), so deep zooms
-lose detail below about `radius = 1e-5`.
+**Precision.** Reals are 32-bit floats (GPUs on macOS have no doubles). When you zoom into a flat
+view until a pixel is smaller than about a millionth of the numbers in view, the view is computed
+again in double-single precision (pairs of floats, about 14 digits) — slower, but sharp down to a
+radius of about `1e-12` times the size of the numbers. The coordinates at the bottom of the view
+say "(double precision)" then. Square roots and the four operations get the extra digits; other
+functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what colours need. Tools,
+`@prepare` and `@global` run on the CPU in single precision.
 
 ## Variables
 

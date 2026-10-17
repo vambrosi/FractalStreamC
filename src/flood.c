@@ -352,10 +352,11 @@ typedef struct FloodGpu {
 
 typedef struct FloodPush { float w, h; i32 sx, sy; i32 ring, mode; } FloodPush; /* matches codegen */
 
-bool flood_gpu_create(FloodGpu *fg, Program *p, Section *v, char *err, int errcap) {
+/* the compute pipeline of a flood viewer; with `df`, in double-single precision (deep zooms) */
+bool flood_gpu_create_ex(FloodGpu *fg, Program *p, Section *v, bool df, char *err, int errcap) {
     memset(fg, 0, sizeof *fg);
     u32 n;
-    u32 *words = codegen_viewer_flood(p, v, &n, err, errcap);
+    u32 *words = codegen_viewer_flood_ex(p, v, df, &n, err, errcap);
     if (!words) return false;
     GfxComputeDesc d = {0};
     d.spirv = words;
@@ -365,6 +366,9 @@ bool flood_gpu_create(FloodGpu *fg, Program *p, Section *v, char *err, int errca
     fg->pipe = gfx_compute_create(&d, err, errcap);
     free(words);
     return fg->pipe > 0;
+}
+bool flood_gpu_create(FloodGpu *fg, Program *p, Section *v, char *err, int errcap) {
+    return flood_gpu_create_ex(fg, p, v, false, err, errcap);
 }
 
 void flood_gpu_destroy(FloodGpu *fg) {
@@ -393,6 +397,14 @@ bool flood_gpu_start(FloodGpu *fg, int w, int h, int sx, int sy) {
 
 bool flood_gpu_done(const FloodGpu *fg) { return !fg->field || fg->next_pass >= flood_pass_count(&fg->plan); }
 
+/* give the buffers back (the pipeline stays; flood_gpu_start makes them again) */
+void flood_gpu_free_buffers(FloodGpu *fg) {
+    if (fg->field) gfx_buffer_destroy(fg->field);
+    if (fg->colors) gfx_buffer_destroy(fg->colors);
+    fg->field = fg->colors = 0;
+    fg->w = fg->h = 0;
+}
+
 /* Record up to `max_passes` passes (and the copy of the colours into `target`, whose picture is kept
  * where the fill hasn't arrived yet).  Call between gfx_frame_begin and gfx_frame_draw, or in a batch. */
 void flood_gpu_record(FloodGpu *fg, int max_passes, int target) {
@@ -415,10 +427,10 @@ void flood_gpu_record(FloodGpu *fg, int max_passes, int target) {
 }
 
 /* Headless: render a flood viewer into memory (rgba8, rows top to bottom). The globals must be set. */
-bool flood_render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, FloodEntry *field_out, char *err,
-                      int errcap) {
+bool flood_render_gpu_ex(Program *p, const u32 *state, Section *v, bool df, int w, int h, u8 *rgba, FloodEntry *field_out,
+                         char *err, int errcap) {
     FloodGpu fg;
-    if (!flood_gpu_create(&fg, p, v, err, errcap)) return false;
+    if (!flood_gpu_create_ex(&fg, p, v, df, err, errcap)) return false;
     int sx, sy;
     flood_start_pixel(p, state, v, w, h, &sx, &sy);
     int target = gfx_target_create(w, h);
@@ -438,4 +450,9 @@ bool flood_render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8
     if (target > 0) gfx_target_destroy(target);
     flood_gpu_destroy(&fg);
     return ok;
+}
+
+bool flood_render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, FloodEntry *field_out, char *err,
+                      int errcap) {
+    return flood_render_gpu_ex(p, state, v, false, w, h, rgba, field_out, err, errcap);
 }

@@ -269,6 +269,7 @@ struct Section {
     Sym *color;         /* viewer output */
     Sym *picked;        /* viewer: .var (picked point) */
     Sym *center, *radius; /* viewer properties */
+    Sym *center_lo;     /* flat viewers: the low part of the centre, for deep zooms (centre + center_lo) */
     Sym *mobius;        /* projective viewers: view map, C^4 (a, b, c, d) */
     bool panning, hover, keep; /* tool settings */
     bool button;        /* tool: `button` in the header, an action run once (not selected) */

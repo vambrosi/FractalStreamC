@@ -441,6 +441,14 @@ TEST(flood_gpu_matches_cpu) {
     }
     CHECK_MSG(done > W * H * 9 / 10, "only %d of %d pixels converged", done, W * H);
     CHECK_MSG(bad <= 2, "%d of %d pixels differ", bad, W * H);
+    /* the same in double-single precision (deep zooms) */
+    CHECK_MSG(flood_render_gpu_ex(p, p->initial_state, p->viewers[0], true, W, H, a, fa, err, sizeof err), "%s", err);
+    int bad_df = 0;
+    for (int k = 0; k < W * H; k++)
+        if (fa[k].status != fb[k].status ||
+            (fa[k].status == FLOOD_DONE && (fabsf(fa[k].t[0] - fb[k].t[0]) >= 1e-3f || fabsf(fa[k].t[1] - fb[k].t[1]) >= 1e-3f)))
+            bad_df++;
+    CHECK_MSG(bad_df <= 2, "double precision: %d of %d pixels differ", bad_df, W * H);
     /* continuity: neighbours (where both converged) found nearby roots */
     int jumps = 0;
     for (int y = 0; y < H; y++)
@@ -510,7 +518,196 @@ TEST(flood_mends_bands) {
     program_free(p);
 }
 
+/* ---- deep zooms: double-single precision ---------------------------------------------- */
+/* every test script compiles in double-single precision, validates, converts to Metal and renders
+ * like the CPU (at ordinary zooms the two agree up to rounding) */
+TEST(df_viewers) {
+#ifdef FS_HAVE_GFX
+    char err[512];
+    bool val = cg_have_spirv_val();
+    static int have_cross = -1;
+    if (have_cross < 0) have_cross = system("which spirv-cross > /dev/null 2>&1") == 0;
+    bool gpu = gfx_preinit_loader();
+    GfxInitDesc d = {0};
+    if (gpu && !gfx_init(&d, err, sizeof err)) gpu = false;
+    const int W = 48, H = 40;
+    u8 *a = (u8 *)xmalloc(W * H * 4), *b = (u8 *)xmalloc(W * H * 4);
+    for (int i = 0; i < ARRAY_COUNT(cg_scripts); i++) {
+        Program *p = program_load(cg_scripts[i].src, cg_scripts[i].name);
+        if (p->nerrors || p->viewers[0]->mobius) { program_free(p); continue; }
+        Section *v = p->viewers[0];
+        u32 n;
+        u32 *words = codegen_viewer_ex(p, v, true, &n, err, sizeof err);
+        CHECK_MSG(words != NULL, "%s: %s", cg_scripts[i].name, err);
+        if (!words) { program_free(p); continue; }
+        fs_write_file("build/test_df.spv", words, n * 4);
+        if (val) {
+            int rc = system("spirv-val --target-env vulkan1.0 build/test_df.spv > build/test_tmp.txt 2>&1");
+            if (rc != 0) {
+                size_t len;
+                char *out = fs_read_file("build/test_tmp.txt", &len);
+                CHECK_MSG(rc == 0, "%s (double precision): spirv-val failed:\n%s", cg_scripts[i].name, out ? out : "");
+                free(out);
+            }
+        }
+        if (have_cross)
+            CHECK_MSG(system("spirv-cross --msl build/test_df.spv --output build/test_df.metal > build/test_tmp.txt 2>&1") == 0,
+                      "%s (double precision): spirv-cross --msl failed", cg_scripts[i].name);
+        if (gpu) {
+            gfx_set_globals(p->initial_state, (u32)p->state_words * 4);
+            int vid = gfx_viewer_create(words, n, err, sizeof err);
+            CHECK_MSG(vid > 0, "%s: %s", cg_scripts[i].name, err);
+            if (vid > 0) {
+                CHECK_MSG(gfx_render_to_memory(vid, W, H, 0, a, err, sizeof err), "%s", err);
+                gfx_viewer_destroy(vid);
+                render_cpu(p, p->initial_state, v, W, H, b);
+                int bad = 0;
+                for (int k = 0; k < W * H; k++) {
+                    int dmax = 0;
+                    for (int c = 0; c < 3; c++) dmax = FS_MAX(dmax, abs((int)a[4 * k + c] - (int)b[4 * k + c]));
+                    if (dmax > 3) bad++;
+                }
+                CHECK_MSG((double)bad / (W * H) <= cg_scripts[i].max_bad + 0.02, "%s (double precision): %d of %d pixels differ",
+                          cg_scripts[i].name, bad, W * H);
+            }
+        }
+        free(words);
+        program_free(p);
+    }
+    free(a);
+    free(b);
+    if (gpu) gfx_shutdown();
+#else
+    SKIP("built without gfx");
+#endif
+}
+
+/* the arithmetic keeps about twice the digits of a float, on the GPU */
+TEST(df_arithmetic) {
+#ifdef FS_HAVE_GFX
+    char err[512];
+    if (!gfx_preinit_loader()) SKIP("no Vulkan loader");
+    GfxInitDesc d = {0};
+    if (!gfx_init(&d, err, sizeof err)) SKIP("no Vulkan device");
+    const char *src =
+        "@viewer v c\n"                     /* (typed locals: not folded into constants by the compiler) */
+        "a : R = 1\n"
+        "b : R = 0.0000000001\n"
+        "add := ((a + b) - a) * 1e10\n"                         /* 1 */
+        "x : R = 1 + 1 / 1048576\n"
+        "mul := (x * x - 1 - 2 / 1048576) * 1099511627776.0\n"   /* 1 */
+        "three : R = 3\n"
+        "q := a / three\n"
+        "div := (q * three - a) * 1e13 + 0.5\n"                    /* about 0.5 (the error is ~1e-15) */
+        "two : R = 2\n"
+        "r := sqrt(two)\n"
+        "sq := (r * r - two) * 1e12 + 0.5\n"                       /* about 0.5 */
+        "tiny : R = 0.0000001\n"
+        "z := complex(a, tiny)\n"
+        "zz := z * z\n"                                            /* 1 - 1e-14 + 2e-7 i */
+        "cm := (re(zz) - a) * -1e14\n"                             /* 1 */
+        "color = [add, mul, if |div - 0.5| < 0.1 and |sq - 0.5| < 0.1 and |cm - 1| < 0.01 then 1 else 0]\n";
+    Program *p = program_load(src, "df_arith");
+    CHECK(p->nerrors == 0);
+    if (p->nerrors) { print_diags(p); program_free(p); gfx_shutdown(); return; }
+    gfx_set_globals(p->initial_state, (u32)p->state_words * 4);
+    /* (no check of single precision: shader compilers may simplify such expressions symbolically) */
+    u32 n;
+    u32 *words = codegen_viewer_ex(p, p->viewers[0], true, &n, err, sizeof err);
+    int vid = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
+    free(words);
+    CHECK_MSG(vid > 0, "%s", err);
+    if (vid > 0) {
+        u8 px[4 * 4];
+        CHECK_MSG(gfx_render_to_memory(vid, 2, 2, 0, px, err, sizeof err), "%s", err);
+        gfx_viewer_destroy(vid);
+        CHECK_MSG(px[0] == 255 && px[1] == 255 && px[2] == 255, "double precision: %d %d %d", px[0], px[1], px[2]);
+    }
+    program_free(p);
+    gfx_shutdown();
+#else
+    SKIP("built without gfx");
+#endif
+}
+
+/* a deep zoom of the Mandelbrot set (radius 1e-10) against a double-precision reference */
+static int df_ref_iter(double cr, double ci, int maxit) {
+    double zr = 0, zi = 0;
+    for (int k = 0; k < maxit; k++) {
+        if (zr * zr + zi * zi > 4.0) return k;
+        double t = zr * zr - zi * zi + cr;
+        zi = 2 * zr * zi + ci;
+        zr = t;
+    }
+    return -1;
+}
+
+TEST(df_deep_zoom) {
+#ifdef FS_HAVE_GFX
+    char err[512];
+    if (!gfx_preinit_loader()) SKIP("no Vulkan loader");
+    GfxInitDesc d = {0};
+    if (!gfx_init(&d, err, sizeof err)) SKIP("no Vulkan device");
+    const char *src =
+        "@config\n.maxIterations = 1000\n.escapeRadius = 2\n"
+        "@viewer v c\n"
+        "z := 0\n"
+        "while z not escapes do\n"
+        "    z = z^2 + c\n"
+        "end\n"
+        "n := .iterations\n"
+        "color = if .stuck then .black else [(n mod 256) / 255, floor(n / 256) / 255, 0.5]\n";
+    Program *p = program_load(src, "df_deep");
+    CHECK(p->nerrors == 0);
+    if (p->nerrors) { print_diags(p); program_free(p); gfx_shutdown(); return; }
+    Section *v = p->viewers[0];
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    double cx = -0.743643887037151, cy = 0.131825904205330, radius = 1e-10;
+    float hx = (float)cx, hy = (float)cy;
+    state[v->center->slot] = fw(hx);
+    state[v->center->slot + 1] = fw(hy);
+    state[v->center_lo->slot] = fw((float)(cx - hx));
+    state[v->center_lo->slot + 1] = fw((float)(cy - hy));
+    state[v->radius->slot] = fw((float)radius);
+    const int W = 64, H = 64;
+    CHECK(viewer_wants_df(p, state, v, W, H, false));
+    gfx_set_globals(state, (u32)p->state_words * 4);
+    u8 *rgba = (u8 *)xmalloc((size_t)W * H * 4);
+    int exact[2] = {0, 0};
+    for (int df = 0; df < 2; df++) {
+        u32 n;
+        u32 *words = codegen_viewer_ex(p, v, df != 0, &n, err, sizeof err);
+        int vid = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
+        free(words);
+        CHECK_MSG(vid > 0, "%s", err);
+        if (vid <= 0) continue;
+        CHECK_MSG(gfx_render_to_memory(vid, W, H, 0, rgba, err, sizeof err), "%s", err);
+        gfx_viewer_destroy(vid);
+        double scale = radius / (0.5 * FS_MIN(W, H));
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int r = df_ref_iter(cx + (x + 0.5 - W / 2.0) * scale, cy + (H / 2.0 - (y + 0.5)) * scale, 1000);
+                u8 *q = rgba + 4 * (y * W + x);
+                int g = q[0] == 0 && q[1] == 0 && q[2] == 0 ? -1 : q[0] + 256 * q[1];
+                if (g == r) exact[df]++;
+            }
+    }
+    CHECK_MSG(exact[1] >= W * H * 8 / 10, "double precision: %d of %d iteration counts exact", exact[1], W * H);
+    CHECK_MSG(exact[0] <= W * H / 10, "single precision: %d of %d exact (the test isn't deep enough)", exact[0], W * H);
+    free(rgba);
+    free(state);
+    program_free(p);
+    gfx_shutdown();
+#else
+    SKIP("built without gfx");
+#endif
+}
+
 static const TestCase tests_codegen[] = {
+    TESTCASE(df_viewers),
+    TESTCASE(df_arithmetic),
+    TESTCASE(df_deep_zoom),
     TESTCASE(flood_spirv_validates),
     TESTCASE(flood_gpu_matches_cpu),
     TESTCASE(flood_mends_bands),

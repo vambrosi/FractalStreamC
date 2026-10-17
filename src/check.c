@@ -417,6 +417,13 @@ static void setup_internals(Checker *c) {
         s->radius->doc = "radius of the largest disk around the centre that fits in the view";
         vec_push(p->globals, s->center);
         vec_push(p->globals, s->radius);
+        if (!s->projective) { /* deep zooms: the centre to twice the precision of a float (the app keeps it) */
+            s->center_lo = new_sym(c, arena_printf(&p->arena, "%s.center lo", s->name), t_complex, SYM_GLOBAL, s->line, 1);
+            s->center_lo->viewer_index = v;
+            s->center_lo->is_internal = true;
+            s->center_lo->doc = "low part of the centre (deep zooms)";
+            vec_push(p->globals, s->center_lo);
+        }
         if (s->projective) { /* view of the Riemann sphere: Mobius map (a w + b) / (c w + d) */
             s->mobius = new_sym(c, arena_printf(&p->arena, "%s.mobius", s->name), type_vec(t_complex, 4), SYM_GLOBAL, s->line, 1);
             s->mobius->viewer_index = v;

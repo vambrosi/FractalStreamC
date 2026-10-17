@@ -38,6 +38,12 @@ typedef struct ViewerRT {
     int pipeline;      /* fragment shader (viewers without a `continuing` solve) */
     FloodGpu flood;    /* compute shaders (viewers with one) */
     bool is_flood;
+    /* deep zooms: the same in double-single precision, made when the view gets that deep */
+    bool df;           /* rendering in double-single precision */
+    bool df_failed;    /* the GPU rejected that version: stay in single precision */
+    int pipeline_df;
+    FloodGpu flood_df;
+    u32 center_bits[2]; /* the centre when its low part was set (a centre set elsewhere drops the low part) */
     int target, tw, th;
     u32 *snap;         /* state the image was rendered from */
     bool *used;        /* per global: does the viewer read it? */
@@ -274,6 +280,47 @@ static float view_scale(int v, Rect r) {
 static void set_c(Sym *s, float re, float im) {
     A.state[s->slot] = fw(re);
     A.state[s->slot + 1] = fw(im);
+}
+
+/* Deep zooms: the centre of a flat view, to about twice the precision of a float, is
+ * NAME.center + NAME.center lo (the low part is kept by the app's panning and zooming). */
+static void view_center_d(int v, double *cx, double *cy) {
+    Section *s = A.prog->viewers[v];
+    *cx = wf(A.state[s->center->slot]);
+    *cy = wf(A.state[s->center->slot + 1]);
+    if (s->center_lo) {
+        *cx += wf(A.state[s->center_lo->slot]);
+        *cy += wf(A.state[s->center_lo->slot + 1]);
+    }
+}
+
+static void set_view_center_d(int v, double cx, double cy) {
+    Section *s = A.prog->viewers[v];
+    float hx = (float)cx, hy = (float)cy;
+    set_c(s->center, hx, hy);
+    if (!s->center_lo) return;
+    set_c(s->center_lo, (float)(cx - hx), (float)(cy - hy));
+    A.vrt[v].center_bits[0] = A.state[s->center->slot];
+    A.vrt[v].center_bits[1] = A.state[s->center->slot + 1];
+}
+
+/* a centre set by something else (the config panel, a tool, @prepare) has no low part */
+static void check_center_lo(int v) {
+    Section *s = A.prog->viewers[v];
+    if (!s->center_lo) return;
+    u32 *lo = A.state + s->center_lo->slot;
+    if ((lo[0] || lo[1]) && (A.state[s->center->slot] != A.vrt[v].center_bits[0] ||
+                             A.state[s->center->slot + 1] != A.vrt[v].center_bits[1]))
+        lo[0] = lo[1] = 0;
+}
+
+/* the plane point at screen position (x, y) of a flat view, in double precision */
+static void plane_of_d(int v, Rect r, double x, double y, double *re, double *im) {
+    double cx, cy;
+    view_center_d(v, &cx, &cy);
+    double sc = (double)wf(A.state[A.prog->viewers[v]->radius->slot]) / (0.5 * FS_MIN(r.w, r.h));
+    *re = cx + (x - r.x - 0.5 * r.w) * sc;
+    *im = cy + (0.5 * r.h - (y - r.y)) * sc;
 }
 
 /* ---- shortcuts -------------------------------------------------------------- */
@@ -556,7 +603,9 @@ static void free_viewers(void) {
     for (int v = 0; v < A.prog->nviewers; v++) {
         ViewerRT *rt = &A.vrt[v];
         if (rt->pipeline) gfx_viewer_destroy(rt->pipeline);
+        if (rt->pipeline_df) gfx_viewer_destroy(rt->pipeline_df);
         flood_gpu_destroy(&rt->flood);
+        flood_gpu_destroy(&rt->flood_df);
         if (rt->target) gfx_target_destroy(rt->target);
         free(rt->snap);
         free(rt->used);
@@ -595,7 +644,9 @@ static void update_title(void) {
 static void destroy_rts(ViewerRT *vrt, int n) {
     for (int k = 0; k < n; k++) {
         if (vrt[k].pipeline) gfx_viewer_destroy(vrt[k].pipeline);
+        if (vrt[k].pipeline_df) gfx_viewer_destroy(vrt[k].pipeline_df);
         flood_gpu_destroy(&vrt[k].flood);
+        flood_gpu_destroy(&vrt[k].flood_df);
         free(vrt[k].used);
     }
     free(vrt);
@@ -641,6 +692,8 @@ static bool load_source(const char *src, bool reset_layout) {
             return false;
         }
         codegen_viewer_deps(p, s, vrt[v].used);
+        for (int i = 0; i < p->globals.len; i++) /* (read by the deep zoom version) */
+            if (p->globals.data[i] == s->center_lo) vrt[v].used[i] = true;
         for (int i = 0; i < p->globals.len; i++)
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
         vrt[v].tool = TOOL_PAN;
@@ -658,6 +711,10 @@ static bool load_source(const char *src, bool reset_layout) {
             remap[ov] = v;
             memcpy(state + s->center->slot, A.state + os->center->slot, 8);
             memcpy(state + s->radius->slot, A.state + os->radius->slot, 4);
+            if (s->center_lo && os->center_lo) {
+                memcpy(state + s->center_lo->slot, A.state + os->center_lo->slot, 8);
+                memcpy(vrt[v].center_bits, A.vrt[ov].center_bits, sizeof vrt[v].center_bits);
+            }
             if (s->mobius && os->mobius) memcpy(state + s->mobius->slot, A.state + os->mobius->slot, 32);
             if (s->picked && os->picked && s->picked->type == os->picked->type && A.vrt[ov].picked) {
                 memcpy(state + s->picked->slot, A.state + os->picked->slot, sizeof(u32) * (size_t)s->picked->type->size);
@@ -762,6 +819,7 @@ static void run_editor(void) { A.req_run = true; }
 static void request_open(const char *path) { snprintf(A.req_open, sizeof A.req_open, "%s", path); }
 
 static void export_picture(const char *path, int v, int scale);
+static int vpipeline(ViewerRT *rt);
 
 static void process_requests(void) {
     if (A.req_open[0]) {
@@ -869,8 +927,8 @@ static void export_picture(const char *path, int v, int scale) {
     int W = w * ss, H = h * ss;
     u8 *big = (u8 *)xmalloc((size_t)W * H * 4);
     char err[512] = "";
-    bool ok = A.vrt[v].is_flood ? flood_render_gpu(p, A.state, s, W, H, big, NULL, err, sizeof err)
-                                : gfx_render_to_memory(A.vrt[v].pipeline, W, H, 64, big, err, sizeof err);
+    bool ok = A.vrt[v].is_flood ? flood_render_gpu_ex(p, A.state, s, A.vrt[v].df, W, H, big, NULL, err, sizeof err)
+                                : gfx_render_to_memory(vpipeline(&A.vrt[v]), W, H, 64, big, err, sizeof err);
     u8 *rgba = big;
     if (ok && ss > 1) {
         rgba = (u8 *)xmalloc((size_t)w * h * 4);
@@ -965,10 +1023,10 @@ static void zoom_at(int v, Rect r, float x, float y, float factor) {
         mob_set(s->mobius, mob_mul(mob_get(s->mobius), mob_mul(mob_inv(t), mob_mul(k, t))));
         return;
     }
-    float re, im;
-    plane_of(v, r, x, y, &re, &im);
-    float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
-    set_c(s->center, re + (cx - re) * factor, im + (cy - im) * factor);
+    double re, im, cx, cy;
+    plane_of_d(v, r, x, y, &re, &im);
+    view_center_d(v, &cx, &cy);
+    set_view_center_d(v, re + (cx - re) * factor, im + (cy - im) * factor);
     A.state[s->radius->slot] = fw(wf(A.state[s->radius->slot]) * factor);
 }
 
@@ -981,15 +1039,16 @@ static void pan_by(int v, Rect r, float dx, float dy) {
         mob_set(s->mobius, mob_mul(mob_get(s->mobius), rot));
         return;
     }
-    float sc = view_scale(v, r);
-    float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
-    set_c(s->center, cx - dx * sc, cy + dy * sc);
+    double sc = view_scale(v, r), cx, cy;
+    view_center_d(v, &cx, &cy);
+    set_view_center_d(v, cx - dx * sc, cy + dy * sc);
 }
 
 static void reset_view(int v) {
     Section *s = A.prog->viewers[v];
     if (s->mobius) memcpy(A.state + s->mobius->slot, A.prog->initial_state + s->mobius->slot, 32);
     memcpy(A.state + s->center->slot, A.prog->initial_state + s->center->slot, 8);
+    if (s->center_lo) memcpy(A.state + s->center_lo->slot, A.prog->initial_state + s->center_lo->slot, 8);
     memcpy(A.state + s->radius->slot, A.prog->initial_state + s->radius->slot, 4);
 }
 
@@ -1330,19 +1389,27 @@ static void draw_tile(VisTile *t) {
     /* where the mouse is, in the plane (as many decimals as the pixels resolve) */
     if (A.hover_tile >= 0 && &A.vis[A.hover_tile] == t && A.in.mouse_in_window && A.menu_viewer < 0 && A.drag != DRAG_VIEWER &&
         in_rect(r, A.in.mouse_x, A.in.mouse_y)) {
-        float re, im, re1, im1;
-        plane_of(t->viewer, r, A.in.mouse_x, A.in.mouse_y, &re, &im);
-        plane_of(t->viewer, r, A.in.mouse_x + 1, A.in.mouse_y, &re1, &im1);
-        float pxs = hypotf(re1 - re, im1 - im);
-        int d = pxs > 0 && pxs == pxs ? (int)ceilf(-log10f(pxs)) + 1 : 4;
-        d = FS_CLAMP(d, 1, 9);
-        char co[160];
-        if (re == re && im == im && fabsf(re) < 1e7f && fabsf(im) < 1e7f)
-            snprintf(co, sizeof co, "%.20s = %.*f %c %.*fi", s->var ? s->var : "z", d, (double)re, im < 0 ? '-' : '+', d,
-                     fabs((double)im));
+        double re, im, pxs;
+        if (s->mobius) {
+            float fr, fi, fr1, fi1;
+            plane_of(t->viewer, r, A.in.mouse_x, A.in.mouse_y, &fr, &fi);
+            plane_of(t->viewer, r, A.in.mouse_x + 1, A.in.mouse_y, &fr1, &fi1);
+            re = fr;
+            im = fi;
+            pxs = hypot(fr1 - fr, fi1 - fi);
+        } else { /* (in double precision: deep zooms) */
+            plane_of_d(t->viewer, r, A.in.mouse_x, A.in.mouse_y, &re, &im);
+            pxs = view_scale(t->viewer, r);
+        }
+        int d = pxs > 0 && pxs == pxs ? (int)ceil(-log10(pxs)) + 1 : 4;
+        d = FS_CLAMP(d, 1, 16);
+        char co[200];
+        const char *deep = A.vrt[t->viewer].df ? "   (double precision)" : "";
+        if (re == re && im == im && fabs(re) < 1e7 && fabs(im) < 1e7)
+            snprintf(co, sizeof co, "%.20s = %.*f %c %.*fi%s", s->var ? s->var : "z", d, re, im < 0 ? '-' : '+', d, fabs(im),
+                     deep);
         else
-            snprintf(co, sizeof co, "%.20s = %.4g %c %.4gi", s->var ? s->var : "z", (double)re, im < 0 ? '-' : '+',
-                     fabs((double)im));
+            snprintf(co, sizeof co, "%.20s = %.4g %c %.4gi", s->var ? s->var : "z", re, im < 0 ? '-' : '+', fabs(im));
         float tw = ui_text_width(UI_FONT_MONO, co, -1) + px(12), th = ui_font_line_height(UI_FONT_MONO) + px(4);
         float bx = r.x + px(6), by = r.y + r.h - th - px(6);
         ui_rrect(bx, by, tw, th, px(4), UI_RGBA(0, 0, 0, 120));
@@ -2299,6 +2366,54 @@ static void run_prepare(void) {
 }
 
 /* ---- rendering ---------------------------------------------------------------------- */
+/* the pipelines in use: single or (deep zooms) double-single precision */
+static FloodGpu *vflood(ViewerRT *rt) { return rt->df ? &rt->flood_df : &rt->flood; }
+static int vpipeline(ViewerRT *rt) { return rt->df ? rt->pipeline_df : rt->pipeline; }
+
+/* Deep zooms: does view v need double-single precision?  When a pixel is smaller than about 1e-6 of
+ * the size of the numbers (with some hysteresis); single precision gets noisy from there on. */
+static bool wants_df(int v) {
+    ViewerRT *rt = &A.vrt[v];
+    return !rt->df_failed && viewer_wants_df(A.prog, A.state, A.prog->viewers[v], rt->tw, rt->th, rt->df);
+}
+
+/* switch view v to double-single precision or back (making that version the first time) */
+static void update_precision(int v) {
+    ViewerRT *rt = &A.vrt[v];
+    bool want = wants_df(v);
+    if (want == rt->df) return;
+    Program *p = A.prog;
+    Section *s = p->viewers[v];
+    const char *name = s->display ? s->display : s->name;
+    if (want) {
+        char err[512] = "";
+        bool ok;
+        if (rt->is_flood) {
+            ok = rt->flood_df.pipe > 0 || flood_gpu_create_ex(&rt->flood_df, p, s, true, err, sizeof err);
+        } else {
+            if (!rt->pipeline_df) {
+                u32 n;
+                u32 *words = codegen_viewer_ex(p, s, true, &n, err, sizeof err);
+                rt->pipeline_df = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
+                free(words);
+            }
+            ok = rt->pipeline_df > 0;
+        }
+        if (!ok) {
+            rt->df_failed = true;
+            set_status(true, "Deep zoom: the GPU rejected the double precision version of %s: %s", name, err);
+            return;
+        }
+        set_status(false, "Deep zoom: %s is computed in double precision from here on (slower)", name);
+    } else {
+        set_status(false, "%s is computed in single precision again", name);
+    }
+    rt->df = want;
+    if (rt->is_flood) flood_gpu_free_buffers(rt->df ? &rt->flood : &rt->flood_df); /* (the other one is idle) */
+    free(rt->snap); /* draw it again */
+    rt->snap = NULL;
+}
+
 static bool viewer_dirty(int v) {
     ViewerRT *rt = &A.vrt[v];
     if (!rt->rendered || !rt->snap) return true;
@@ -2324,6 +2439,12 @@ static bool render_viewers(void) {
         int v = A.vis[i].viewer;
         ViewerRT *rt = &A.vrt[v];
         if (!rt->target) continue;
+        check_center_lo(v);
+        update_precision(v);
+        if (!A.uploaded || memcmp(A.uploaded, A.state, bytes) != 0) { /* (the centre's low part may have changed) */
+            memcpy(A.uploaded, A.state, bytes);
+            gfx_set_globals(A.state, (u32)bytes);
+        }
         bool dirty = viewer_dirty(v);
         if (dirty) {
             if (!rt->snap) rt->snap = (u32 *)xmalloc(bytes);
@@ -2334,24 +2455,25 @@ static bool render_viewers(void) {
             if (dirty) {
                 int sx, sy;
                 flood_start_pixel(p, A.state, p->viewers[v], rt->tw, rt->th, &sx, &sy);
-                if (!flood_gpu_start(&rt->flood, rt->tw, rt->th, sx, sy))
+                if (!flood_gpu_start(vflood(rt), rt->tw, rt->th, sx, sy))
                     set_status(true, "Not enough GPU memory for the view '%s'", p->viewers[v]->name);
                 rt->rendered = true;
                 rt->flood_checked = false;
-            } else if (flood_gpu_done(&rt->flood) && !rt->flood_checked && rt->flood.field) {
+            } else if (flood_gpu_done(vflood(rt)) && !rt->flood_checked && vflood(rt)->field) {
                 /* finished (last frame): did the solution make it from its starting point to the start pixel? */
                 rt->flood_checked = true;
                 FloodEntry e;
                 char err[128];
-                u64 at = ((u64)rt->flood.plan.sy * (u64)rt->flood.w + (u64)rt->flood.plan.sx) * sizeof(FloodEntry);
-                if (gfx_buffer_download(rt->flood.field, at, &e, sizeof e, err, sizeof err) && e.status == FLOOD_FAILED)
+                FloodGpu *fg = vflood(rt);
+                u64 at = ((u64)fg->plan.sy * (u64)fg->w + (u64)fg->plan.sx) * sizeof(FloodEntry);
+                if (gfx_buffer_download(fg->field, at, &e, sizeof e, err, sizeof err) && e.status == FLOOD_FAILED)
                     set_status(true, "%s: Newton's method fails at the starting point ('continuing from') or on the way from "
                                      "it into this view; try a starting point inside the view",
                                p->viewers[v]->display ? p->viewers[v]->display : p->viewers[v]->name);
             }
-            if (!flood_gpu_done(&rt->flood)) {
-                flood_gpu_record(&rt->flood, A.flood_passes, rt->target);
-                if (!flood_gpu_done(&rt->flood)) busy = true;
+            if (!flood_gpu_done(vflood(rt))) {
+                flood_gpu_record(vflood(rt), A.flood_passes, rt->target);
+                if (!flood_gpu_done(vflood(rt))) busy = true;
             }
             continue;
         }
@@ -2371,7 +2493,7 @@ static bool render_viewers(void) {
         vp.x1 = rt->tw;
         vp.y0 = rt->next_row;
         vp.y1 = rt->next_row + rows;
-        gfx_frame_render_viewer(rt->target, rt->pipeline, &vp);
+        gfx_frame_render_viewer(rt->target, vpipeline(rt), &vp);
         rt->next_row = vp.y1 >= rt->th ? 0 : vp.y1;
         rt->rows_left -= rows;
         if (rt->rows_left > 0) busy = true;
@@ -2382,7 +2504,7 @@ static bool render_viewers(void) {
 static bool viewers_busy(void) {
     for (int i = 0; A.prog && i < A.nvis; i++) {
         ViewerRT *rt = &A.vrt[A.vis[i].viewer];
-        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(&rt->flood))) return true;
+        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(vflood(rt)))) return true;
     }
     return false;
 }

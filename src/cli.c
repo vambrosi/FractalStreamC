@@ -39,7 +39,16 @@ static int cli_load(const char *path, Program **out) {
 }
 
 /* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-2i" */
+static bool parse_complex_literal_d(const char *s, double *re, double *im);
 static bool parse_complex_literal(const char *s, float *re, float *im) {
+    double r, i;
+    bool ok = parse_complex_literal_d(s, &r, &i);
+    *re = (float)r;
+    *im = (float)i;
+    return ok;
+}
+
+static bool parse_complex_literal_d(const char *s, double *re, double *im) {
     char *end;
     *re = *im = 0;
     double a = strtod(s, &end);
@@ -48,8 +57,8 @@ static bool parse_complex_literal(const char *s, float *re, float *im) {
         if (*s == '-' && s[1] == 'i' && !s[2]) { *im = -1; return true; }
         return false;
     }
-    if (*end == 'i' && end[1] == 0) { *im = (float)a; return true; }
-    if (*end == 0) { *re = (float)a; return true; }
+    if (*end == 'i' && end[1] == 0) { *im = a; return true; }
+    if (*end == 0) { *re = a; return true; }
     if (*end != '+' && *end != '-') return false;
     const char *t = end;
     double b;
@@ -60,8 +69,8 @@ static bool parse_complex_literal(const char *s, float *re, float *im) {
         b = strtod(t, &end);
     }
     if (*end != 'i' || end[1] != 0) return false;
-    *re = (float)a;
-    *im = (float)b;
+    *re = a;
+    *im = b;
     return true;
 }
 
@@ -95,6 +104,14 @@ static bool cli_set_global(Program *p, u32 *state, const char *assign) {
     case T_COMPLEX: dst[0] = fw(re); dst[1] = fw(im); break;
     case T_QUAT: dst[0] = fw(re); dst[1] = fw(im); dst[2] = dst[3] = 0; break;
     default: fprintf(stderr, "error: '%s' can't be set from the command line\n", name); return false;
+    }
+    for (int v = 0; v < p->nviewers; v++) { /* a view's centre keeps its digits (deep zooms) */
+        Section *vs = p->viewers[v];
+        if (vs->center != s || !vs->center_lo) continue;
+        double dre, dim;
+        parse_complex_literal_d(eq + 1, &dre, &dim);
+        state[vs->center_lo->slot] = fw((float)(dre - (double)re));
+        state[vs->center_lo->slot + 1] = fw((float)(dim - (double)im));
     }
     return true;
 }
@@ -185,9 +202,18 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
     }
     gfx_set_globals(state, (u32)p->state_words * 4);
     bool ok;
+    bool df = viewer_wants_df(p, state, v, w, h, false); /* deep zooms: double-single precision */
     if (v->flood) {
-        ok = flood_render_gpu(p, state, v, w, h, rgba, NULL, err, errcap);
+        ok = flood_render_gpu_ex(p, state, v, df, w, h, rgba, NULL, err, errcap);
     } else {
+        if (df) {
+            free(spv);
+            spv = codegen_viewer_ex(p, v, true, &nwords, err, errcap);
+            if (!spv) {
+                gfx_shutdown();
+                return false;
+            }
+        }
         int vid = gfx_viewer_create(spv, nwords, err, errcap);
         ok = vid > 0 && gfx_render_to_memory(vid, w, h, 256, rgba, err, errcap);
         if (vid > 0) gfx_viewer_destroy(vid);
