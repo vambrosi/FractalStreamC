@@ -86,9 +86,9 @@ end
 
 # draw the orbit of z0 onto its attracting cycle, and mark the point w of the cycle that
 # was found (the Trace tool)
-define trace(z0, c) = w where
+define trace(z0, c) where
     z := z0
-    w = z0
+    w := z0
     do
         z = f(z, c)
         w = f2(w, c)

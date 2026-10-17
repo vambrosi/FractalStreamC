@@ -1514,7 +1514,9 @@ static void check_func(Checker *c, Func *f) {
         }
     } else {
         chk_block(c, &f->body);
-        if (f->noutputs == 1) {
+        if (f->noutputs == 0) {
+            f->ret = t_void; /* define f(x) where ... end */
+        } else if (f->noutputs == 1) {
             f->ret = f->outputs[0]->type;
         } else {
             Type *items[16];

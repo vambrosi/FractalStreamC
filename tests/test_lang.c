@@ -959,6 +959,46 @@ TEST(tool_events) {
                  "unknown name 'q'");
 }
 
+/* define f(x) where ... end: a function without a result, run for its effects */
+TEST(functions_without_results) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "count : Z = 0\n"
+        "define mark(z, r : R) where\n"
+        "    draw circle at z with radius r px\n"
+        "    count += 1\n"
+        "    if r > 3 then\n"
+        "        return\n"
+        "    end\n"
+        "    draw point at z\n"
+        "end\n"
+        "@viewer v z\ncolor = .white\n"
+        "@v.tool \"M\"\nmark(z, 2)\nmark(z + 1, 5)\n");
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, state);
+    DrawItemVec draws = {0};
+    I.draws = &draws;
+    CHECK(interp_run_tool(&I, p->tools[0], 0.5f, 0));
+    CHECK_INT(draws.len, 3); /* circle, point; circle (then return) */
+    Sym *count = find_global(p, "count");
+    CHECK(count && (i32)state[count->slot] == 2);
+    vec_free(draws);
+    interp_free(&I);
+    free(state);
+    program_free(p);
+    EXPECT_ERROR("@global\ndefine f(z) where\n    w := z\nend\nx := f(1)\n@viewer v z\ncolor = .red\n", "doesn't produce a value");
+    /* in a viewer (nothing to do there, but it compiles) */
+    Program *q = LOAD_OK("@global\ndefine nothing(z) where\n    w := z^2\nend\n@viewer v z\nnothing(z)\ncolor = .white\n");
+    u32 n;
+    char err[256];
+    u32 *words = codegen_viewer(q, q->viewers[0], &n, err, sizeof err);
+    CHECK_MSG(words != NULL, "%s", err);
+    free(words);
+    program_free(q);
+}
+
 TEST(draw_text) {
     Program *p = LOAD_OK(
         "@viewer v z\n"
@@ -1041,6 +1081,7 @@ TEST(prepare_sections) {
 static const TestCase tests_lang[] = {
     TESTCASE(prepare_sections),
     TESTCASE(list_capacity_and_negative_indices),
+    TESTCASE(functions_without_results),
     TESTCASE(draw_text),
     TESTCASE(tool_events),
     TESTCASE(colour_helpers_and_palettes),

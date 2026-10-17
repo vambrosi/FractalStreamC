@@ -151,6 +151,11 @@ define h(x, y) = (u, w) where            # several results, computed by a block
     w = 1 / u
 end
 (p, q) := h(1, 2)
+define mark(z) where                     # no result: called on a line of its own, for what it
+    draw point at z                      # does (draw, change globals...)
+    draw circle at z with radius 5 px
+end
+mark(0.5i)
 ```
 
 Functions see the global state (and may change it), their parameters, their results and their own

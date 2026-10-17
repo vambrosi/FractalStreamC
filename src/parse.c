@@ -799,7 +799,28 @@ static Stmt *parse_define(Parser *p, int top_level) {
     }
     vec_free(params);
     vec_free(ptypes);
-    if (!expect(p, TK_ASSIGN, "after the parameters (as in: define f(z) = z^2 + 1)")) return NULL;
+    if (at(p, TK_WHERE)) { /* define f(x) where ... end: no result, run for its effects (drawing...) */
+        advance(p);
+        int vmark0 = p->lvars.len;
+        for (int i = 0; i < f->nparams; i++) declare_var_name(p, f->params[i]->name);
+        f->has_where = true;
+        f->noutputs = 0;
+        f->outputs = ARENA_ARRAY(&p->prog->arena, Sym *, 1);
+        f->output_tsyn = ARENA_ARRAY(&p->prog->arena, TypeSyntax *, 1);
+        p->func_depth++;
+        int saved_loops = p->loop_depth;
+        p->loop_depth = 0;
+        f->body = parse_block(p, TK_END, TK_END, false, 0);
+        p->loop_depth = saved_loops;
+        p->func_depth--;
+        p->lvars.len = vmark0;
+        expect_end(p, t, "define");
+        Stmt *s = new_stmt(p, S_DEFINE, t);
+        s->fn = f;
+        vec_push(p->prog->funcs, f);
+        return s;
+    }
+    if (!expect(p, TK_ASSIGN, "after the parameters (as in: define f(z) = z^2 + 1, or define f(z) where ... end)")) return NULL;
     int vmark = p->lvars.len;
     for (int i = 0; i < f->nparams; i++) declare_var_name(p, f->params[i]->name);
     bool where = false;

@@ -734,6 +734,8 @@ static void gen_return(Gen *g) {
     } else if (!g->fn) {
         write_output(g);
         spv_void(&g->s, SpvOpReturn, NULL, 0);
+    } else if (g->fn->noutputs == 0) { /* a function without a result */
+        spv_void(&g->s, SpvOpReturn, NULL, 0);
     } else {
         Func *f = g->fn;
         u32 v;
