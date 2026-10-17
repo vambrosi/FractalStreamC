@@ -22,13 +22,17 @@ end
 
 - Open the app without arguments (or double-click it) to get an editor with an example
   (Mandelbrot and Julia sets side by side). The pictures update as you type.
-- `fractalstream script.fstream` opens a script; the editor is one key away (Ctrl+E / Cmd+E).
-  Changes made to the file in another editor are picked up automatically.
-- The menu button in the top-left corner of the pictures lists the views and tools. Drag a
-  view onto the screen to split it or float it in a corner. F1 lists every key.
+- `fractalstream script.fstream` opens a script. The script pane folds into a thin bar on the
+  left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
+  edge of a pane to resize it. Changes made to the file in another editor are picked up
+  automatically.
+- Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
+  button on top of that strip switches views, splits them, floats them in a corner, and lists the
+  tools. F1 lists every key.
 
-Examples are in [`examples/`](examples); the language is described in
-[`docs/language.md`](docs/language.md).
+Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
+the parameter space of complex Hénon maps after the program SaddleDrop); the language is
+described in [`docs/language.md`](docs/language.md).
 
 ## Command line (for scripts, agents and tests)
 
@@ -46,5 +50,6 @@ fractalstream --tool NAME --at X+Yi SCRIPT    run a tool once; print its drawing
 MoltenVK), `./build.sh test` (test suite). Details and requirements: [`docs/building.md`](docs/building.md).
 
 The code is C11 in a unity build (`src/all.c`); third-party code (GLFW, Vulkan headers,
-stb_truetype/stb_image_write, DejaVu fonts) is vendored in `third_party/`. Architecture notes for
+stb_truetype/stb_image_write, DejaVu fonts, Google's Material Icons font) is vendored in
+`third_party/`, with its licenses. Architecture notes for
 contributors are in [`agents/architecture.md`](agents/architecture.md).

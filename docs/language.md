@@ -75,10 +75,14 @@ w = z^2              # assignment; declares w if no variable named w exists yet
 w += 1               # also -=, *=, /=
 v[2] = 0             # vectors, lists, and the parts of C (z[1] = re, z[2] = im) and H
 (a, b) := f(x)       # unpack a function's results
+(x, y) = (x^2 + c - a y, x)   # parallel assignment: every value is computed before any is stored
 ```
 
-- **Untyped numbers are complex.** `n := 0` makes `n` complex, so `for k in 1..n` is an error;
-  write `n : Z = 0`. Untyped vectors are at least real (`v := [1, 2]` is `R^2`).
+- **Untyped declarations take the type of their value, but plain numbers are complex.**
+  `z := 0` and `t := 2.5` declare complex numbers (so `n := 0` can't count a `for` loop: write
+  `n : Z = 0`), while `r := |z|` is real, `k := n + 1` is an integer when `n` is, and
+  `(n, ok) := f(x)` keeps the types of `f`'s results. Untyped vectors are at least real
+  (`v := [1, 2]` is `R^2`).
 - **Scopes.** A section body and a function body are scopes; `if`/`for`/`while` bodies are not.
   A `for` loop always declares its own counter.
 - Viewers can change globals, but only their own per-pixel copy. Tools change the real state.
@@ -103,6 +107,8 @@ Precedence, loosest first: `or`, `and`, `not`, comparisons / `escapes` / `vanish
   `.epsilon`". `<`, `<=`, `>`, `>=` only work on `Z` and `R`.
 - `z escapes` means `|z| > .escapeRadius`; `z vanishes` means `|z| < .epsilon` (or `z` is 0).
   Also `z not escapes`, `z not vanishes`.
+- `px` after a number is a length in pixels of the viewer: `8 px` is `8 .pixel`, as in
+  `if |z - a| < 8 px then`.
 - Out-of-range indices are clamped to the first/last entry (indices start at 1).
 
 ## Statements
@@ -149,12 +155,52 @@ critical z -> z^2 + c with seed 1          # a critical point (a zero of the der
 critical f with seed 0                     # also with the name of a function of one variable
 ```
 
-Derivatives are exact (computed symbolically when the script is compiled) for `+ - * /`, powers,
-`exp log sqrt sin cos tan sinh cosh tanh asin acos atan` and one-line functions written with
-`define`. Other variables in the expression are constants for the derivative. After `root` and
-`critical`, `.stuck` is true if Newton's method did not converge within `.maxIterations` steps and
-`.iterations` is the number of steps. Non-holomorphic functions (`re`, `im`, `conj`, `|z|`, ...)
-can't be differentiated.
+Derivatives are exact: they are computed along with the values (forward-mode automatic
+differentiation, to second order) through `+ - * /`, powers,
+`exp log sqrt sin cos tan sinh cosh tanh asin acos atan`, and through your functions, loops and
+`if`s included:
+
+```
+define escape(z, c) = w where
+    w = z
+    while w not escapes do
+        w = w^2 + c
+    end
+end
+w := critical t -> log(escape(t, c)) with seed 1     # a critical point of the escape rate
+```
+
+Other variables in the expression are constants for the derivative. Conditions may use anything
+(`|w|`, `re`, comparisons, `escapes`), but the values computed from the variable must stay
+holomorphic: `re`, `im`, `conj`, `|z|` and `arg` can't be differentiated.
+
+After `root` and `critical`, `.stuck` is true if Newton's method did not converge within
+`.maxIterations` steps, and `.iterations` is the number of steps. Newton's method also gives up
+when evaluating the expression gets stuck (one of its loops reaches `.maxIterations`: the value
+would mean nothing), and it stops successfully when its steps stop shrinking at the level of the
+rounding noise of 32-bit floats.
+
+### Following a solution from pixel to pixel
+
+In a viewer, `continuing from c = P` follows the solution across the picture instead of starting
+from the seed at every pixel:
+
+```
+@viewer param c "Parameter plane"
+w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
+```
+
+- The pixel of the point `P` (a value that is the same for every pixel: globals and constants)
+  starts Newton's method from the seed. Every other pixel starts from the solution of a
+  neighbour that is already done, moving `c` from the neighbour's point to its own in small
+  steps. The fill grows outward from `P` and goes around pixels where Newton's method fails
+  (they pass nothing on); pixels it can't reach at all start from the seed.
+- A solution with several branches (like the critical points in SaddleDrop) is followed
+  continuously; where the fill comes back around an obstacle with another branch, the picture
+  shows a line. See [`examples/saddledrop.fstream`](../examples/saddledrop.fstream).
+- One `continuing` solve per viewer, in flat (not projective) viewers. The expression can't use
+  locals of the viewer computed from `c` (compute them inside the expression, in a function).
+- In the GUI the picture grows from `P` as it is computed.
 
 ## Built-in functions
 
@@ -182,6 +228,7 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.r
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
 | `.mouse` | C | point under the mouse |
 | `.time` | R | seconds since the script started (viewers using it are animated) |
+| `.pixel` | R | size of a pixel of the viewer, in the plane (in a tool: of the viewer clicked) |
 | `.width`, `.height`, `.title` | Z, Z, text | initial window size and title (set them in `@config`) |
 | `.VAR`, `NAME.center`, `NAME.radius` | | per viewer, see Sections |
 
@@ -212,7 +259,8 @@ draw circle at z with radius 4 px and color .red
   from `.lastClick`.
 - `draw point at P`, `draw circle at P with radius R [px]`, `draw disk at P with radius R [px]`,
   `draw line between A and B`, with optional `with/and color C` and `width W px`, and
-  `in VIEWER` to draw in another viewer. Radii are in plane units unless followed by `px`.
+  `in VIEWER` to draw in another viewer. Radii are in plane units unless followed by `px`, which
+  keeps them that many pixels wide on the screen when you zoom afterwards.
 - Each run of a tool replaces the drawings of its previous run.
 - Settings at the top of a tool: `.panning = true` makes dragging pan the view, so the tool only
   runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button.
