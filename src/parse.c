@@ -24,6 +24,7 @@ typedef struct Parser {
     int last_line, last_end_col;      /* end of the previous token */
     int nerr_stmt;                    /* errors in the current statement */
     bool no_px;                       /* parsing a radius or width of `draw`, where px is its own unit */
+    bool in_draw;                     /* parsing a `draw`: its modifier words don't multiply */
 } Parser;
 
 static Token *cur(Parser *p) { return &p->t[p->pos]; }
@@ -127,9 +128,17 @@ static Expr *parse_power(Parser *p);
 static Expr *parse_unary(Parser *p);
 
 /* can the current token start a juxtaposed factor (implicit multiplication)? */
+static bool is_draw_modifier(const char *w) {
+    return !strcmp(w, "radius") || !strcmp(w, "color") || !strcmp(w, "colour") || !strcmp(w, "width") ||
+           !strcmp(w, "thickness");
+}
+
 static bool starts_factor(Parser *p) {
     switch (cur(p)->kind) {
-    case TK_IDENT: return strcmp(cur(p)->str, "continuing") != 0; /* ... with seed s continuing from P */
+    case TK_IDENT:
+        if (strcmp(cur(p)->str, "continuing") == 0) return false; /* ... with seed s continuing from P */
+        if (p->in_draw && is_draw_modifier(cur(p)->str)) return false; /* draw ... with color C width W */
+        return true;
     case TK_INTERNAL: case TK_LPAREN: return true;
     case TK_BAR: return p->abs_depth == 0;
     default: return false;
@@ -571,7 +580,7 @@ static Block parse_block(Parser *p, TokKind s1, TokKind s2, bool stop_at_do_whil
                    !at(p, TK_END) && !at(p, TK_ELSE) && !(stop_at_do_while && at(p, TK_WHILE))) {
             Token *t = cur(p);
             if (t->kind == TK_INT || t->kind == TK_REAL || t->kind == TK_IMAG)
-                perr(p, t, "unexpected %s; write an explicit * to multiply by a number on the right", tok_desc(t));
+                perr(p, t, "%s can't follow here (to multiply by a number on the right, write an explicit *)", tok_desc(t));
             else
                 perr(p, t, "expected the end of the line, found %s", tok_desc(t));
             skip_line(p);
@@ -615,8 +624,16 @@ static Stmt *parse_if(Parser *p) {
     return s;
 }
 
+static Stmt *parse_draw_body(Parser *p, Token *t);
 static Stmt *parse_draw(Parser *p) {
     Token *t = advance(p);
+    p->in_draw = true;
+    Stmt *s = parse_draw_body(p, t);
+    p->in_draw = false;
+    return s;
+}
+
+static Stmt *parse_draw_body(Parser *p, Token *t) {
     Stmt *s = new_stmt(p, S_DRAW, t);
     Token *shape = cur(p);
     const char *nm = shape->kind == TK_IDENT ? shape->str : "";
@@ -667,6 +684,10 @@ static Stmt *parse_draw(Parser *p) {
             perr(p, m, "expected radius, color or width after '%s'", tok_kind_name(p->t[p->pos - 1].kind));
             return NULL;
         }
+    }
+    if (at(p, TK_IDENT) && is_draw_modifier(cur(p)->str)) {
+        perr(p, cur(p), "write 'and' or 'with' before '%s'", cur(p)->str);
+        return NULL;
     }
     if (accept(p, TK_IN)) {
         Token *v = cur(p);

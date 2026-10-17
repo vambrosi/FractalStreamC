@@ -768,7 +768,31 @@ TEST(config_groups_notes_labels_choices) {
     EXPECT_ERROR("@viewer v z\n\"hello\"\ncolor = .red\n", "only means something in @config");
 }
 
+static void expect_warning_(const char *src, const char *needle, int line) {
+    Program *p = load_src(src);
+    bool found = false;
+    for (int i = 0; i < p->diags.len; i++)
+        if (p->diags.data[i].severity == DIAG_WARNING && strstr(p->diags.data[i].msg, needle)) found = true;
+    if (!found) {
+        test_failures_++;
+        printf("    expected a warning containing \"%s\" (test line %d), got:\n", needle, line);
+        print_diags(p);
+    }
+    program_free(p);
+}
+#define EXPECT_WARNING(src, needle) expect_warning_(src, needle, __LINE__)
+
+TEST(friendly_messages) {
+    EXPECT_ERROR("@tool \"T\"\ndraw line between 0 and 1 with color .black width 2 px\n", "write 'and' or 'with' before 'width'");
+    EXPECT_ERROR("@global\nx := 2 3\n", "explicit *");
+    EXPECT_WARNING("@viewer v z\ncolor = .red\n@v.tool \"A\" \"R\"\ndraw point at z\n@v.tool \"B\" \"r\"\ndraw point at z\n",
+                   "already uses the key");
+    EXPECT_WARNING("@viewer v z\ncolor = .red\n@v.tool \"A\" \"Shift + P\"\ndraw point at z\n@v.tool \"B\" \"P\"\ndraw point at z\n",
+                   "key of Pick point");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(friendly_messages),
     TESTCASE(config_groups_notes_labels_choices),
     TESTCASE(for_loops_run_their_range),
     TESTCASE(pixel_size_and_px),

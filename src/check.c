@@ -8,6 +8,7 @@
  * Functions see globals, their parameters, outputs and own locals.
  * Implicit promotions: Z -> R -> C -> H (elementwise for vectors). */
 #include "ast.h"
+#include <ctype.h>
 
 /* ---- types ------------------------------------------------------------- */
 Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color;
@@ -978,6 +979,15 @@ static void chk_range(Checker *c, Stmt *s, Sym *sym) {
     sym->range_hi = hi;
 }
 
+/* a shortcut like "Shift + p" in a comparable form ("SHIFT+P"); false if there is none */
+static bool shortcut_key(const char *sc, char *out, int cap) {
+    int n = 0;
+    for (const char *q = sc; q && *q && n < cap - 1; q++)
+        if (*q != ' ') out[n++] = (char)toupper((unsigned char)*q);
+    out[n] = 0;
+    return n > 0;
+}
+
 static void config_add_var(Checker *c, Sym *sym) {
     for (int i = 0; i < c->prog->config.len; i++)
         if (c->prog->config.data[i].kind == CFG_VAR && c->prog->config.data[i].sym == sym) return;
@@ -1518,6 +1528,23 @@ bool check_program(Program *p) {
         Section *v = find_viewer(p, s->of_viewer);
         if (v) s->viewer_of = v->index;
         else prog_diag(p, DIAG_ERROR, s->line, 1, 0, "@%s.tool: there is no viewer named '%s'", s->of_viewer, s->of_viewer);
+    }
+    /* tools that would answer the same key in the same viewer */
+    for (int t = 0; t < p->ntools; t++) {
+        Section *s = p->tools[t];
+        char k1[64];
+        if (!shortcut_key(s->shortcut, k1, sizeof k1)) continue;
+        if (!strcmp(k1, "H") || !strcmp(k1, "P"))
+            prog_diag(p, DIAG_WARNING, s->line, 1, 0, "'%s' is also the key of %s; this tool takes it", s->shortcut,
+                      k1[0] == 'H' ? "Pan" : "Pick point");
+        for (int u = 0; u < t; u++) {
+            Section *o = p->tools[u];
+            char k2[64];
+            if (!shortcut_key(o->shortcut, k2, sizeof k2) || strcmp(k1, k2) != 0) continue;
+            if (s->viewer_of >= 0 && o->viewer_of >= 0 && s->viewer_of != o->viewer_of) continue;
+            prog_diag(p, DIAG_WARNING, s->line, 1, 0, "the tool \"%s\" already uses the key '%s'", o->display, s->shortcut);
+            break;
+        }
     }
     if (p->nviewers == 0)
         prog_diag(p, DIAG_WARNING, 1, 1, 0, "the script has no @viewer section, so there is nothing to show");
