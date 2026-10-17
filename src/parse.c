@@ -1219,9 +1219,10 @@ void parse_tokens(Program *prog, Token *toks, int ntoks, const char **builtins, 
             else if (strcmp(h->str, "tool") == 0) kind = SEC_TOOL;
             else if (strcmp(h->str, "config") == 0) kind = SEC_CONFIG;
             else if (strcmp(h->str, "global") == 0 || strcmp(h->str, "globals") == 0) kind = SEC_GLOBAL;
+            else if (strcmp(h->str, "prepare") == 0) kind = SEC_PREPARE;
             else {
                 p->nerr_stmt = 0;
-                perr(p, h, "unknown section @%s (expected @viewer, @tool, @NAME.tool, @config or @global)", h->str);
+                perr(p, h, "unknown section @%s (expected @viewer, @tool, @NAME.tool, @config, @global or @prepare)", h->str);
                 kind = SEC_GLOBAL;
             }
             Section *s = new_section(p, kind, h->line);

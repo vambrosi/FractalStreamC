@@ -250,6 +250,10 @@ int cli_main(int argc, char **argv) {
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
     for (int i = 0; i < nsets; i++)
         if (!cli_set_global(p, state, sets[i])) { rc = 2; goto done; }
+    if (nsets) { /* the state changed: @prepare runs again */
+        char perr_[256];
+        if (!program_prepare(p, state, perr_, sizeof perr_)) { fprintf(stderr, "error: in @prepare: %s\n", perr_); rc = 1; goto done; }
+    }
 
     if (!strcmp(mode, "--check")) {
         printf("%s: ok (%d viewer%s, %d tool%s)\n", script, p->nviewers, p->nviewers == 1 ? "" : "s", p->ntools,

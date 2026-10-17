@@ -3,6 +3,7 @@
 #
 #   ./build.sh            optimized build            -> build/fractalstream
 #   ./build.sh debug      debug + sanitizers         -> build/fractalstream_debug
+#   ./build.sh dev        optimized, another name    -> build/fractalstream_dev
 #   ./build.sh test       build and run test suite   -> build/tests
 #   ./build.sh windows    cross-compile with MinGW   -> build/win/fractalstream.exe
 #   ./build.sh app        macOS .app bundle (bundles MoltenVK, see notes in docs/building.md)
@@ -54,6 +55,7 @@ INC="-Ithird_party/vulkan -Ithird_party/glfw/include -Ithird_party/stb"
 WARN="-Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-sign-compare"
 case "$MODE" in
   release|app|windows) FLAGS="-O2 -std=c11 $WARN"; EXE=fractalstream ;;
+  dev)     FLAGS="-O2 -std=c11 $WARN"; EXE=fractalstream_dev ;;
   debug)   FLAGS="-O0 -g -std=c11 $WARN -fsanitize=address,undefined"; EXE=fractalstream_debug ;;
   test)    FLAGS="-O1 -g -std=c11 $WARN"; EXE=tests ;;
   *)       echo "unknown mode: $MODE"; exit 1 ;;

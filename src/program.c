@@ -88,6 +88,12 @@ Program *program_load(const char *source, const char *path) {
                 break;
             }
         }
+        /* @prepare: once for the initial state (then whenever the state changes, see program_prepare) */
+        for (int i = 0; i < p->nprepares && !p->nerrors; i++)
+            if (!interp_run_section(&I, p->prepares[i])) {
+                prog_diag(p, DIAG_ERROR, p->prepares[i]->line, 1, 0, "while running @prepare: %s", I.error);
+                break;
+            }
         interp_free(&I);
         /* projective viewers start with the view that shows `center` +- `radius` */
         for (int v = 0; v < p->nviewers; v++) {
@@ -100,6 +106,19 @@ Program *program_load(const char *source, const char *path) {
         }
     }
     return p;
+}
+
+/* Run the @prepare sections on `state` (after the state changed).  False (message in err) on an error. */
+bool program_prepare(Program *p, u32 *state, char *err, int errcap) {
+    if (!p->nprepares) return true;
+    Interp I;
+    interp_init(&I, p, state);
+    I.step_limit = 3e7;
+    bool ok = true;
+    for (int i = 0; i < p->nprepares && ok; i++) ok = interp_run_section(&I, p->prepares[i]);
+    if (!ok && err) snprintf(err, (size_t)errcap, "%s", I.error);
+    interp_free(&I);
+    return ok;
 }
 
 void program_free(Program *p) {

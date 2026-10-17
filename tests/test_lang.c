@@ -972,7 +972,35 @@ TEST(list_capacity_and_negative_indices) {
     EXPECT_ERROR("@global\nL : List of C up to 5000 = []\n", "1 to 4096");
 }
 
+TEST(prepare_sections) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        "a : R = 2 in 0..10\n"
+        "@global\n"
+        "b : R = 0\n"
+        "runs : Z = 0\n"
+        "@prepare\n"
+        "t : R = a * a\n"          /* a local */
+        "b = t + 1\n"
+        "runs += 1\n"
+        "@viewer v z\n"
+        "color = gray(b / 100)\n");
+    CHECK_NEAR(gnum(p, "b", 0), 5, 1e-6);
+    CHECK_NEAR(gnum(p, "runs", 0), 1, 0);
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    Sym *a = find_global(p, "a"), *b = find_global(p, "b");
+    state[a->slot] = fw(3);
+    char err[128];
+    CHECK(program_prepare(p, state, err, sizeof err));
+    CHECK_NEAR(wf(state[b->slot]), 10, 1e-6);
+    free(state);
+    program_free(p);
+    EXPECT_ERROR("@prepare\ndraw point at 0\n@viewer v z\ncolor = .red\n", "only be used in tools");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(prepare_sections),
     TESTCASE(list_capacity_and_negative_indices),
     TESTCASE(draw_text),
     TESTCASE(tool_events),

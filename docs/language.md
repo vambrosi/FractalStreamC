@@ -23,6 +23,7 @@ end
 ```
 @config                       GUI settings, and variables shown in the config panel
 @global                       state and functions shared by everything
+@prepare                      runs whenever the state changes, before the pictures are drawn
 @viewer NAME VAR ["Display name"] ["Shortcut"]
 @tool ["Display name"] ["Shortcut"]
 ```
@@ -31,6 +32,11 @@ end
 - Code before the first header is treated as `@global`.
 - `@global` and `@config` run once, in file order, when the script is loaded. The variables they
   declare are the program **state**. Config variables also get a control in the config panel.
+- `@prepare` runs (on the CPU) after them, and again whenever the state changes (a config value, a
+  tool, a picked point, the view; not the mouse or the time), before the pictures are drawn. Use it
+  for values the viewers need that are computed once from the state instead of at every pixel,
+  such as a fixed point that depends on a parameter. It can change globals; keep it quick, or
+  guard it with an `if` that checks whether its inputs changed.
 - In a viewer, `VAR` is the point of the current pixel (complex). The viewer sets `color`
   (it starts black). `return` ends the viewer early.
 - Every viewer `NAME` with variable `VAR` adds three state variables: `.VAR` (the last point picked

@@ -245,7 +245,7 @@ struct Func {
 typedef VEC(Func *) FuncVec;
 
 /* ---- sections ----------------------------------------------------------- */
-typedef enum SectionKind { SEC_GLOBAL, SEC_CONFIG, SEC_VIEWER, SEC_TOOL } SectionKind;
+typedef enum SectionKind { SEC_GLOBAL, SEC_CONFIG, SEC_VIEWER, SEC_TOOL, SEC_PREPARE } SectionKind;
 
 struct Section {
     SectionKind kind;
@@ -293,6 +293,7 @@ typedef struct Program {
     SectionVec sections;
     Section **viewers; int nviewers;
     Section **tools; int ntools;
+    Section **prepares; int nprepares; /* @prepare sections, in order */
     FuncVec funcs;       /* all user + prelude functions (overloads chained) */
     SymVec globals;      /* state variables in layout order */
     SymVec consts;

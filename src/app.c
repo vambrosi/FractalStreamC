@@ -79,6 +79,7 @@ typedef struct App {
     bool live;
     long long file_mtime;
     double next_file_check;
+    u32 *prepare_snap;      /* the state after @prepare last ran (NULL: run it) */
     /* deferred to the start of the next frame (see process_requests) */
     bool req_run, req_reload;
     char req_open[1024];
@@ -693,6 +694,8 @@ static bool load_source(const char *src, bool reset_layout) {
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
     A.menu_viewer = -1;
     A.choice_open = NULL;
+    free(A.prepare_snap);
+    A.prepare_snap = NULL;
     interp_init(&A.interp, p, A.state);
     A.interp.step_limit = 3e7;
     if (!keep) {
@@ -1866,6 +1869,23 @@ static void shortcuts(void) {
     if (tv >= 0 && ui_shortcut(UI_KEY_HOME, 0)) reset_view(tv);
 }
 
+/* @prepare runs whenever the state changed (not for the mouse, the time, the last click) */
+static void run_prepare(void) {
+    Program *p = A.prog;
+    if (!p->nprepares) return;
+    size_t bytes = sizeof(u32) * (size_t)p->state_words;
+    if (A.prepare_snap) {
+        Sym *vol[4] = {p->s_mouse, p->s_time, p->s_last_click, p->s_drag_start};
+        for (int k = 0; k < 4; k++) memcpy(A.prepare_snap + vol[k]->slot, A.state + vol[k]->slot, sizeof(u32) * (size_t)vol[k]->type->size);
+        if (memcmp(A.prepare_snap, A.state, bytes) == 0) return;
+    } else {
+        A.prepare_snap = (u32 *)xmalloc(bytes);
+    }
+    char err[256];
+    if (!program_prepare(p, A.state, err, sizeof err)) set_status(true, "@prepare: %s", err);
+    memcpy(A.prepare_snap, A.state, bytes);
+}
+
 /* ---- rendering ---------------------------------------------------------------------- */
 static bool viewer_dirty(int v) {
     ViewerRT *rt = &A.vrt[v];
@@ -2052,6 +2072,7 @@ static void frame(void) {
         }
     }
 
+    run_prepare();
     double t0 = fs_time_seconds();
     bool busy = false;
     if (gfx_frame_begin()) {
@@ -2199,6 +2220,7 @@ int app_run(const char *script_path) {
     program_free(A.prog);
     free(A.state);
     free(A.uploaded);
+    free(A.prepare_snap);
     editor_destroy(A.ed);
     gfx_shutdown();
     platform_shutdown();

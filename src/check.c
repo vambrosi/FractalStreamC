@@ -1605,13 +1605,15 @@ bool check_program(Program *p) {
     c->prog = p;
     c->globals.parent = &c->builtin;
     /* collect viewers and tools */
-    int nv = 0, nt = 0;
+    int nv = 0, nt = 0, np = 0;
     for (int i = 0; i < p->sections.len; i++) {
         if (p->sections.data[i]->kind == SEC_VIEWER) nv++;
         if (p->sections.data[i]->kind == SEC_TOOL) nt++;
+        if (p->sections.data[i]->kind == SEC_PREPARE) np++;
     }
     p->viewers = ARENA_ARRAY(&p->arena, Section *, nv + 1);
     p->tools = ARENA_ARRAY(&p->arena, Section *, nt + 1);
+    p->prepares = ARENA_ARRAY(&p->arena, Section *, np + 1);
     for (int i = 0; i < p->sections.len; i++) {
         Section *s = p->sections.data[i];
         if (s->kind == SEC_VIEWER) {
@@ -1627,6 +1629,7 @@ bool check_program(Program *p) {
             p->tools[p->ntools++] = s;
             if (!s->display) s->display = arena_printf(&p->arena, "Tool %d", p->ntools);
         }
+        if (s->kind == SEC_PREPARE) p->prepares[p->nprepares++] = s;
     }
     for (int t = 0; t < p->ntools; t++) {
         Section *s = p->tools[t];
@@ -1715,7 +1718,7 @@ bool check_program(Program *p) {
     }
     for (int i = 0; i < p->sections.len; i++) {
         Section *s = p->sections.data[i];
-        if (s->kind == SEC_VIEWER || s->kind == SEC_TOOL) check_section(c, s);
+        if (s->kind == SEC_VIEWER || s->kind == SEC_TOOL || s->kind == SEC_PREPARE) check_section(c, s);
     }
     layout_globals(p);
     vec_free(c->builtin.syms);

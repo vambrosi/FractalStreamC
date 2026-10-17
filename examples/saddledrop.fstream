@@ -18,8 +18,8 @@
 # (with Pick point, or "Explore" (E), which follows the mouse).
 # Its tools: "Show critical points" (V) marks the critical points in view, and "Follow" (F)
 # restarts the parameter plane from .c with the critical point closest to the click.
-# In the parameter plane, "Start here" (S) moves the start, carrying the critical point along;
-# after changing a, use it to find a critical point for the new map.
+# In the parameter plane, "Start here" (S) moves the start, carrying the critical point along.
+# When a changes, @prepare follows the critical point to the new map (or looks for one afresh).
 
 @config
 .title = "SaddleDrop"
@@ -38,6 +38,8 @@ dyn.radius = 3.5
 @global
 c0 := -2.4                     # where the continuation starts
 w0 := -2.742                   # the critical point it starts with
+a_seen : C = 0.3               # the map w0 belongs to (see @prepare)
+depth_seen : Z = 16
 .c = -2.4                      # the parameter shown in the unstable manifold
 
 # the saddle fixed point p of H (of the two fixed points, the one whose expanding eigenvalue lam is
@@ -123,6 +125,32 @@ define best_critical(c) = best where
             end
         end
     end
+end
+
+# after a change of a (or depth): follow the critical point w0 to the new map, moving a in small
+# steps (or, if it gets lost on the way, look for one afresh)
+@prepare
+if a != a_seen or depth != depth_seen then
+    target := a
+    v := w0
+    ok := true
+    for k in 1..32 do
+        a = a_seen + (target - a_seen) k / 32
+        v = critical_point(v, c0)
+        if .stuck then
+            ok = false
+            break
+        end
+    end
+    a = target
+    if not ok then
+        v = best_critical(c0)
+    end
+    if v != 0 then
+        w0 = v
+    end
+    a_seen = a
+    depth_seen = depth
 end
 
 @viewer param c "Parameter plane" "Ctrl + 1"
