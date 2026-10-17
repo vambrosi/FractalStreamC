@@ -12,6 +12,10 @@
 #ifndef FS_BASE_H
 #define FS_BASE_H
 
+#if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
+#define _USE_MATH_DEFINES /* M_PI */
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

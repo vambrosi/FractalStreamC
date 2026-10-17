@@ -154,10 +154,7 @@ void render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba
     free(st);
 }
 
-#if __has_include("gfx.h")
-#include "gfx.h"
 #define FS_HAVE_GFX 1
-#endif
 
 static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, char *err, int errcap) {
 #ifdef FS_HAVE_GFX
@@ -189,9 +186,7 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
 #endif
 }
 
-#if __has_include("app.c")
 #include "app.h"
-#endif
 
 int cli_main(int argc, char **argv) {
     const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL;
@@ -223,14 +218,7 @@ int cli_main(int argc, char **argv) {
         }
         script = a;
     }
-    if (!mode) {
-#if __has_include("app.c")
-        return app_run(script);
-#else
-        fprintf(stderr, "this build has no GUI\n");
-        return 2;
-#endif
-    }
+    if (!mode) return app_run(script);
     if (!script) {
         fprintf(stderr, "error: no script given\n\n%s", cli_usage);
         return 2;

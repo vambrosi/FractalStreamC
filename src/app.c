@@ -32,7 +32,8 @@ typedef struct ViewerRT {
     bool *used;      /* per global: does the viewer read it? */
     bool animated;
     bool rendered;
-    int next_row;    /* progressive rendering: next row to render, -1 when complete */
+    int next_row;    /* progressive rendering: next row to render (cycles through the image) */
+    int rows_left;   /* rows still to render with the latest state; 0 when the image is up to date */
     bool picked;     /* show the picked-point marker */
 } ViewerRT;
 
@@ -527,7 +528,7 @@ static bool load_source(const char *src, bool reset_layout) {
         codegen_viewer_deps(p, p->viewers[v], vrt[v].used);
         for (int i = 0; i < p->globals.len; i++)
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
-        vrt[v].next_row = -1;
+        vrt[v].next_row = 0;
     }
     /* new state; keep the views and picked points of viewers that still exist */
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
@@ -838,7 +839,7 @@ static void viewer_interaction(void) {
     }
     /* splitters */
     int sp = in_rect(A.area, mx, my) ? splitter_at(A.root, mx, my) : -1;
-    if (sp >= 0 && find_float(-2) < 0) {
+    if (sp >= 0) {
         bool over_float = hit >= 0 && A.vis[hit].fl >= 0;
         if (!over_float && ui_mouse_over(mx - 1, my - 1, 2, 2)) {
             platform_set_cursor(A.nodes[sp].kind == N_HSPLIT ? UI_CURSOR_HRESIZE : UI_CURSOR_VRESIZE);
@@ -1446,21 +1447,25 @@ static bool render_viewers(void) {
         if (viewer_dirty(v)) {
             if (!rt->snap) rt->snap = (u32 *)xmalloc(bytes);
             memcpy(rt->snap, A.state, bytes);
-            rt->next_row = 0;
+            if (!rt->rendered || rt->rows_left == 0) rt->next_row = 0;
+            rt->rows_left = rt->th; /* keep going round from where we are, so every row gets refreshed
+                                       even while the state changes every frame (panning) */
             rt->rendered = true;
         }
-        if (rt->next_row < 0) continue;
-        int rows = FS_MIN(A.band_rows, rt->th);
+        if (rt->rows_left <= 0) continue;
+        if (rt->next_row >= rt->th) rt->next_row = 0;
+        int rows = FS_MIN(FS_MIN(A.band_rows, rt->th - rt->next_row), rt->rows_left);
         GfxViewerParams vp = {0};
         vp.width = (float)rt->tw;
         vp.height = (float)rt->th;
         vp.x0 = 0;
         vp.x1 = rt->tw;
         vp.y0 = rt->next_row;
-        vp.y1 = FS_MIN(rt->th, rt->next_row + rows);
+        vp.y1 = rt->next_row + rows;
         gfx_frame_render_viewer(rt->target, rt->pipeline, &vp);
-        rt->next_row = vp.y1 >= rt->th ? -1 : vp.y1;
-        if (rt->next_row >= 0) busy = true;
+        rt->next_row = vp.y1 >= rt->th ? 0 : vp.y1;
+        rt->rows_left -= rows;
+        if (rt->rows_left > 0) busy = true;
     }
     return busy;
 }
@@ -1679,7 +1684,7 @@ int app_run(const char *script_path) {
         }
         bool animating = false;
         for (int i = 0; A.prog && i < A.nvis; i++)
-            if (A.vrt[A.vis[i].viewer].animated || A.vrt[A.vis[i].viewer].next_row >= 0) animating = true;
+            if (A.vrt[A.vis[i].viewer].animated || A.vrt[A.vis[i].viewer].rows_left > 0) animating = true;
         double wait = animating || A.drag != DRAG_NONE ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
         if (A.status[0] && fs_time_seconds() < A.status_until) wait = FS_MIN(wait, 0.1);
         platform_poll_timeout(in, wait);

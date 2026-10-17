@@ -26,22 +26,11 @@ static const char *test_skip_reason_ = NULL;
     printf("    CHECK failed: %s == %s\n      got:      \"%s\"\n      expected: \"%s\"  (%s:%d)\n", #a, #b, a_ ? a_ : "(null)", b_ ? b_ : "(null)", __FILE__, __LINE__); } } while (0)
 #define SKIP(why) do { test_skip_reason_ = (why); return; } while (0)
 
-#if __has_include("test_lang.c")
 #include "test_lang.c"
-#endif
 #include "test_codegen.c"
-#if __has_include("test_gfx.c")
 #include "test_gfx.c"
-#endif
-#if __has_include("test_ui.c")
 #include "test_ui.c"
-#endif
-#if __has_include("test_editor.c")
 #include "test_editor.c"
-#endif
-#if __has_include("test_app.c")
-#include "test_app.c"
-#endif
 
 typedef struct TestSuite { const char *name; const TestCase *cases; int count; } TestSuite;
 #define SUITE(arr) { #arr, arr, (int)(sizeof(arr) / sizeof(arr[0])) }
@@ -49,22 +38,11 @@ typedef struct TestSuite { const char *name; const TestCase *cases; int count; }
 int main(int argc, char **argv) {
     const char *filter = argc > 1 ? argv[1] : NULL;
     TestSuite suites[] = {
-#if __has_include("test_lang.c")
         SUITE(tests_lang),
-#endif
         SUITE(tests_codegen),
-#if __has_include("test_gfx.c")
         SUITE(tests_gfx),
-#endif
-#if __has_include("test_ui.c")
         SUITE(tests_ui),
-#endif
-#if __has_include("test_editor.c")
         SUITE(tests_editor),
-#endif
-#if __has_include("test_app.c")
-        SUITE(tests_app),
-#endif
         { "none", NULL, 0 }
     };
     int run = 0, failed = 0;
