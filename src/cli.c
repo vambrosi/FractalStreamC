@@ -327,7 +327,7 @@ int cli_main(int argc, char **argv) {
                 if (!nev) { fprintf(stderr, "error: unknown event '%s'\n", event); rc = 2; goto done; }
             }
             for (int k = 0; k < nev && !rc; k++) {
-                if (!t->on[evs[k]]) continue;
+                if (!tool_runs_on(t, evs[k])) continue;
                 if (!interp_run_tool_event(&I, t, evs[k], re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
             }
         }

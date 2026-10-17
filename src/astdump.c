@@ -191,7 +191,10 @@ static void dump_stmt(Stmt *s, int ind, StrBuf *o) {
     case S_CONTINUE: sb_puts(o, "continue\n"); break;
     case S_RETURN: sb_puts(o, "return\n"); break;
     case S_DRAW: sb_puts(o, "draw ...\n"); break;
-    case S_ERASE: sb_puts(o, "erase\n"); break;
+    case S_ERASE:
+        if (s->op == 2) sb_printf(o, "erase \"%s\"\n", s->label);
+        else sb_puts(o, s->op ? "erase all\n" : "erase\n");
+        break;
     case S_ON: sb_puts(o, "on ... do\n"); dump_block(&s->body, ind + 1, o); break;
     case S_DEFINE: sb_printf(o, "define %s ...\n", s->fn ? s->fn->name : "?"); break;
     case S_APPEND: sb_puts(o, "append ...\n"); break;

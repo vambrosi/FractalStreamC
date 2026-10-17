@@ -187,6 +187,7 @@ struct Stmt {
     Expr *text;         /* draw text: "..." + values */
     bool radius_px;
     char *in_viewer; int viewer_index;
+    u64 erase_tools;    /* S_ERASE "Name" (op 2): the tools with that name (bit = tool index) */
     Func *fn;           /* S_DEFINE */
     bool internal;      /* generated code: may assign .stuck / .iterations */
     bool quiet;         /* generated loop: no .maxIterations limit, leaves .stuck / .iterations alone */
@@ -273,6 +274,7 @@ struct Section {
     bool button;        /* tool: `button` in the header, an action run once (not selected) */
     Block *on[TOOL_EV_COUNT]; /* tool: the handler of each event (NULL: none) */
     bool has_events;    /* tool: written with `on ... do` blocks */
+    bool has_main;      /* tool: has statements outside the blocks (besides its settings) */
     char *icon;         /* tool: Material Icons name ("timeline"), NULL = first letter */
     char *of_viewer;    /* tool: written @NAME.tool, the viewer it belongs to (NULL = every viewer) */
     int viewer_of;      /* tool: index of that viewer, -1 = every viewer */

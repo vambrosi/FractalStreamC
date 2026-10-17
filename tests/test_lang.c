@@ -908,10 +908,49 @@ TEST(tool_events) {
     CHECK(I.erased && !I.erased_all && draws.len == 0);
     CHECK(interp_run_tool(&I, p->tools[1], 0, 0));
     CHECK(I.erased_all);
+    CHECK(tool_runs_on(t, TOOL_EV_PRESS) && tool_runs_on(t, TOOL_EV_DRAG) && !tool_runs_on(t, TOOL_EV_CLICK));
     vec_free(draws);
     interp_free(&I);
     free(state);
     program_free(p);
+    /* which events run a tool: mouse blocks decide; show/hide blocks alone keep the mouse defaults */
+    Program *q = LOAD_OK(
+        "@viewer v z\ncolor = .red\n"
+        "@v.tool \"Mark\"\ndraw point at z\non hide do\n    erase\nend\n"
+        "@v.tool \"Pan-ish\"\n.panning = true\n.hover = true\ndraw point at z\non show do\nend\n"
+        "@v.tool \"Plain\"\ndraw point at z\n"
+        "@v.tool \"Shows\"\n.panning = true\non show do\n    draw point at 0\nend\n");
+    CHECK(tool_runs_on(q->tools[0], TOOL_EV_PRESS) && tool_runs_on(q->tools[0], TOOL_EV_DRAG));
+    CHECK(tool_runs_on(q->tools[0], TOOL_EV_HIDE) && !tool_runs_on(q->tools[0], TOOL_EV_SHOW));
+    CHECK(!tool_runs_on(q->tools[0], TOOL_EV_CLICK) && !tool_runs_on(q->tools[0], TOOL_EV_RELEASE));
+    CHECK(tool_runs_on(q->tools[1], TOOL_EV_CLICK) && tool_runs_on(q->tools[1], TOOL_EV_HOVER));
+    CHECK(!tool_runs_on(q->tools[1], TOOL_EV_PRESS) && tool_runs_on(q->tools[1], TOOL_EV_SHOW));
+    CHECK(tool_runs_on(q->tools[2], TOOL_EV_PRESS) && !tool_runs_on(q->tools[2], TOOL_EV_HIDE));
+    CHECK(!tool_runs_on(q->tools[3], TOOL_EV_CLICK) && !tool_runs_on(q->tools[3], TOOL_EV_PRESS) && tool_runs_on(q->tools[3], TOOL_EV_SHOW));
+    program_free(q);
+    /* erase "Name": a button clears another tool's drawings */
+    q = LOAD_OK(
+        "@viewer v z\ncolor = .red\n"
+        "@v.tool \"Mark\"\n.keep = true\ndraw point at z\n"
+        "@w.tool \"Mark\"\ndraw point at z\n"
+        "@viewer w z\ncolor = .blue\n"
+        "@tool \"Clear\" button\nerase \"Mark\"\n");
+    {
+        u32 *st2 = (u32 *)xmalloc(sizeof(u32) * (size_t)q->state_words);
+        memcpy(st2, q->initial_state, sizeof(u32) * (size_t)q->state_words);
+        Interp J;
+        interp_init(&J, q, st2);
+        DrawItemVec d2 = {0};
+        J.draws = &d2;
+        J.erase_tools = 0;
+        CHECK(interp_run_tool(&J, q->tools[2], 0, 0));
+        CHECK(J.erase_tools == 3 && !J.erased && !J.erased_all); /* both tools named "Mark" */
+        vec_free(d2);
+        interp_free(&J);
+        free(st2);
+    }
+    program_free(q);
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\" button\nerase \"Nope\"\n", "there is no tool named \"Nope\"");
     EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\non press do\nend\non press do\nend\n", "already has an 'on' block");
     EXPECT_ERROR("@viewer v z\non press do\nend\ncolor = .red\n", "belongs in a tool section");
     EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\non squeeze do\nend\n", "not an event");

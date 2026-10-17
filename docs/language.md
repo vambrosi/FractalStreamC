@@ -283,7 +283,8 @@ draw circle at z with radius 4 px and color .red
   keeps them that many pixels wide on the screen when you zoom afterwards.
 - Each run of a tool replaces the drawings of its previous run, unless the tool sets
   `.keep = true`: then they build up until it runs `erase`. `erase all` clears the drawings of every
-  tool.
+  tool, and `erase "Name"` those of the tools named so (for example in a button next to a drawing
+  tool: `@tool "Clear marks" "C" "delete" button` / `erase "Mark"`).
 - Settings at the top of a tool: `.panning = true` makes dragging pan the view, so the tool only
   runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button;
   `.keep = true` as above.
@@ -310,9 +311,22 @@ end
 
 The events are `press`, `drag`, `release`, `click` (a press and release without moving), `hover`
 (the mouse moves without a button), `show` (the tool was selected, or the state changed while it
-is: a config value, a global set by another tool...) and `hide` (another tool was selected; for
+is: a config value, a global set by another tool, the view...; while you pan or zoom, it waits until
+the view rests) and `hide` (another tool was selected; for
 example `on hide do erase end`). Each block is its own scope: share values between events through
-globals.
+globals. A tool with blocks for mouse events runs only on the events it has blocks for; blocks for
+`show` and `hide` alone don't change what the mouse does (the statements outside the blocks still
+run on clicks and drags; a tool with nothing outside its blocks, say one that draws `on show`,
+ignores the mouse):
+
+```
+@plane.tool "Mark" "M" "push_pin"
+.keep = true
+draw point at z             # on every click and drag
+on hide do
+    erase                   # when another tool is selected
+end
+```
 
 Every viewer also has the built-in tools **Pan** (drag to move, wheel to zoom) and **Pick point**
 (sets `.VAR` of the viewer you click in and marks it). The mouse wheel always zooms, and dragging

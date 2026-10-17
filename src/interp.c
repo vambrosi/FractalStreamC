@@ -35,6 +35,7 @@ typedef struct Interp {
     float pixel;      /* .pixel: size of a pixel of the viewer being drawn or clicked, in plane units */
     bool erased;      /* a tool ran `erase` */
     bool erased_all;  /* ... `erase all` */
+    u64 erase_tools;  /* ... `erase "Name"`: those tools' drawings (bit = tool index) */
     int signal;
     DrawItemVec *draws;
     double steps, step_limit;
@@ -825,6 +826,10 @@ static void exec_stmt(Interp *I, Stmt *s) {
     }
     case S_ON: break; /* event handlers run through interp_run_tool_event */
     case S_ERASE:
+        if (s->op == 2) { /* another tool's drawings (the app clears them after the run) */
+            I->erase_tools |= s->erase_tools;
+            break;
+        }
         if (I->draws) I->draws->len = 0;
         I->erased = true;
         if (s->op) I->erased_all = true;
@@ -923,6 +928,23 @@ bool interp_run_tool(Interp *I, Section *t, float re, float im) {
 
 /* Run event `ev` (TOOL_EV_*) of a tool written with `on ... do` blocks: the statements outside the blocks,
    then the block of the event (if there is one). */
+/* Does tool t run on event ev?  On its `on` blocks; and on the mouse events a tool reacts to without
+ * blocks (press and drag; click only with .panning or as a button; hover with .hover), unless it
+ * has blocks for mouse events: then those decide.  Blocks for show and hide alone don't change what
+ * the mouse does, if there is code outside them to run (a tool that only draws `on show` keeps its
+ * drawing when you click). */
+bool tool_runs_on(const Section *t, int ev) {
+    if (ev < 0 || ev >= TOOL_EV_COUNT) return false;
+    if (t->on[ev]) return true;
+    if (ev == TOOL_EV_SHOW || ev == TOOL_EV_HIDE) return false;
+    if (t->has_events && !t->has_main) return false;
+    for (int k = 0; k < TOOL_EV_COUNT; k++)
+        if (t->on[k] && k != TOOL_EV_SHOW && k != TOOL_EV_HIDE) return false;
+    if (ev == TOOL_EV_HOVER) return t->hover;
+    if (t->panning || t->button) return ev == TOOL_EV_CLICK;
+    return ev == TOOL_EV_PRESS || ev == TOOL_EV_DRAG;
+}
+
 bool interp_run_tool_event(Interp *I, Section *t, int ev, float re, float im) {
     u32 *frame;
     interp_run_section_frame(I, t, &frame);

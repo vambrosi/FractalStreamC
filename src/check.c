@@ -1417,6 +1417,16 @@ static void chk_stmt(Checker *c, Stmt *s) {
         bool ok_place = (c->fn != NULL) || (c->sec && c->sec->kind == SEC_TOOL);
         if (!ok_place) prog_diag(c->prog, DIAG_ERROR, s->line, s->col, s->end_col, "'erase' can only be used in tools");
         if (c->fn) c->fn->uses_draw = true;
+        if (s->op == 2) { /* erase "Name": the drawings of the tools named so */
+            s->erase_tools = 0;
+            bool found = false;
+            for (int t = 0; t < c->prog->ntools; t++)
+                if (!strcmp(c->prog->tools[t]->display, s->label)) {
+                    found = true;
+                    if (t < 64) s->erase_tools |= (u64)1 << t;
+                }
+            if (!found) prog_diag(c->prog, DIAG_ERROR, s->line, s->col, s->end_col, "there is no tool named \"%s\"", s->label);
+        }
         break;
     }
     case S_ON: {
@@ -1546,6 +1556,10 @@ static void extract_tool_settings(Checker *c, Section *s) {
         }
         st->kind = S_EXPR;
         st->value = NULL;
+    }
+    for (int i = 0; i < s->body.n; i++) {
+        Stmt *st = s->body.stmts[i];
+        if (st->kind != S_ON && !(st->kind == S_EXPR && !st->value)) s->has_main = true;
     }
 }
 

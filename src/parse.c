@@ -907,12 +907,14 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
     if (t->kind == TK_IDENT && !strcmp(t->str, "erase")) {
         Token *n = peek(p, 1);
         bool all = n->kind == TK_IDENT && !strcmp(n->str, "all");
-        TokKind k = peek(p, all ? 2 : 1)->kind;
+        bool named = n->kind == TK_STRING;
+        TokKind k = peek(p, all || named ? 2 : 1)->kind;
         if (k == TK_NEWLINE || k == TK_EOF || k == TK_SEMI || k == TK_END || k == TK_ELSE || k == TK_SECTION) {
             advance(p);
-            if (all) advance(p);
             Stmt *s = new_stmt(p, S_ERASE, t);
-            s->op = all; /* erase all: the drawings of every tool */
+            s->op = all ? 1 : named ? 2 : 0; /* erase all: every tool's drawings; erase "Name": that tool's */
+            if (named) s->label = n->str;
+            if (all || named) advance(p);
             return s;
         }
     }

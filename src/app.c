@@ -520,11 +520,7 @@ static Shortcut tool_shortcut(int tool) {
    while dragging, or (.panning) on a click; with .hover also when the mouse moves. */
 static bool tool_handles(int tool, int ev) {
     if (tool < 0 || !A.prog) return false;
-    Section *t = A.prog->tools[tool];
-    if (t->has_events) return t->on[ev] != NULL;
-    if (ev == TOOL_EV_HOVER) return t->hover;
-    if (t->panning || t->button) return ev == TOOL_EV_CLICK;
-    return ev == TOOL_EV_PRESS || ev == TOOL_EV_DRAG;
+    return tool_runs_on(A.prog->tools[tool], ev);
 }
 
 static void run_tool(int tool, int viewer, int ev, float re, float im);
@@ -900,6 +896,7 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
     DrawItemVec out = {0};
     A.interp.draws = &out;
     A.interp.erased = A.interp.erased_all = false;
+    A.interp.erase_tools = 0;
     bool ok = t->has_events ? interp_run_tool_event(&A.interp, t, ev, re, im) : interp_run_tool(&A.interp, t, re, im);
     if (!ok) set_status(true, "%s: %s", t->display, A.interp.error);
     A.interp.draws = NULL;
@@ -907,6 +904,11 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
         if (out.data[k].viewer < 0) out.data[k].viewer = viewer;
     if (A.interp.erased_all)
         for (int k = 0; k < p->ntools; k++) vec_clear(A.draws[k]);
+    for (int k = 0; k < p->ntools && k < 64; k++) /* erase "Name" */
+        if (A.interp.erase_tools >> k & 1) {
+            if (k == tool) A.interp.erased = true;
+            else vec_clear(A.draws[k]);
+        }
     if (t->keep && !A.interp.erased) { /* .keep: the drawings build up until `erase` */
         for (int k = 0; k < out.len; k++) vec_push(A.draws[tool], out.data[k]);
         vec_free(out);
@@ -1166,12 +1168,40 @@ static void viewer_interaction(void) {
     ui_set_mouse_captured(true);
 }
 
+/* is a word of the state part of a view (the centre, radius or view map of a viewer)? */
+static bool view_word(Program *p, int w) {
+    for (int v = 0; v < p->nviewers; v++) {
+        Sym *syms[3] = {p->viewers[v]->center, p->viewers[v]->radius, p->viewers[v]->mobius};
+        for (int k = 0; k < 3; k++)
+            if (syms[k] && w >= syms[k]->slot && w < syms[k]->slot + syms[k]->type->size) return true;
+    }
+    return false;
+}
+
 /* `on show`: runs when its tool is selected, and again whenever the state changes while it is (not for
-   the mouse, the time or the last click, which change all the time) */
+   the mouse, the time or the last click, which change all the time).  While a view is being panned or
+   zoomed, a change of the views alone waits until the view rests (a slow `on show` would make the
+   panning stutter). */
 static void tools_show(void) {
     Program *p = A.prog;
     size_t bytes = sizeof(u32) * (size_t)p->state_words;
     Sym *volatile_syms[4] = {p->s_mouse, p->s_time, p->s_last_click, p->s_drag_start};
+    static u32 *views_prev;
+    static size_t views_bytes;
+    static double views_moved_at;
+    double now = fs_time_seconds();
+    if (views_bytes != bytes) {
+        free(views_prev);
+        views_prev = (u32 *)xmalloc(bytes);
+        memcpy(views_prev, A.state, bytes);
+        views_bytes = bytes;
+    }
+    for (int w = 0; w < p->state_words; w++)
+        if (views_prev[w] != A.state[w] && view_word(p, w)) {
+            views_moved_at = now;
+            break;
+        }
+    memcpy(views_prev, A.state, bytes);
     for (int i = 0; i < A.nvis; i++) {
         int v = A.vis[i].viewer;
         ViewerRT *rt = &A.vrt[v];
@@ -1181,6 +1211,15 @@ static void tools_show(void) {
                 memcpy(rt->show_snap + volatile_syms[k]->slot, A.state + volatile_syms[k]->slot,
                        sizeof(u32) * (size_t)volatile_syms[k]->type->size);
             if (memcmp(rt->show_snap, A.state, bytes) == 0) continue;
+            if (now - views_moved_at < 0.3) {
+                bool only_views = true;
+                for (int w = 0; w < p->state_words && only_views; w++)
+                    if (rt->show_snap[w] != A.state[w] && !view_word(p, w)) only_views = false;
+                if (only_views) {
+                    ui_wake_in(0.35);
+                    continue;
+                }
+            }
         } else {
             rt->show_snap = (u32 *)xmalloc(bytes);
         }
