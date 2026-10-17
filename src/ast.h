@@ -64,6 +64,7 @@ struct Type {
     int data_off;    /* T_LIST: word offset of data[] */
     u32 spv_id;      /* codegen cache (per module, reset by codegen) */
     u32 spv_buf_id;  /* codegen: explicitly laid out variant for the state buffer */
+    u32 spv_buf_aux; /* codegen: T_LIST: the laid-out data array type */
     Type *next;      /* intern list */
 };
 

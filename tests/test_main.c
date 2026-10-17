@@ -29,6 +29,7 @@ static const char *test_skip_reason_ = NULL;
 #if __has_include("test_lang.c")
 #include "test_lang.c"
 #endif
+#include "test_codegen.c"
 #if __has_include("test_gfx.c")
 #include "test_gfx.c"
 #endif
@@ -51,6 +52,7 @@ int main(int argc, char **argv) {
 #if __has_include("test_lang.c")
         SUITE(tests_lang),
 #endif
+        SUITE(tests_codegen),
 #if __has_include("test_gfx.c")
         SUITE(tests_gfx),
 #endif
