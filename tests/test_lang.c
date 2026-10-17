@@ -734,7 +734,42 @@ TEST(for_loops_run_their_range) {
     program_free(p);
 }
 
+TEST(config_groups_notes_labels_choices) {
+    Program *p = LOAD_OK(
+        "@config \"Iteration\"\n"
+        "\"A note about the settings.\"\n"
+        ".maxIterations = 300 in 10..5000 \"Iterations\"\n"
+        "@config \"Colors\"\n"
+        "scheme : Z = 2 in [\"Rainbow\", \"Grays\", \"Fire\"] \"Palette\"\n"
+        "speed : R = 1 in 0.1..10\n"
+        "plain := 3\n"
+        "@viewer v z\n"
+        "color = gray(scheme / 3)\n");
+    CHECK_INT(p->config.len, 7);
+    if (p->config.len == 7) {
+        CHECK(p->config.data[0].kind == CFG_GROUP && !strcmp(p->config.data[0].text, "Iteration"));
+        CHECK(p->config.data[1].kind == CFG_NOTE && !strcmp(p->config.data[1].text, "A note about the settings."));
+        CHECK(p->config.data[2].kind == CFG_VAR && p->config.data[2].sym == p->s_max_iter);
+        CHECK(p->config.data[3].kind == CFG_GROUP && !strcmp(p->config.data[3].text, "Colors"));
+        CHECK(p->config.data[4].kind == CFG_VAR && !strcmp(p->config.data[4].sym->name, "scheme"));
+        CHECK(p->config.data[5].kind == CFG_VAR && !strcmp(p->config.data[5].sym->name, "speed"));
+        CHECK(p->config.data[6].kind == CFG_VAR && !strcmp(p->config.data[6].sym->name, "plain"));
+    }
+    CHECK(p->s_max_iter->has_range && p->s_max_iter->range_lo == 10 && p->s_max_iter->range_hi == 5000);
+    CHECK_STR(p->s_max_iter->label, "Iterations");
+    Sym *sc = find_global(p, "scheme");
+    CHECK(sc && sc->nchoices == 3 && !strcmp(sc->choices[2], "Fire") && sc->has_range && sc->range_hi == 3);
+    CHECK(sc && sc->label && !strcmp(sc->label, "Palette"));
+    CHECK_NEAR(gnum(p, "scheme", 0), 2, 0);
+    CHECK_NEAR(gnum(p, "maxIterations", 0), 300, 0);
+    program_free(p);
+    EXPECT_ERROR("@config\nx : R = 1 in [\"a\", \"b\"]\n", "integer variable");
+    EXPECT_ERROR("@global\nx : R = 1 in 0..2\n", "belong in @config");
+    EXPECT_ERROR("@viewer v z\n\"hello\"\ncolor = .red\n", "only means something in @config");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(config_groups_notes_labels_choices),
     TESTCASE(for_loops_run_their_range),
     TESTCASE(pixel_size_and_px),
     TESTCASE(solve_fails_when_its_expression_gets_stuck),

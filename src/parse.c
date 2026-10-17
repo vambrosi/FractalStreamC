@@ -528,6 +528,7 @@ static TypeSyntax *parse_type(Parser *p) {
 
 /* ---- statements -------------------------------------------------------- */
 static Stmt *parse_stmt(Parser *p, int top_level);
+static bool parse_config_extras(Parser *p, Stmt *s);
 
 static Stmt *new_stmt(Parser *p, StmtKind kind, Token *t) {
     Stmt *s = ARENA_NEW(&p->prog->arena, Stmt);
@@ -942,12 +943,7 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
             s->value = parse_expr(p);
             if (!s->value) return NULL;
         }
-        if (accept(p, TK_IN)) { /* @config slider range */
-            s->range_lo = parse_arith(p);
-            if (!s->range_lo || !expect(p, TK_DOTDOT, "in the range (as in: in 0..1)")) return NULL;
-            s->range_hi = parse_arith(p);
-            if (!s->range_hi) return NULL;
-        }
+        if (!parse_config_extras(p, s)) return NULL;
         return s;
     }
     if (at(p, TK_ASSIGN) || at(p, TK_PLUSEQ) || at(p, TK_MINUSEQ) || at(p, TK_STAREQ) || at(p, TK_SLASHEQ)) {
@@ -961,18 +957,13 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
         s->target = e;
         s->value = parse_expr(p);
         if (!s->value) return NULL;
-        if (s->op == TK_ASSIGN && accept(p, TK_IN)) {
-            s->range_lo = parse_arith(p);
-            if (!s->range_lo || !expect(p, TK_DOTDOT, "in the range (as in: in 0..1)")) return NULL;
-            s->range_hi = parse_arith(p);
-            if (!s->range_hi) return NULL;
-        }
+        if (s->op == TK_ASSIGN && !parse_config_extras(p, s)) return NULL;
         return s;
     }
     if (at(p, TK_EQ) && 0) return NULL;
     Stmt *s = new_stmt(p, S_EXPR, t);
     s->value = e;
-    if (e->kind != E_CALL) {
+    if (e->kind != E_CALL && e->kind != E_STRING) { /* a line of text is a note in @config (the checker says where not) */
         if (at(p, TK_NEWLINE) || at(p, TK_EOF) || at(p, TK_SEMI))
             perr(p, t, "this line computes a value but does nothing with it (did you mean to assign it with '='?)");
         else
@@ -980,6 +971,46 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
         return NULL;
     }
     return s;
+}
+
+/* After a value in @config: an optional slider range `in a..b` or choice `in ["a", "b"]`, then an
+   optional label in quotes. */
+static bool parse_config_extras(Parser *p, Stmt *s) {
+    if (accept(p, TK_IN)) {
+        if (at(p, TK_LBRACKET)) {
+            Token *lb = advance(p);
+            VEC(char *) items = {0};
+            while (!at(p, TK_RBRACKET)) {
+                Token *it = cur(p);
+                if (!accept(p, TK_STRING)) {
+                    perr(p, it, "the choices are texts in quotes, as in: in [\"rainbow\", \"grays\"]");
+                    vec_free(items);
+                    return false;
+                }
+                vec_push(items, it->str);
+                if (!accept(p, TK_COMMA)) break;
+            }
+            if (!expect(p, TK_RBRACKET, "to close the list of choices")) {
+                vec_free(items);
+                return false;
+            }
+            if (!items.len) {
+                perr(p, lb, "give at least one choice, as in: in [\"rainbow\", \"grays\"]");
+                return false;
+            }
+            s->nchoices = items.len;
+            s->choices = ARENA_ARRAY(&p->prog->arena, char *, items.len);
+            memcpy(s->choices, items.data, sizeof(char *) * (size_t)items.len);
+            vec_free(items);
+        } else {
+            s->range_lo = parse_arith(p);
+            if (!s->range_lo || !expect(p, TK_DOTDOT, "in the range (as in: in 0..1)")) return false;
+            s->range_hi = parse_arith(p);
+            if (!s->range_hi) return false;
+        }
+    }
+    if (at(p, TK_STRING)) s->label = advance(p)->str;
+    return true;
 }
 
 /* ---- sections ---------------------------------------------------------- */
@@ -1008,8 +1039,8 @@ static void parse_section_header(Parser *p, Section *s, Token *h) {
     }
     for (; k < args.len; k++) {
         Token *a = args.data[k];
-        if (a->kind == TK_STRING && !s->display && s->kind != SEC_CONFIG && s->kind != SEC_GLOBAL)
-            s->display = a->str;
+        if (a->kind == TK_STRING && !s->display && s->kind != SEC_GLOBAL)
+            s->display = a->str; /* @config "Title": a titled group in the config panel */
         else if (a->kind == TK_STRING && !s->shortcut && s->kind != SEC_CONFIG && s->kind != SEC_GLOBAL)
             s->shortcut = a->str;
         else if (a->kind == TK_STRING && !s->icon && s->kind == SEC_TOOL)

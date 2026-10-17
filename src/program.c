@@ -110,6 +110,7 @@ void program_free(Program *p) {
     vec_free(p->funcs);
     vec_free(p->globals);
     vec_free(p->consts);
+    vec_free(p->config);
     vec_free(p->diags);
     arena_free(&p->arena);
     free(p);

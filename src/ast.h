@@ -164,6 +164,8 @@ struct Stmt {
     Sym *sym;           /* declared symbol (S_DECL, S_FOR, S_FOREACH) */
     bool implicit_decl; /* S_ASSIGN that declared a new variable */
     Expr *range_lo, *range_hi; /* @config slider range `in a..b` */
+    char *label;               /* @config: the text after a declaration, shown instead of the name */
+    char **choices; int nchoices; /* @config: `in ["a", "b"]`, a choice (the value is 1, 2, ...) */
     Block body, else_body;
     Expr *from, *to, *step;    /* S_FOR range; S_FOREACH uses `from` as the collection */
     Sym *loop_end, *loop_step; /* hidden locals for S_FOR */
@@ -197,6 +199,8 @@ struct Sym {
     bool readonly;
     bool has_range;    /* config slider range */
     double range_lo, range_hi;
+    char *label;       /* config label (NULL: the name) */
+    char **choices; int nchoices; /* config choice: value k shows choices[k - 1] */
     float cval[4];     /* SYM_CONST value */
     Func *owner;       /* function owning this local, NULL for section locals */
     int viewer_index;  /* viewer property/picked point: owning viewer, else -1 */
@@ -263,6 +267,12 @@ struct Section {
 typedef VEC(Section *) SectionVec;
 
 /* ---- program ------------------------------------------------------------ */
+/* the config panel, in the order of the script: titled groups (@config "Title"), notes (a line of
+   text in quotes) and variables */
+typedef enum ConfigItemKind { CFG_GROUP, CFG_NOTE, CFG_VAR } ConfigItemKind;
+typedef struct ConfigItem { ConfigItemKind kind; const char *text; Sym *sym; } ConfigItem;
+typedef VEC(ConfigItem) ConfigItemVec;
+
 typedef struct Program {
     Arena arena;
     const char *source;
@@ -274,6 +284,7 @@ typedef struct Program {
     FuncVec funcs;       /* all user + prelude functions (overloads chained) */
     SymVec globals;      /* state variables in layout order */
     SymVec consts;
+    ConfigItemVec config; /* what the config panel shows, in order */
     int state_words;     /* size of the state buffer in words */
     u32 *initial_state;  /* state after running @global/@config */
     DiagVec diags;

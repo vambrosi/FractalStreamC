@@ -276,8 +276,22 @@ with the right or middle button always pans. Each viewer remembers its own selec
 @config
 .title = "Julia sets"
 .width = 1200
-.maxIterations = 300
 plane.center = -0.5
 iterations : Z = 100 in 1..1000      # a slider in the config panel
 c := -0.8 + 0.156i                   # an editable complex number
+
+@config "Colors"                     # a group with a title (any number of @config sections)
+"The palette is applied to the number of iterations."   # a note, shown as text
+palette : Z = 1 in ["Rainbow", "Grays", "Fire"] "Palette"   # a choice: palette is 1, 2 or 3
+speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of the name
+.maxIterations = 300 in 10..5000 "Iterations"               # sliders work on internals too
 ```
+
+- Every variable declared in `@config` gets a control in the config panel (Ctrl+T, Cmd+T on a
+  Mac), in the order of the script: sliders for `Z` and `R` with a range (logarithmic when the
+  range spans more than a factor 100), a list for choices, fields for complex numbers, a check box
+  for `Bool`.
+- A text in quotes after a declaration (and its range) is its label. A line that is only a text is
+  a note.
+- The views' centre and radius, and `.maxIterations`, `.escapeRadius` and `.epsilon`, are listed at
+  the end unless the script places them itself.

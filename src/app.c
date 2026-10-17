@@ -82,6 +82,8 @@ typedef struct App {
     int menu_viewer;        /* viewer whose menu is open, -1 none */
     bool help_open;
     float config_scroll;
+    const char *choice_open;  /* config choice whose list is open (points to choice_name), NULL none */
+    char choice_name[128];
     int modal;              /* 0, 1 save as, 2 open */
     bool modal_focus;
     char modal_buf[1024];
@@ -652,6 +654,7 @@ static bool load_source(const char *src, bool reset_layout) {
     A.vrt = vrt;
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
     A.menu_viewer = -1;
+    A.choice_open = NULL;
     interp_init(&A.interp, p, A.state);
     A.interp.step_limit = 3e7;
     if (!keep) {
@@ -1364,15 +1367,23 @@ static void config_number(Sym *s, float x, float y, float w) {
     case T_INT: {
         int val = (i32)v[0];
         snprintf(id, sizeof id, "##cfg_%s", s->name);
-        bool ch = s->has_range ? ui_slider_int(id, x, y, w, h, &val, (int)s->range_lo, (int)s->range_hi)
-                               : ui_drag_int(id, x, y, w, h, &val, 0.25f, -2147483647, 2147483647);
+        bool ch;
+        if (s->has_range && s->range_lo > 0 && s->range_hi >= 100 * s->range_lo) { /* wide ranges: logarithmic */
+            double dv = val;
+            ch = ui_slider_double(id, x, y, w, h, &dv, s->range_lo, s->range_hi, "%.0f", UI_SLIDER_LOG);
+            val = (int)floor(dv + 0.5);
+        } else {
+            ch = s->has_range ? ui_slider_int(id, x, y, w, h, &val, (int)s->range_lo, (int)s->range_hi)
+                              : ui_drag_int(id, x, y, w, h, &val, 0.25f, -2147483647, 2147483647);
+        }
         if (ch) v[0] = (u32)val;
         break;
     }
     case T_REAL: {
         double val = wf(v[0]);
         snprintf(id, sizeof id, "##cfg_%s", s->name);
-        bool ch = s->has_range ? ui_slider_double(id, x, y, w, h, &val, s->range_lo, s->range_hi, "%.5g", 0)
+        int flags = s->has_range && s->range_lo > 0 && s->range_hi >= 100 * s->range_lo ? UI_SLIDER_LOG : 0;
+        bool ch = s->has_range ? ui_slider_double(id, x, y, w, h, &val, s->range_lo, s->range_hi, "%.5g", flags)
                                : ui_drag_double(id, x, y, w, h, &val, 0.002 * FS_MAX(fabs(val), 0.01), -1e30, 1e30, "%.6g");
         if (ch) v[0] = fw((float)val);
         break;
@@ -1418,14 +1429,56 @@ static void config_number(Sym *s, float x, float y, float w) {
     }
 }
 
-/* which globals the config pane shows in each group: script variables, views, iteration settings */
-static bool config_shows(Program *p, Sym *s, int group) {
-    if (group == 0) return s->is_config;
-    if (group == 1) return s->viewer_index >= 0 && !s->is_internal;
+/* is s shown by the script's own config items (declared in @config, or given a slider or label there)? */
+static bool config_listed(Program *p, Sym *s) {
+    for (int i = 0; i < p->config.len; i++)
+        if (p->config.data[i].kind == CFG_VAR && p->config.data[i].sym == s) return true;
+    return false;
+}
+
+/* the views' center and radius, and the iteration settings, unless the script lists them itself */
+static bool config_auto(Program *p, Sym *s, int group) {
+    if (config_listed(p, s)) return false;
+    if (group == 1) return s->viewer_index >= 0 && !s->is_internal && !s->is_config;
     return s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
 }
 
-static void config_label(Sym *s, char *out, int cap) { snprintf(out, (size_t)cap, "%s%s", s->is_internal ? "." : "", s->name); }
+static void config_label(Sym *s, char *out, int cap) {
+    if (s->label) snprintf(out, (size_t)cap, "%s", s->label);
+    else snprintf(out, (size_t)cap, "%s%s", s->is_internal ? "." : "", s->name);
+}
+
+/* a choice: a button with the current choice, opening the list below it */
+static void config_choice(Sym *s, float x, float y, float w) {
+    u32 *v = A.state + s->slot;
+    float h = config_row_h() - px(4);
+    int cur = FS_CLAMP((i32)v[0], 1, s->nchoices);
+    char id[200];
+    snprintf(id, sizeof id, "%s##cfgc_%s", s->choices[cur - 1], s->name);
+    bool open = A.choice_open && !strcmp(A.choice_open, s->name);
+    if (ui_button_ex(id, x, y, w, h, open ? UI_SELECTED : 0)) {
+        snprintf(A.choice_name, sizeof A.choice_name, "%s", s->name);
+        A.choice_open = open ? NULL : A.choice_name;
+        open = !open;
+    }
+    ui_icon("expand_more", "v", x + w - h, y, h, UI_COL_TEXT_DIM);
+    if (!open) return;
+    int prev = ui_layer(UI_LAYER_POPUP);
+    float ih = h, ph = ih * s->nchoices + px(8);
+    float py = y + h + px(2);
+    if (py + ph > (float)A.in.fb_h - px(4)) py = FS_MAX(px(4), y - ph - px(2)); /* no room below: open upwards */
+    ui_panel_ex(x, py, w, ph, UI_COL_PANEL_HI, px(6));
+    for (int k = 0; k < s->nchoices; k++) {
+        snprintf(id, sizeof id, "%s##cfgci_%s_%d", s->choices[k], s->name, k);
+        if (ui_button_ex(id, x + px(4), py + px(4) + k * ih, w - px(8), ih, k + 1 == cur ? UI_SELECTED : UI_FLAT)) {
+            v[0] = (u32)(k + 1);
+            A.choice_open = NULL;
+        }
+    }
+    Rect area = {x, FS_MIN(y, py), w, FS_MAX(y + h, py + ph) - FS_MIN(y, py)};
+    if ((A.in.mouse_pressed[0] || A.in.mouse_pressed[1]) && !in_rect(area, A.in.mouse_x, A.in.mouse_y)) A.choice_open = NULL;
+    ui_layer(prev);
+}
 
 static void config_pane(float W, float H) {
     Rect pr = A.config_r;
@@ -1452,33 +1505,58 @@ static void config_pane(float W, float H) {
     if (nx == nx && W > 0) A.config_frac = FS_CLAMP((W - nx) / W, 0.12f, 0.6f);
     if (!p) return;
     float rh = config_row_h();
+    /* the width of the labels */
     float lw = px(60);
-    for (int group = 0; group < 3; group++)
-        for (int i = 0; i < p->globals.len; i++)
-            if (config_shows(p, p->globals.data[i], group)) {
-                char label[128];
-                config_label(p->globals.data[i], label, sizeof label);
-                lw = FS_MAX(lw, ui_text_width(UI_FONT_SANS, label, -1) + px(24));
-            }
+    char label[256];
+    for (int i = 0; i < p->globals.len; i++) {
+        Sym *s = p->globals.data[i];
+        if (!config_listed(p, s) && !config_auto(p, s, 1) && !config_auto(p, s, 2)) continue;
+        config_label(s, label, sizeof label);
+        lw = FS_MAX(lw, ui_text_width(UI_FONT_SANS, label, -1) + px(24));
+    }
     lw = FS_MIN(lw, pr.w * 0.55f);
     Rect body = {pr.x + px(4), bh + px(4), pr.w - px(8), pr.h - bh - px(8)};
     A.config_scroll += ui_scroll_area(body.x, body.y, body.w, body.h);
     ui_push_clip(body.x, body.y, body.w, body.h);
     float y = body.y - A.config_scroll + px(4);
     float x0 = body.x + px(10), x1 = body.x + lw, ww = body.w - lw - px(14);
-    /* groups: script variables, views, iteration settings */
-    for (int group = 0; group < 3; group++) {
-        const char *title = group == 0 ? "Script" : group == 1 ? "Views" : "Iteration";
+    /* the script's own items: groups, notes and variables, in order */
+    bool any_group = false;
+    for (int i = 0; i < p->config.len; i++) {
+        ConfigItem *it = &p->config.data[i];
+        if (it->kind == CFG_GROUP) {
+            bool empty = true; /* only groups that show something get a title */
+            for (int k = i + 1; k < p->config.len && p->config.data[k].kind != CFG_GROUP; k++) empty = false;
+            if (empty) continue;
+            if (any_group) y += px(8);
+            ui_text(UI_FONT_SANS, x0, y + px(6), it->text ? it->text : "Script", -1, UI_COL_ACCENT);
+            y += rh;
+            any_group = true;
+        } else if (it->kind == CFG_NOTE) {
+            float th = ui_text_wrapped(UI_FONT_SANS, x0, y + px(2), body.w - px(20), it->text, UI_COL_TEXT_DIM, true);
+            y += th + px(8);
+        } else {
+            Sym *s = it->sym;
+            config_label(s, label, sizeof label);
+            ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
+            if (s->label && ui_last_hovered()) ui_tooltip(s->name);
+            if (s->nchoices) config_choice(s, x1, y, ww);
+            else config_number(s, x1, y, ww);
+            y += rh;
+        }
+    }
+    /* views and iteration settings */
+    for (int group = 1; group < 3; group++) {
         bool any = false;
         for (int i = 0; i < p->globals.len; i++)
-            if (config_shows(p, p->globals.data[i], group)) any = true;
-        if (!any) continue;
-        ui_text(UI_FONT_SANS, x0, y + px(6), title, -1, UI_COL_ACCENT);
+            if (config_auto(p, p->globals.data[i], group)) any = true;
+        if (!any && group == 2) continue;
+        y += px(8);
+        ui_text(UI_FONT_SANS, x0, y + px(6), group == 1 ? "Views" : "Iteration", -1, UI_COL_ACCENT);
         y += rh;
         for (int i = 0; i < p->globals.len; i++) {
             Sym *s = p->globals.data[i];
-            if (!config_shows(p, s, group)) continue;
-            char label[128];
+            if (!config_auto(p, s, group)) continue;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
             config_number(s, x1, y, ww);
@@ -1492,7 +1570,6 @@ static void config_pane(float W, float H) {
                 y += rh;
             }
         }
-        y += px(8);
     }
     float content = y + A.config_scroll - body.y;
     A.config_scroll = FS_CLAMP(A.config_scroll, 0.0f, FS_MAX(0.0f, content - body.h));

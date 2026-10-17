@@ -978,6 +978,40 @@ static void chk_range(Checker *c, Stmt *s, Sym *sym) {
     sym->range_hi = hi;
 }
 
+static void config_add_var(Checker *c, Sym *sym) {
+    for (int i = 0; i < c->prog->config.len; i++)
+        if (c->prog->config.data[i].kind == CFG_VAR && c->prog->config.data[i].sym == sym) return;
+    ConfigItem it = {CFG_VAR, NULL, sym};
+    vec_push(c->prog->config, it);
+}
+
+/* The slider range, choices and label of a declaration or assignment, and its place in the config panel:
+   variables declared in @config, and any variable given a range, choices or a label there. */
+static void chk_config_extras(Checker *c, Stmt *s, Sym *sym, bool declared) {
+    bool extras = s->range_lo || s->label || s->choices;
+    bool in_config = c->sec && c->sec->kind == SEC_CONFIG && !c->fn;
+    if (extras && !in_config) {
+        ERR(c, s->range_lo ? s->range_lo : s->target, "slider ranges, choices and labels belong in @config");
+        return;
+    }
+    if (!sym || !in_config || sym->kind != SYM_GLOBAL || sym->type == t_error) return;
+    if (s->range_lo) chk_range(c, s, sym);
+    if (s->choices) {
+        if (sym->type != t_int) {
+            ERR(c, s->target, "a choice needs an integer variable: its value is the number of the choice, as in "
+                              "scheme : Z = 1 in [\"rainbow\", \"grays\"]");
+            return;
+        }
+        sym->choices = s->choices;
+        sym->nchoices = s->nchoices;
+        sym->has_range = true;
+        sym->range_lo = 1;
+        sym->range_hi = s->nchoices;
+    }
+    if (s->label) sym->label = s->label;
+    if ((declared && sym->is_config) || extras) config_add_var(c, sym);
+}
+
 static void check_assign_target(Checker *c, Expr *t) {
     Sym *s = t->sym;
     if (!s) return;
@@ -989,6 +1023,16 @@ static void chk_stmt(Checker *c, Stmt *s) {
     switch (s->kind) {
     case S_DEFINE: break;
     case S_EXPR:
+        if (s->value && s->value->kind == E_STRING) {
+            if (c->sec && c->sec->kind == SEC_CONFIG && !c->fn) { /* a note in the config panel */
+                ConfigItem it = {CFG_NOTE, s->value->name, NULL};
+                vec_push(c->prog->config, it);
+                s->value = NULL; /* nothing to run */
+            } else {
+                ERR(c, s->value, "a line of text only means something in @config, where it is shown in the config panel");
+            }
+            break;
+        }
         if (s->value) chk(c, s->value);
         break;
     case S_DECL: {
@@ -1021,7 +1065,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
         s->sym = sym;
         tg->sym = sym;
         tg->type = t;
-        chk_range(c, s, sym);
+        chk_config_extras(c, s, sym, true);
         break;
     }
     case S_ASSIGN: {
@@ -1058,7 +1102,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 s->sym = sym;
                 tg->sym = sym;
                 tg->type = t;
-                chk_range(c, s, sym);
+                chk_config_extras(c, s, sym, true);
                 return;
             }
         }
@@ -1090,7 +1134,10 @@ static void chk_stmt(Checker *c, Stmt *s) {
         Type *vt = chk(c, s->value);
         if (vt == t_error) return;
         s->value = coerce(c, s->value, tt, "the new value");
-        if (s->range_lo) ERR(c, s->range_lo, "a slider range can only be given where the variable is first declared");
+        if (s->range_lo || s->label || s->choices) {
+            if (tg != base || !base->sym) ERR(c, tg, "only a whole variable can have a slider, choices or a label");
+            else chk_config_extras(c, s, base->sym, false);
+        }
         break;
     }
     case S_DESTRUCTURE: {
@@ -1409,6 +1456,10 @@ static void check_section(Checker *c, Section *s) {
         if (v->var) s->coord = declare(c, &at, v->var, t_complex);
     }
     if (s->kind == SEC_TOOL) extract_tool_settings(c, s);
+    if (s->kind == SEC_CONFIG) { /* each @config section is a group of the config panel */
+        ConfigItem it = {CFG_GROUP, s->display, NULL};
+        vec_push(c->prog->config, it);
+    }
     chk_block(c, &s->body);
     layout_frame(&s->locals, &s->frame_words);
     /* load sections declare globals into c->globals directly; locals only for loop variables */
