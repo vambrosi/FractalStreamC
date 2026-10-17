@@ -1,0 +1,9 @@
+# System files
+.DS_Store
+
+# IDE config
+.vscode
+
+# Local material, kept out of the repo
+/notes/
+/tmp/
