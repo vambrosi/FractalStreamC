@@ -3,13 +3,34 @@
 #include "ast.h"
 
 void lex_program(Program *prog, const char *src, int first_line);
-void parse_tokens(Program *prog, Token *toks, int ntoks, const char **fnames, int nfnames, bool prelude);
+void parse_tokens(Program *prog, Token *toks, int ntoks, const char **builtins, int nbuiltins, const char **ufuncs,
+                  int nufuncs, const char **gvars, int ngvars, bool prelude);
 bool check_program(Program *p);
 
 typedef VEC(const char *) NameVec;
 static void collect_function_names(Token *t, int n, NameVec *names) {
     for (int i = 0; i + 1 < n; i++)
         if (t[i].kind == TK_DEFINE && t[i + 1].kind == TK_IDENT) vec_push(*names, t[i + 1].str);
+}
+
+/* names assigned at the start of a statement in @global/@config sections
+ * (or before the first section): these are global variables */
+static void collect_global_names(Token *t, int n, NameVec *names) {
+    bool has_sections = false;
+    for (int i = 0; i < n; i++)
+        if (t[i].kind == TK_SECTION) has_sections = true;
+    if (!has_sections) return;
+    bool in_load = true;
+    for (int i = 0; i + 1 < n; i++) {
+        if (t[i].kind == TK_SECTION) {
+            in_load = !strcmp(t[i].str, "global") || !strcmp(t[i].str, "globals") || !strcmp(t[i].str, "config");
+            continue;
+        }
+        bool start = i == 0 || t[i - 1].kind == TK_NEWLINE || t[i - 1].kind == TK_SEMI;
+        TokKind k = t[i + 1].kind;
+        if (in_load && start && t[i].kind == TK_IDENT && (k == TK_DECLARE || k == TK_COLON || k == TK_ASSIGN))
+            vec_push(*names, t[i].str);
+    }
 }
 
 /* Parse + check + initial state.  Always returns a Program; check
@@ -21,22 +42,28 @@ Program *program_load(const char *source, const char *path) {
     p->source = arena_strndup(&p->arena, source, strlen(source));
     p->title = "FractalStream";
 
-    NameVec names = {0};
-    for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) vec_push(names, intrinsics[k].name);
+    NameVec builtins = {0}, ufuncs = {0}, gvars = {0};
+    for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) vec_push(builtins, intrinsics[k].name);
 
     /* prelude */
     lex_program(p, prelude_source, PRELUDE_LINE0 + 1);
-    collect_function_names(p->tokens.data, p->tokens.len, &names);
+    collect_function_names(p->tokens.data, p->tokens.len, &ufuncs);
     int nsec = p->sections.len;
-    parse_tokens(p, p->tokens.data, p->tokens.len, names.data, names.len, true);
+    parse_tokens(p, p->tokens.data, p->tokens.len, builtins.data, builtins.len, ufuncs.data, ufuncs.len, NULL, 0, true);
     p->sections.len = nsec; /* the prelude has no sections of its own, only functions */
     vec_clear(p->tokens);
+    for (int k = 0; k < ufuncs.len; k++) vec_push(builtins, ufuncs.data[k]);
+    vec_clear(ufuncs);
 
     /* user script */
     lex_program(p, p->source, 1);
-    collect_function_names(p->tokens.data, p->tokens.len, &names);
-    parse_tokens(p, p->tokens.data, p->tokens.len, names.data, names.len, false);
-    vec_free(names);
+    collect_function_names(p->tokens.data, p->tokens.len, &ufuncs);
+    collect_global_names(p->tokens.data, p->tokens.len, &gvars);
+    parse_tokens(p, p->tokens.data, p->tokens.len, builtins.data, builtins.len, ufuncs.data, ufuncs.len, gvars.data,
+                 gvars.len, false);
+    vec_free(builtins);
+    vec_free(ufuncs);
+    vec_free(gvars);
     if (p->nerrors == 0) check_program(p);
 
     if (p->nerrors == 0) {

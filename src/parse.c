@@ -17,7 +17,10 @@ typedef struct Parser {
     int abs_depth;
     int func_depth;    /* > 0 while parsing a function body */
     int loop_depth;
-    const char **fnames; int nfnames; /* known function names */
+    const char **builtins; int nbuiltins;   /* intrinsic + prelude function names */
+    const char **ufuncs; int nufuncs;       /* user-defined function names */
+    const char **gvars; int ngvars;         /* global variable names (pre-scan) */
+    VEC(const char *) lvars;                /* variables declared so far in this section/function */
     int last_line, last_end_col;      /* end of the previous token */
     int nerr_stmt;                    /* errors in the current statement */
 } Parser;
@@ -70,11 +73,21 @@ static bool expect(Parser *p, TokKind k, const char *context) {
     return false;
 }
 
-static bool is_function_name(Parser *p, const char *name) {
-    for (int i = 0; i < p->nfnames; i++)
-        if (strcmp(p->fnames[i], name) == 0) return true;
+static bool name_in(const char **v, int n, const char *name) {
+    for (int i = 0; i < n; i++)
+        if (strcmp(v[i], name) == 0) return true;
     return false;
 }
+
+/* Variables shadow built-in functions (so `step := 0.1` works), but not
+ * functions defined in the script. */
+static bool is_function_name(Parser *p, const char *name) {
+    if (name_in(p->ufuncs, p->nufuncs, name)) return true;
+    if (name_in(p->lvars.data, p->lvars.len, name) || name_in(p->gvars, p->ngvars, name)) return false;
+    return name_in(p->builtins, p->nbuiltins, name);
+}
+
+static void declare_var_name(Parser *p, const char *name) { vec_push(p->lvars, name); }
 
 static Expr *new_expr(Parser *p, ExprKind kind, Token *t) {
     Expr *e = ARENA_NEW(&p->prog->arena, Expr);
@@ -662,11 +675,14 @@ static Stmt *parse_define(Parser *p, int top_level) {
     vec_free(params);
     vec_free(ptypes);
     if (!expect(p, TK_ASSIGN, "after the parameters (as in: define f(z) = z^2 + 1)")) return NULL;
+    int vmark = p->lvars.len;
+    for (int i = 0; i < f->nparams; i++) declare_var_name(p, f->params[i]->name);
     bool where = false;
     for (int k = p->pos; k < p->n && p->t[k].kind != TK_NEWLINE && p->t[k].kind != TK_EOF; k++)
         if (p->t[k].kind == TK_WHERE) where = true;
     if (!where) {
         f->body_expr = parse_expr(p);
+        p->lvars.len = vmark;
         if (!f->body_expr) return NULL;
     } else {
         f->has_where = true;
@@ -692,6 +708,7 @@ static Stmt *parse_define(Parser *p, int top_level) {
             }
             vec_push(outs, s);
             vec_push(otypes, ts);
+            declare_var_name(p, s->name);
             if (!paren || !accept(p, TK_COMMA)) break;
         }
         if (paren && !expect(p, TK_RPAREN, "to close the list of outputs")) return NULL;
@@ -711,6 +728,7 @@ static Stmt *parse_define(Parser *p, int top_level) {
         f->body = parse_block(p, TK_END, TK_END, false, 0);
         p->loop_depth = saved_loops;
         p->func_depth--;
+        p->lvars.len = vmark;
         expect_end(p, t, "define");
     }
     Stmt *s = new_stmt(p, S_DEFINE, t);
@@ -765,6 +783,7 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
             perr(p, v, "expected the loop variable after 'for'");
             return NULL;
         }
+        declare_var_name(p, v->str);
         if (!expect(p, TK_IN, "after the loop variable (as in: for k in 1..10 do)")) return NULL;
         Stmt *s = new_stmt(p, S_FOR, t);
         Expr *var = new_expr(p, E_NAME, v);
@@ -817,6 +836,8 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
             else if (p->t[k].kind == TK_RPAREN && --depth == 0) break;
         }
         if (k + 1 < p->n && (p->t[k + 1].kind == TK_ASSIGN || p->t[k + 1].kind == TK_DECLARE)) {
+            for (int j = p->pos + 1; j < k; j++)
+                if (p->t[j].kind == TK_IDENT) declare_var_name(p, p->t[j].str);
             advance(p);
             Stmt *s = new_stmt(p, S_DESTRUCTURE, t);
             s->targets = parse_args(p, TK_RPAREN, &s->ntargets, "to close the list of names");
@@ -834,6 +855,12 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
     default: break;
     }
 
+    if (at(p, TK_IDENT)) {
+        TokKind k = peek(p, 1)->kind;
+        if (k == TK_DECLARE || k == TK_COLON || k == TK_ASSIGN || k == TK_PLUSEQ || k == TK_MINUSEQ ||
+            k == TK_STAREQ || k == TK_SLASHEQ)
+            declare_var_name(p, cur(p)->str);
+    }
     Expr *e = parse_expr(p);
     if (!e) return NULL;
     if (at(p, TK_COLON) || at(p, TK_DECLARE)) {
@@ -898,6 +925,7 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
 
 /* ---- sections ---------------------------------------------------------- */
 static Section *new_section(Parser *p, SectionKind kind, int line) {
+    vec_clear(p->lvars);
     Section *s = ARENA_NEW(&p->prog->arena, Section);
     s->kind = kind;
     s->line = line;
@@ -937,14 +965,19 @@ static void parse_section_header(Parser *p, Section *s, Token *h) {
 }
 
 /* Parse a whole token stream (prelude or user script) into sections. */
-void parse_tokens(Program *prog, Token *toks, int ntoks, const char **fnames, int nfnames, bool prelude) {
+void parse_tokens(Program *prog, Token *toks, int ntoks, const char **builtins, int nbuiltins, const char **ufuncs,
+                  int nufuncs, const char **gvars, int ngvars, bool prelude) {
     Parser P = {0};
     Parser *p = &P;
     p->prog = prog;
     p->t = toks;
     p->n = ntoks;
-    p->fnames = fnames;
-    p->nfnames = nfnames;
+    p->builtins = builtins;
+    p->nbuiltins = nbuiltins;
+    p->ufuncs = ufuncs;
+    p->nufuncs = nufuncs;
+    p->gvars = gvars;
+    p->ngvars = ngvars;
     bool has_headers = false;
     for (int i = 0; i < ntoks; i++)
         if (toks[i].kind == TK_SECTION) has_headers = true;
@@ -986,4 +1019,5 @@ void parse_tokens(Program *prog, Token *toks, int ntoks, const char **fnames, in
     }
     if (prelude)
         for (int i = funcs_before; i < prog->funcs.len; i++) prog->funcs.data[i]->prelude = true;
+    vec_free(p->lvars);
 }

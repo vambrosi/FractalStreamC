@@ -1,0 +1,49 @@
+# Mandelbrot and Julia sets side by side.
+# Pick a point c in the parameter plane (Pick point tool, or drag with it)
+# and the dynamical plane shows the Julia set of z^2 + c.
+# The Orbit tool draws the orbit of the point you click.
+
+@config
+.title = "Mandelbrot and Julia sets"
+.maxIterations = 300
+mandel.center = -0.5
+mandel.radius = 1.4
+julia.radius = 1.6
+
+@global
+.c = -0.8 + 0.156i
+
+define colorize(n : Z) = hsv(n / 64 + 0.6, 0.75, 1)
+
+@viewer mandel c "Parameter plane" "Ctrl + 1"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+if .stuck then
+    color = .black
+else
+    color = colorize(.iterations)
+end
+
+@viewer julia z "Dynamical plane" "Ctrl + 2"
+while z not escapes do
+    z = z^2 + .c
+end
+if .stuck then
+    color = .black
+else
+    color = colorize(.iterations)
+end
+
+@tool "Orbit" "O"
+w := .lastClick
+draw point at w with color .white
+for k in 1..200 do
+    w2 := w^2 + .c
+    draw line between w and w2 with color .yellow
+    if w2 escapes then
+        break
+    end
+    w = w2
+end
