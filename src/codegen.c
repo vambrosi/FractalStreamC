@@ -293,7 +293,10 @@ static u32 make_list(Gen *g, Type *lt, const u32 *items, int n) {
 }
 
 /* ---- lvalues -------------------------------------------------------------- */
+/* see clamp_index in interp.c: -1 is the last item (hi) */
 static u32 g_clamp_index(Gen *g, u32 k, u32 lo, u32 hi) {
+    u32 neg = op2(g, SpvOpSLessThan, g->tbool, k, ci(g, 0));
+    k = spv_op3(&g->s, SpvOpSelect, g->tint, neg, op2(g, SpvOpIAdd, g->tint, k, op2(g, SpvOpIAdd, g->tint, hi, ci(g, 1))), k);
     u32 c = ext3(g, g->tint, GLSLSClamp, k, lo, hi);
     return op2(g, SpvOpISub, g->tint, c, ci(g, 1));
 }

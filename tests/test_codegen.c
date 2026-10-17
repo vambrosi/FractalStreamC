@@ -157,6 +157,14 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "r := root t -> t^2 - z with seed 1\n"
      "d := derivative t -> exp(t) * sin(z t) at z\n"
      "color = [0.5 + 0.4 sin(re(w) + im(r)), 0.5 + 0.4 cos(re(d) * 0.1), 0.5]\n", 0.03},
+    {"negative_indices",
+     "@viewer v z\n"
+     "L : List of R up to 100 = []\n"
+     "for k in 1..70 do\n"
+     "    append(L, k / 70)\n"
+     "end\n"
+     "u : R^3 = [0.2, 0.5, re(z)]\n"
+     "color = [L[-1] * 0.5, u[-2], 0.5 + 0.4 sin(u[-1] + L[-3])]\n", 0.002},
     {"if_expressions",
      "@global\n"
      "define sq(z) = z^2\n"

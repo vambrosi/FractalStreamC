@@ -936,7 +936,34 @@ TEST(draw_text) {
     EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\ndraw text \"a\" + .red + L at 0\n", "unknown name 'L'");
 }
 
+TEST(list_capacity_and_negative_indices) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "L : List of C up to 200 = []\n"
+        "for k in 1..150 do\n"
+        "    append(L, k)\n"
+        "end\n"
+        "n : Z = |L|\n"
+        "last := L[-1]\n"
+        "second := L[-2]\n"
+        "v : R^3 = [1, 2, 3]\n"
+        "w : R = v[-1]\n"
+        "S : List of Z = []\n"
+        "for k in 1..100 do\n"
+        "    append(S, k)\n"
+        "end\n"
+        "m : Z = |S|\n");
+    CHECK_NEAR(gnum(p, "n", 0), 150, 0);
+    CHECK_NEAR(gnum(p, "last", 0), 150, 0);
+    CHECK_NEAR(gnum(p, "second", 0), 149, 0);
+    CHECK_NEAR(gnum(p, "w", 0), 3, 0);
+    CHECK_NEAR(gnum(p, "m", 0), 64, 0); /* the default capacity */
+    program_free(p);
+    EXPECT_ERROR("@global\nL : List of C up to 5000 = []\n", "1 to 4096");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(list_capacity_and_negative_indices),
     TESTCASE(draw_text),
     TESTCASE(tool_events),
     TESTCASE(colour_helpers_and_palettes),

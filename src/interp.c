@@ -233,7 +233,11 @@ static void load_sym(Interp *I, Sym *s, u32 *out) {
     memcpy(out, sym_addr(I, s), sizeof(u32) * (size_t)s->type->size);
 }
 
-static i32 clamp_index(i32 k, i32 n) { return k < 1 ? 1 : k > n ? n : k; }
+/* 1-based index k of n items, with -1 the last one; out of range: the first or last item */
+static i32 clamp_index(i32 k, i32 n) {
+    if (k < 0) k += n + 1;
+    return k < 1 ? 1 : k > n ? n : k;
+}
 
 /* address of an lvalue (NULL if it has none, e.g. an empty list) */
 static u32 *lv_addr(Interp *I, Expr *e) {

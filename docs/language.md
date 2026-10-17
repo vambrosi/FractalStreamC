@@ -55,7 +55,7 @@ end
 | `Bool` | `true` / `false` | comparisons, `and`, `or`, `not` |
 | `R^3`, `C^2`, `Z^5`, ... | fixed-size vectors | `[1, 2, 3]` |
 | `Color` | same as `R^3` (red, green, blue in 0..1) | `rgb(r, g, b)`, `hsv(h, s, v)`, `gray(v)`, `.red` |
-| `List of C` (etc.) | list of up to 64 numbers | `[]`, `[1, i]`, `append(L, x)` |
+| `List of C` (etc.) | list of up to 64 numbers (`List of C up to 1000`: up to 1000) | `[]`, `[1, i]`, `append(L, x)` |
 
 `i` is the imaginary unit and can't be used as a variable name.
 
@@ -112,7 +112,8 @@ Precedence, loosest first: `or`, `and`, `not`, comparisons / `escapes` / `vanish
 - `if c then a else b` is a value: `color = if .stuck then .black else rainbow(.iterations / 30)`.
   Only the chosen side is computed; `else if` chains work; the branches extend as far as possible,
   so put the whole `if` in parentheses inside a larger expression.
-- Out-of-range indices are clamped to the first/last entry (indices start at 1).
+- Indices start at 1; `L[-1]` is the last entry, `L[-2]` the one before. Out-of-range indices are
+  clamped to the first/last entry.
 
 ## Statements
 

@@ -549,7 +549,19 @@ static TypeSyntax *parse_type(Parser *p) {
     if (strcmp(t->str, "List") == 0) {
         expect(p, TK_OF, "after List (as in List of C)");
         ts->elem = parse_type(p);
-        return ts->elem ? ts : NULL;
+        if (!ts->elem) return NULL;
+        /* List of C up to 1000: the capacity (default 64) */
+        if (at(p, TK_IDENT) && !strcmp(cur(p)->str, "up") && peek(p, 1)->kind == TK_IDENT && !strcmp(peek(p, 1)->str, "to")) {
+            advance(p);
+            advance(p);
+            Token *n = cur(p);
+            if (!accept(p, TK_INT) || n->num < 1 || n->num > 4096) {
+                perr(p, n, "expected the largest number of items (1 to 4096) after 'up to', as in List of C up to 1000");
+                return NULL;
+            }
+            ts->cap = (int)n->num;
+        }
+        return ts;
     }
     if (accept(p, TK_CARET)) {
         Token *n = cur(p);
