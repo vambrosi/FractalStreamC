@@ -763,6 +763,16 @@ TEST(config_groups_notes_labels_choices) {
     CHECK_NEAR(gnum(p, "scheme", 0), 2, 0);
     CHECK_NEAR(gnum(p, "maxIterations", 0), 300, 0);
     program_free(p);
+    p = LOAD_OK("@config\ndefine f(z, c) = z^2 +  c\n@viewer v z\ncolor = gray(re(f(z, 1)))\n");
+    bool found = false;
+    for (int i = 0; i < p->config.len; i++)
+        if (p->config.data[i].kind == CFG_FORMULA) {
+            Func *f = p->config.data[i].fn;
+            found = f && !strcmp(f->name, "f") && f->src_end - f->src_start == 8 &&
+                    !strncmp(p->source + f->src_start, "z^2 +  c", 8);
+        }
+    CHECK(found);
+    program_free(p);
     EXPECT_ERROR("@config\nx : R = 1 in [\"a\", \"b\"]\n", "integer variable");
     EXPECT_ERROR("@global\nx : R = 1 in 0..2\n", "belong in @config");
     EXPECT_ERROR("@viewer v z\n\"hello\"\ncolor = .red\n", "only means something in @config");

@@ -237,6 +237,7 @@ struct Func {
     bool uses_draw;
     Func *next_overload;
     bool shadowed;      /* a built-in function the script defines again (the script's one is used) */
+    int src_start, src_end; /* one-line functions of the script: byte range of the expression in the source */
     u32 spv_fn;         /* codegen */
     bool spv_emitted;
     int ncalls;
@@ -280,8 +281,8 @@ typedef VEC(Section *) SectionVec;
 /* ---- program ------------------------------------------------------------ */
 /* the config panel, in the order of the script: titled groups (@config "Title"), notes (a line of
    text in quotes) and variables */
-typedef enum ConfigItemKind { CFG_GROUP, CFG_NOTE, CFG_VAR } ConfigItemKind;
-typedef struct ConfigItem { ConfigItemKind kind; const char *text; Sym *sym; } ConfigItem;
+typedef enum ConfigItemKind { CFG_GROUP, CFG_NOTE, CFG_VAR, CFG_FORMULA } ConfigItemKind;
+typedef struct ConfigItem { ConfigItemKind kind; const char *text; Sym *sym; struct Func *fn; } ConfigItem;
 typedef VEC(ConfigItem) ConfigItemVec;
 
 typedef struct Program {

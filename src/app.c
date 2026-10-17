@@ -79,12 +79,18 @@ typedef struct App {
     bool live;
     long long file_mtime;
     double next_file_check;
+    /* deferred to the start of the next frame (see process_requests) */
+    bool req_run, req_reload;
+    char req_open[1024];
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
     bool help_open;
     float config_scroll;
     const char *choice_open;  /* config choice whose list is open (points to choice_name), NULL none */
     char choice_name[128];
+    /* the formula being edited in the config pane: its text, and where it is in the script */
+    char formula_buf[512];
+    int formula_start, formula_end;
     int modal;              /* 0, 1 save as, 2 open */
     bool modal_focus;
     char modal_buf[1024];
@@ -736,10 +742,31 @@ static void save_file(const char *path) {
     update_title();
 }
 
-static void run_editor(void) {
+static void run_editor_now(void) {
     int len;
     const char *text = editor_get_text(A.ed, &len);
     if (load_source(text, false)) set_status(false, "Running");
+}
+
+/* Compiling or opening replaces the viewers and their pictures, which this frame's drawing may already
+   show: requests made while the UI is built wait for the start of the next frame. */
+static void run_editor(void) { A.req_run = true; }
+
+static void request_open(const char *path) { snprintf(A.req_open, sizeof A.req_open, "%s", path); }
+
+static void process_requests(void) {
+    if (A.req_open[0]) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s", A.req_open);
+        A.req_open[0] = 0;
+        bool reload = A.req_reload;
+        A.req_reload = false;
+        if (open_file(path) && reload) set_status(false, "Reloaded %s (changed on disk)", fs_basename(path));
+    }
+    if (A.req_run) {
+        A.req_run = false;
+        run_editor_now();
+    }
 }
 
 static void default_save_path(char *out, int cap) {
@@ -1532,6 +1559,55 @@ static void config_label(Sym *s, char *out, int cap) {
     else snprintf(out, (size_t)cap, "%s%s", s->is_internal ? "." : "", s->name);
 }
 
+/* A formula of the script (a one-line `define` in @config): a text field editing the script itself, so
+   the program is recompiled as you type (with Live on) or when you press Enter. */
+static void config_formula(Func *f, float x0, float y, float w, float lw) {
+    char label[160], id[200];
+    StrBuf sb = {0};
+    sb_printf(&sb, "%s(", f->name);
+    for (int i = 0; i < f->nparams; i++) sb_printf(&sb, "%s%s", i ? ", " : "", f->params[i]->name);
+    sb_puts(&sb, ") =");
+    snprintf(label, sizeof label, "%s", sb_cstr(&sb));
+    sb_free(&sb);
+    float h = config_row_h() - px(4);
+    float lwid = FS_MIN(ui_text_width(UI_FONT_SANS, label, -1) + px(10), lw);
+    ui_label(x0, y, lwid, h, label, UI_ALIGN_LEFT, UI_COL_TEXT);
+    snprintf(id, sizeof id, "##formula_%s_%d", f->name, f->nparams);
+    u32 fid = ui_id(id);
+    int len;
+    const char *text = editor_get_text(A.ed, &len);
+    static char shown[512];
+    char *buf = shown;
+    if (ui_focus_id() == fid) {
+        buf = A.formula_buf;
+    } else if (f->src_start >= 0 && f->src_end <= len && f->src_end > f->src_start) {
+        snprintf(shown, sizeof shown, "%.*s", f->src_end - f->src_start, text + f->src_start);
+        /* where it is now, for when the field gets the focus */
+        snprintf(A.formula_buf, sizeof A.formula_buf, "%s", shown);
+        A.formula_start = f->src_start;
+        A.formula_end = f->src_end;
+    } else {
+        shown[0] = 0;
+    }
+    bool focused_before = ui_focus_id() == fid;
+    int r = ui_text_field_ex(id, x0 + lwid, y, w - lwid, h, buf, (int)(buf == shown ? sizeof shown : sizeof A.formula_buf),
+                             UI_TF_KEEP_FOCUS, "a formula");
+    if (!focused_before && ui_focus_id() == fid) {
+        /* just focused: edit a copy of the formula as it is in the script */
+        snprintf(A.formula_buf, sizeof A.formula_buf, "%s", shown);
+        A.formula_start = f->src_start;
+        A.formula_end = f->src_end;
+    }
+    if ((r & UI_TEXT_CHANGED) && buf == A.formula_buf && A.formula_start >= 0 && A.formula_end <= len) {
+        int nl = (int)strlen(A.formula_buf);
+        editor_delete(A.ed, A.formula_start, A.formula_end - A.formula_start);
+        editor_insert(A.ed, A.formula_start, A.formula_buf, nl);
+        A.formula_end = A.formula_start + nl;
+    }
+    if (r & UI_TEXT_SUBMIT) run_editor();
+    if (ui_last_hovered()) ui_tooltip("Edits the formula in the script");
+}
+
 /* a choice: a button with the current choice, opening the list below it */
 static void config_choice(Sym *s, float x, float y, float w) {
     u32 *v = A.state + s->slot;
@@ -1616,6 +1692,9 @@ static void config_pane(float W, float H) {
             ui_text(UI_FONT_SANS, x0, y + px(6), it->text ? it->text : "Script", -1, UI_COL_ACCENT);
             y += rh;
             any_group = true;
+        } else if (it->kind == CFG_FORMULA) {
+            config_formula(it->fn, x0, y, body.w - px(20), lw);
+            y += rh;
         } else if (it->kind == CFG_NOTE) {
             float th = ui_text_wrapped(UI_FONT_SANS, x0, y + px(2), body.w - px(20), it->text, UI_COL_TEXT_DIM, true);
             y += th + px(8);
@@ -1705,7 +1784,7 @@ static void modal_dialog(float W, float H) {
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
     ui_text(UI_FONT_SANS, pr.x + px(16), pr.y + px(14), A.modal == 1 ? "Save as:" : "Open:", -1, UI_COL_TEXT);
     int r = ui_text_field_ex("##modal_path", pr.x + px(16), pr.y + px(44), pr.w - px(32), px(30), A.modal_buf,
-                             (int)sizeof A.modal_buf, 0, "path of the file");
+                             (int)sizeof A.modal_buf, UI_TF_SELECT_ALL, "path of the file");
     if (A.modal_focus) {
         ui_set_focus(ui_id("##modal_path"));
         A.modal_focus = false;
@@ -1716,7 +1795,7 @@ static void modal_dialog(float W, float H) {
     if ((r & UI_TEXT_CANCEL) || ui_shortcut(UI_KEY_ESCAPE, 0)) cancel = true;
     if (ok && A.modal_buf[0]) {
         if (A.modal == 1) save_file(A.modal_buf);
-        else open_file(A.modal_buf);
+        else request_open(A.modal_buf);
         A.modal = 0;
     } else if (cancel) {
         A.modal = 0;
@@ -1886,7 +1965,9 @@ static void layout_panes(float W, float H) {
 static void frame(void) {
     UiInput *in = &A.in;
     float W = (float)in->fb_w, H = (float)in->fb_h;
+    process_requests();
     Program *p = A.prog;
+    if (!p) return;
     ui_begin_frame(in);
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);
@@ -1954,9 +2035,7 @@ static void frame(void) {
     if (editor_version(A.ed) != A.compiled_version) {
         if (A.edit_time == 0) A.edit_time = now;
         if (editor_version(A.ed) != A.compiled_version && A.live && now - A.edit_time > 0.6) {
-            int len;
-            const char *text = editor_get_text(A.ed, &len);
-            load_source(text, false);
+            A.req_run = true; /* next frame */
             A.edit_time = 0;
         }
         update_title();
@@ -1968,8 +2047,8 @@ static void frame(void) {
         A.next_file_check = now + 1.0;
         long long mt = file_mtime(A.path);
         if (mt && mt != A.file_mtime && !editor_is_modified(A.ed)) {
-            open_file(A.path);
-            set_status(false, "Reloaded %s (changed on disk)", fs_basename(A.path));
+            request_open(A.path);
+            A.req_reload = true;
         }
     }
 
@@ -1993,6 +2072,8 @@ static void frame(void) {
 /* nothing could be loaded yet: only the editor (full width) */
 static void frame_editor_only(void) {
     UiInput *in = &A.in;
+    process_requests();
+    if (A.prog) return; /* it compiled: the next frame shows the views */
     ui_begin_frame(in);
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);

@@ -1101,7 +1101,13 @@ static void check_assign_target(Checker *c, Expr *t) {
 
 static void chk_stmt(Checker *c, Stmt *s) {
     switch (s->kind) {
-    case S_DEFINE: break;
+    case S_DEFINE:
+        /* a one-line function in @config is a formula you can edit in the config panel */
+        if (c->sec && c->sec->kind == SEC_CONFIG && !c->fn && s->fn && s->fn->body_expr && s->fn->src_start >= 0) {
+            ConfigItem it = {CFG_FORMULA, NULL, NULL, s->fn};
+            vec_push(c->prog->config, it);
+        }
+        break;
     case S_EXPR:
         if (s->value && s->value->kind == E_STRING) {
             if (c->sec && c->sec->kind == SEC_CONFIG && !c->fn) { /* a note in the config panel */

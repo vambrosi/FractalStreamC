@@ -806,9 +806,19 @@ static Stmt *parse_define(Parser *p, int top_level) {
     for (int k = p->pos; k < p->n && p->t[k].kind != TK_NEWLINE && p->t[k].kind != TK_EOF; k++)
         if (p->t[k].kind == TK_WHERE) where = true;
     if (!where) {
+        Token *first = cur(p);
         f->body_expr = parse_expr(p);
         p->lvars.len = vmark;
         if (!f->body_expr) return NULL;
+        /* where the expression is in the source (a formula in @config can be edited from the config panel) */
+        Token *last = &p->t[p->pos - 1];
+        if (first->text && last->text && p->prog->source && first->text >= p->prog->source &&
+            last->text < p->prog->source + strlen(p->prog->source)) {
+            f->src_start = (int)(first->text - p->prog->source);
+            f->src_end = (int)(last->text + last->len - p->prog->source);
+        } else {
+            f->src_start = f->src_end = -1;
+        }
     } else {
         f->has_where = true;
         bool paren = accept(p, TK_LPAREN);
