@@ -118,6 +118,7 @@ typedef struct App {
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
     bool ref_open;          /* the language reference (refdoc.c) */
+    float ui_zoom;          /* the size of everything (Cmd+= / Cmd+- / Cmd+0; kept in the settings folder) */
     float menu_scroll;      /* (the menu scrolls in a small window) */
     bool help_open;
     /* find / replace in the script */
@@ -1280,6 +1281,37 @@ static void note_recent(const char *file) {
     sb_free(&sb);
 }
 
+/* settings.txt: "key=value" lines (the size of the UI) */
+static void load_settings(void) {
+    A.ui_zoom = 1;
+    const char *dir = config_dir();
+    if (!dir) return;
+    char path[1200];
+    snprintf(path, sizeof path, "%s/settings.txt", dir);
+    size_t len;
+    char *text = fs_read_file(path, &len);
+    if (!text) return;
+    const char *z = strstr(text, "ui_zoom=");
+    if (z) A.ui_zoom = FS_CLAMP((float)atof(z + 8), 0.5f, 3.0f);
+    free(text);
+}
+
+static void save_settings(void) {
+    const char *dir = config_dir();
+    if (!dir || !fs_make_dirs(dir)) return;
+    char path[1200], text[64];
+    snprintf(path, sizeof path, "%s/settings.txt", dir);
+    int n = snprintf(text, sizeof text, "ui_zoom=%.3g\n", A.ui_zoom);
+    fs_write_file(path, text, (size_t)n);
+}
+
+static void set_ui_zoom(float z) {
+    A.ui_zoom = FS_CLAMP(z, 0.5f, 3.0f);
+    if (fabsf(A.ui_zoom - 1) < 0.02f) A.ui_zoom = 1;
+    save_settings();
+    set_status(false, "Size of the interface: %d%% (" MODKEY "+0: 100%%)", (int)lroundf(A.ui_zoom * 100));
+}
+
 static bool open_file(const char *path, bool reload) {
     size_t len;
     char *src = fs_read_file(path, &len);
@@ -2358,7 +2390,7 @@ static void menu_overlay(float W, float H) {
     }
     y += rows_place * (bh + gap);
     {
-        const char *foot = "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: all the keys";
+        const char *foot = "Wheel: zoom   Right drag or Space+drag: pan   Home: reset   F1: all the keys";
         float lh = ui_font_line_height(UI_FONT_SANS), fw = ui_text_width(UI_FONT_SANS, foot, -1);
         float fx = pr.x + (pr.w - fw) / 2;
         UiInteract it = ui_interact("##menu_keys", fx, y, fw, lh); /* (a click: the keys, F1 needs fn on a Mac) */
@@ -3372,6 +3404,7 @@ static void help_overlay(float W, float H) {
         {MODKEY "+F, " MODKEY "+Alt+F", "find, replace in the script (" MODKEY "+G: next)"},
         {"Tab", "in the script, while a list of names is offered: take the one shown (Up, Down: choose)"},
         {MODKEY "+E, " MODKEY "+T", "show / hide the script, the config"},
+        {MODKEY "+=, " MODKEY "+-, " MODKEY "+0", "bigger, smaller, normal size (of everything; in the script: of its text)"},
         {MODKEY "+1, 2, ...", "show a view (or the shortcut written in the script)"},
         {"H, P, tool keys", "choose a tool of the view under the mouse"},
         {"Home", "reset the view under the mouse"},
@@ -3805,6 +3838,11 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD | UI_MOD_SHIFT)) ask_save_as();
     if (ui_shortcut(UI_KEY_O, UI_MOD_MOD)) ask_open();
     if (ui_shortcut(UI_KEY_N, UI_MOD_MOD)) ask_new();
+    /* the size of the interface (when the script has the keyboard, these are the size of its text) */
+    while (ui_shortcut_repeat(UI_KEY_EQUAL, UI_MOD_MOD) || ui_shortcut_repeat(UI_KEY_EQUAL, UI_MOD_MOD | UI_MOD_SHIFT))
+        set_ui_zoom(A.ui_zoom * 1.1f);
+    while (ui_shortcut_repeat(UI_KEY_MINUS, UI_MOD_MOD)) set_ui_zoom(A.ui_zoom / 1.1f);
+    if (ui_shortcut(UI_KEY_0, UI_MOD_MOD)) set_ui_zoom(1);
     if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.editor_open = !A.editor_open;
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
@@ -4053,6 +4091,7 @@ static void frame(void) {
     process_requests();
     Program *p = A.prog;
     if (!p) return;
+    in->content_scale *= A.ui_zoom > 0 ? A.ui_zoom : 1.0f; /* (the UI's size; the pictures keep their pixels) */
     ui_begin_frame(in);
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);
@@ -4161,6 +4200,7 @@ static void frame_editor_only(void) {
     UiInput *in = &A.in;
     process_requests();
     if (A.prog) return; /* it compiled: the next frame shows the views */
+    in->content_scale *= A.ui_zoom > 0 ? A.ui_zoom : 1.0f;
     ui_begin_frame(in);
     int aw, ah;
     const u8 *atlas = ui_take_atlas_update(&aw, &ah);
@@ -4265,6 +4305,7 @@ int app_run(const char *script_path) {
     A.file_mtime = file_mtime(A.path);
     A.editor_open = script_path == NULL;
     load_recent();
+    load_settings();
     if (script_path) note_recent(script_path);
     layout_reset(0);
     if (!load_source(text, LOAD_OPEN)) {
