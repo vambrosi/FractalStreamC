@@ -863,10 +863,27 @@ static void export_picture(const char *path, int v, int scale) {
     gfx_set_globals(A.state, (u32)bytes);
     if (!A.uploaded) A.uploaded = (u32 *)xmalloc(bytes);
     memcpy(A.uploaded, A.state, bytes);
-    u8 *rgba = (u8 *)xmalloc((size_t)w * h * 4);
+    /* the picture at screen size is rendered at twice the size and averaged down (smooth edges) */
+    int ss = 1, maxs = gfx_max_image_size();
+    if (scale == 1 && (maxs <= 0 || (2 * w <= maxs && 2 * h <= maxs))) ss = 2;
+    int W = w * ss, H = h * ss;
+    u8 *big = (u8 *)xmalloc((size_t)W * H * 4);
     char err[512] = "";
-    bool ok = A.vrt[v].is_flood ? flood_render_gpu(p, A.state, s, w, h, rgba, NULL, err, sizeof err)
-                                : gfx_render_to_memory(A.vrt[v].pipeline, w, h, 64, rgba, err, sizeof err);
+    bool ok = A.vrt[v].is_flood ? flood_render_gpu(p, A.state, s, W, H, big, NULL, err, sizeof err)
+                                : gfx_render_to_memory(A.vrt[v].pipeline, W, H, 64, big, err, sizeof err);
+    u8 *rgba = big;
+    if (ok && ss > 1) {
+        rgba = (u8 *)xmalloc((size_t)w * h * 4);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < 4; c++) {
+                    int sum = 0;
+                    for (int dy = 0; dy < ss; dy++)
+                        for (int dx = 0; dx < ss; dx++) sum += big[4 * ((size_t)(y * ss + dy) * W + (x * ss + dx)) + c];
+                    rgba[4 * ((size_t)y * w + x) + c] = (u8)((sum + ss * ss / 2) / (ss * ss));
+                }
+        free(big);
+    }
     if (!ok) set_status(true, "Can't render the picture: %s", err);
     else if (!stbi_write_png(path, w, h, 4, rgba, w * 4)) set_status(true, "Can't write %s", path);
     else set_status(false, "Saved %s (%dx%d)", path, w, h);
@@ -1310,6 +1327,27 @@ static void draw_tile(VisTile *t) {
         ui_rrect(r.x + r.w - tw - px(6), r.y + r.h - th - px(6), tw, th, px(4), UI_RGBA(0, 0, 0, 120));
         ui_text(UI_FONT_SANS, r.x + r.w - tw, r.y + r.h - th - px(4), name, -1, UI_RGBA(255, 255, 255, 200));
     }
+    /* where the mouse is, in the plane (as many decimals as the pixels resolve) */
+    if (A.hover_tile >= 0 && &A.vis[A.hover_tile] == t && A.in.mouse_in_window && A.menu_viewer < 0 && A.drag != DRAG_VIEWER &&
+        in_rect(r, A.in.mouse_x, A.in.mouse_y)) {
+        float re, im, re1, im1;
+        plane_of(t->viewer, r, A.in.mouse_x, A.in.mouse_y, &re, &im);
+        plane_of(t->viewer, r, A.in.mouse_x + 1, A.in.mouse_y, &re1, &im1);
+        float pxs = hypotf(re1 - re, im1 - im);
+        int d = pxs > 0 && pxs == pxs ? (int)ceilf(-log10f(pxs)) + 1 : 4;
+        d = FS_CLAMP(d, 1, 9);
+        char co[160];
+        if (re == re && im == im && fabsf(re) < 1e7f && fabsf(im) < 1e7f)
+            snprintf(co, sizeof co, "%.20s = %.*f %c %.*fi", s->var ? s->var : "z", d, (double)re, im < 0 ? '-' : '+', d,
+                     fabs((double)im));
+        else
+            snprintf(co, sizeof co, "%.20s = %.4g %c %.4gi", s->var ? s->var : "z", (double)re, im < 0 ? '-' : '+',
+                     fabs((double)im));
+        float tw = ui_text_width(UI_FONT_MONO, co, -1) + px(12), th = ui_font_line_height(UI_FONT_MONO) + px(4);
+        float bx = r.x + px(6), by = r.y + r.h - th - px(6);
+        ui_rrect(bx, by, tw, th, px(4), UI_RGBA(0, 0, 0, 120));
+        ui_text(UI_FONT_MONO, bx + px(6), by + px(2), co, -1, UI_RGBA(255, 255, 255, 210));
+    }
     if (t->fl >= 0) ui_rect_outline(r.x, r.y, r.w, r.h, px(2), A.hover_viewer == t->viewer ? UI_COL_ACCENT : UI_COL_BORDER);
     else if (several && A.focus_viewer == t->viewer) ui_rect_outline(r.x, r.y, r.w, r.h, px(1), UI_COL_ACCENT_DIM);
     ui_pop_clip();
@@ -1530,7 +1568,7 @@ static void menu_overlay(float W, float H) {
         }
         if (ui_last_hovered())
             ui_tooltip(k ? "Render this view again at four times the width and height (for print), and save it"
-                         : "Save this view as it is on the screen");
+                         : "Save this view at its size on the screen (rendered at twice the size and smoothed)");
     }
     y += bh + gap;
     ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS),
