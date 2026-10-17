@@ -129,6 +129,8 @@ void fs_free_dir(FsDirEntry *entries, int n);
 const char *fs_exe_dir(void);
 /* the absolute form of an existing path ("." and ".." resolved); false (out = path) if it can't be had */
 bool fs_absolute(const char *path, char *out, int cap);
+/* make a folder and the ones above it that are missing; false if it doesn't exist afterwards */
+bool fs_make_dirs(const char *path);
 
 /* ---- UTF-8 ---------------------------------------------------------
  * utf8_decode returns the byte length of the sequence at s (>=1 when

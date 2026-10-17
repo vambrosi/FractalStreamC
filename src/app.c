@@ -137,6 +137,9 @@ typedef struct App {
     FsDirEntry *browse;
     int nbrowse;
     float browse_scroll;
+    bool browse_recent;     /* the dialog lists the recent files instead */
+    char recent[12][1024];  /* scripts opened or saved lately, the latest first (kept in the settings folder) */
+    int nrecent;
     /* interaction */
     int drag;
     int drag_viewer, drag_node, drag_tool;
@@ -1039,6 +1042,71 @@ static bool load_source(const char *src, int mode) {
     return true;
 }
 
+/* ---- kept between sessions: the recent files ------------------------------------------------------------------ */
+/* the settings folder: $FS_CONFIG_DIR, else the system's place for them */
+static const char *config_dir(void) {
+    static char dir[1100];
+    const char *env = getenv("FS_CONFIG_DIR");
+    if (env && env[0]) {
+        snprintf(dir, sizeof dir, "%.1000s", env);
+        return dir;
+    }
+#if FS_OS_WINDOWS
+    const char *base = getenv("APPDATA");
+    if (!base || !base[0]) return NULL;
+    snprintf(dir, sizeof dir, "%.1000s\\FractalStream", base);
+#elif FS_OS_MACOS
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) return NULL;
+    snprintf(dir, sizeof dir, "%.1000s/Library/Application Support/FractalStream", home);
+#else
+    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+    if (xdg && xdg[0]) snprintf(dir, sizeof dir, "%.1000s/fractalstream", xdg);
+    else if (home && home[0]) snprintf(dir, sizeof dir, "%.1000s/.config/fractalstream", home);
+    else return NULL;
+#endif
+    return dir;
+}
+
+static void load_recent(void) {
+    A.nrecent = 0;
+    const char *dir = config_dir();
+    if (!dir) return;
+    char path[1200];
+    snprintf(path, sizeof path, "%s/recent.txt", dir);
+    size_t len;
+    char *text = fs_read_file(path, &len);
+    if (!text) return;
+    for (char *line = text; *line && A.nrecent < ARRAY_COUNT(A.recent);) {
+        char *end = line + strcspn(line, "\r\n");
+        char c = *end;
+        *end = 0;
+        if (line[0]) snprintf(A.recent[A.nrecent++], sizeof A.recent[0], "%s", line);
+        line = c ? end + 1 : end;
+    }
+    free(text);
+}
+
+/* a script was opened or saved: first in the list (which is saved) */
+static void note_recent(const char *file) {
+    char abs[1024];
+    fs_absolute(file, abs, sizeof abs);
+    int k = 0;
+    while (k < A.nrecent && strcmp(A.recent[k], abs) != 0) k++;
+    if (k == A.nrecent && A.nrecent < ARRAY_COUNT(A.recent)) A.nrecent++;
+    if (k == ARRAY_COUNT(A.recent)) k--; /* (full: the oldest goes) */
+    memmove(A.recent[1], A.recent[0], sizeof A.recent[0] * (size_t)k);
+    snprintf(A.recent[0], sizeof A.recent[0], "%s", abs);
+    const char *dir = config_dir();
+    if (!dir || !fs_make_dirs(dir)) return;
+    StrBuf sb = {0};
+    for (int i = 0; i < A.nrecent; i++) sb_printf(&sb, "%s\n", A.recent[i]);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/recent.txt", dir);
+    fs_write_file(path, sb.data ? sb.data : "", (size_t)sb.len);
+    sb_free(&sb);
+}
+
 static bool open_file(const char *path, bool reload) {
     size_t len;
     char *src = fs_read_file(path, &len);
@@ -1052,6 +1120,7 @@ static bool open_file(const char *path, bool reload) {
     A.file_mtime = file_mtime(A.path);
     bool ok = load_source(src, reload ? LOAD_RUN : LOAD_OPEN);
     free(src);
+    if (!reload) note_recent(path);
     if (!ok) A.editor_open = true;
     else set_status(false, "Opened %s", fs_basename(path));
     return ok;
@@ -1067,6 +1136,7 @@ static void save_file(const char *path) {
     snprintf(A.path, sizeof A.path, "%s", path);
     editor_set_unmodified(A.ed);
     A.file_mtime = file_mtime(A.path);
+    note_recent(path);
     set_status(false, "Saved %s", fs_basename(path));
     update_title();
 }
@@ -3117,6 +3187,7 @@ static void open_modal(int kind, const char *path) {
     A.modal_select_all = false; /* (the caret at the end: type a name, or more of it) */
     A.modal_confirm = false;
     A.browse_scroll = 0;
+    A.browse_recent = false;
     snprintf(A.modal_buf, sizeof A.modal_buf, "%.1020s", path);
 }
 
@@ -3157,16 +3228,27 @@ static void modal_dialog(float W, float H) {
     if (home) snprintf(doc_dir, sizeof doc_dir, "%s/Documents", home);
     if (!doc_dir[0] || !fs_is_dir(doc_dir)) doc_dir[0] = 0;
     if (A.path[0]) split_path(A.path, script_dir, sizeof script_dir);
-    const char *places[4][3] = {{"Home", "home", home}, {"Documents", "folder", doc_dir[0] ? doc_dir : NULL},
+    const char *places[5][3] = {{"Recent", "history", A.modal == 2 && A.nrecent ? "" : NULL},
+                                {"Home", "home", home}, {"Documents", "folder", doc_dir[0] ? doc_dir : NULL},
                                 {"Examples", "school", examples_dir()[0] ? examples_dir() : NULL},
                                 {"The script's folder", "folder_open", A.path[0] ? (script_dir[0] ? script_dir : ".") : NULL}};
-    for (int k = 0; k < 4; k++) {
+    if (strcmp(before, A.modal_buf) != 0) A.browse_recent = false; /* (typing: the folder again) */
+    for (int k = 0; k < 5; k++) {
         if (!places[k][2]) continue;
         char id[64];
         snprintf(id, sizeof id, "%s##place%d", places[k][0], k);
         float bw = ui_text_width(UI_FONT_SANS, places[k][0], -1) + px(24);
         if (x + bw > pr.x + pr.w - pad) break;
-        if (ui_button_ex(id, x, y, bw, px(26), UI_FLAT)) browse_to(places[k][2], true);
+        if (ui_button_ex(id, x, y, bw, px(26), k == 0 && A.browse_recent ? UI_SELECTED : UI_FLAT)) {
+            if (k == 0) {
+                A.browse_recent = !A.browse_recent;
+                A.browse_scroll = 0;
+                A.modal_focus = true;
+            } else {
+                browse_to(places[k][2], true);
+                A.browse_recent = false;
+            }
+        }
         x += bw + px(6);
     }
     /* the folder of the path, listed (again when it changes) */
@@ -3182,12 +3264,16 @@ static void modal_dialog(float W, float H) {
     ui_rrect(lr.x, lr.y, lr.w, lr.h, px(6), UI_RGBA(16, 18, 23, 255));
     ui_rrect_outline(lr.x, lr.y, lr.w, lr.h, px(6), 1, UI_COL_BORDER);
     int rows[4096], nrows = 0; /* entries shown: -1 is "..", then folders and the files of the kind */
-    if (A.browse) rows[nrows++] = -1;
-    for (int i = 0; i < A.nbrowse && nrows < ARRAY_COUNT(rows); i++) {
-        FsDirEntry *e = &A.browse[i];
-        if (!e->is_dir && !has_ext(e->name, ext)) continue;
-        if (!saving && name[0] && !contains_nocase(e->name, name)) continue; /* (opening: typing filters) */
-        rows[nrows++] = i;
+    if (A.browse_recent) {    /* (or the recent files: -2 - k is A.recent[k]) */
+        for (int k = 0; k < A.nrecent; k++) rows[nrows++] = -2 - k;
+    } else {
+        if (A.browse) rows[nrows++] = -1;
+        for (int i = 0; i < A.nbrowse && nrows < ARRAY_COUNT(rows); i++) {
+            FsDirEntry *e = &A.browse[i];
+            if (!e->is_dir && !has_ext(e->name, ext)) continue;
+            if (!saving && name[0] && !contains_nocase(e->name, name)) continue; /* (opening: typing filters) */
+            rows[nrows++] = i;
+        }
     }
     float content = nrows * rh;
     A.browse_scroll = FS_CLAMP(A.browse_scroll + ui_scroll_area(lr.x, lr.y, lr.w, lr.h), 0.0f, FS_MAX(0.0f, content - lr.h + px(8)));
@@ -3197,10 +3283,28 @@ static void modal_dialog(float W, float H) {
         float ry = lr.y + px(4) + k * rh - A.browse_scroll;
         if (ry + rh < lr.y || ry > lr.y + lr.h) continue;
         int i = rows[k];
-        bool is_dir = i < 0 || A.browse[i].is_dir;
-        const char *label = i < 0 ? ".. (the folder above)" : A.browse[i].name;
         char id[64];
         snprintf(id, sizeof id, "##brow%d", k);
+        if (i <= -2) { /* a recent file: its name, and its folder dimmer */
+            const char *file = A.recent[-2 - i];
+            UiInteract it = ui_interact(id, lr.x + px(4), ry, lr.w - px(8), rh);
+            bool chosen = !strcmp(file, A.modal_buf);
+            if (it.hovered || chosen) ui_rrect(lr.x + px(4), ry, lr.w - px(8), rh, px(4), chosen ? UI_COL_ACCENT_DIM : UI_COL_WIDGET_HOVER);
+            ui_icon("description", NULL, lr.x + px(10), ry + px(3), rh - px(6), UI_COL_TEXT_DIM);
+            const char *base = fs_basename(file);
+            float nw = ui_text_width(UI_FONT_SANS, base, -1);
+            ui_label(lr.x + px(14) + rh, ry, lr.w - rh - px(24), rh, base, UI_ALIGN_LEFT, UI_COL_TEXT);
+            ui_label(lr.x + px(26) + rh + nw, ry, lr.w - rh - px(36) - nw, rh, file, UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+            if (it.pressed) {
+                snprintf(A.modal_buf, sizeof A.modal_buf, "%s", file);
+                snprintf(before, sizeof before, "%s", file); /* (not typing: stay in the list) */
+                A.modal_focus = true;
+                if (it.double_clicked) submit_file = true;
+            }
+            continue;
+        }
+        bool is_dir = i < 0 || A.browse[i].is_dir;
+        const char *label = i < 0 ? ".. (the folder above)" : A.browse[i].name;
         UiInteract it = ui_interact(id, lr.x + px(4), ry, lr.w - px(8), rh);
         bool chosen = i >= 0 && !strcmp(A.browse[i].name, name);
         if (it.hovered || chosen) ui_rrect(lr.x + px(4), ry, lr.w - px(8), rh, px(4), chosen ? UI_COL_ACCENT_DIM : UI_COL_WIDGET_HOVER);
@@ -3225,7 +3329,7 @@ static void modal_dialog(float W, float H) {
         }
     }
     ui_pop_clip();
-    if (!A.browse) ui_label(lr.x, lr.y, lr.w, px(40), "(this folder can't be read)", UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
+    if (!A.browse && !A.browse_recent) ui_label(lr.x, lr.y, lr.w, px(40), "(this folder can't be read)", UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
     /* OK: open or save; a folder is opened in the list instead */
     float by = pr.y + pr.h - px(44);
     if (A.modal_confirm)
@@ -3254,9 +3358,26 @@ static void modal_dialog(float W, float H) {
         }
         if (ok && !saving) {
             struct stat st;
-            if (stat(A.modal_buf, &st) != 0) {
-                set_status(true, "There is no file %s", A.modal_buf);
-                ok = false;
+            if (stat(A.modal_buf, &st) != 0) { /* a name typed in part: the file it is (name.fstream), or the only one */
+                int first = -1, count = 0, exact = -1;
+                for (int k = 0; k < nrows; k++) {
+                    int i = rows[k];
+                    if (i < 0 || A.browse[i].is_dir) continue;
+                    if (first < 0) first = i;
+                    count++;
+                    size_t nl = strlen(name);
+                    if (!strncasecmp(A.browse[i].name, name, nl) && !strcasecmp(A.browse[i].name + nl, ext)) exact = i;
+                }
+                int pick = exact >= 0 ? exact : count == 1 ? first : -1;
+                char path[2100];
+                if (pick >= 0 || first >= 0) {
+                    snprintf(path, sizeof path, "%s%s%s", dir, dir[0] && strcmp(dir, "/") ? "/" : "", A.browse[pick >= 0 ? pick : first].name);
+                    browse_to(path, false);
+                }
+                if (pick < 0) {
+                    if (first < 0) set_status(true, "There is no file %s", A.modal_buf);
+                    ok = false;
+                }
             }
         }
     }
@@ -3744,6 +3865,8 @@ int app_run(const char *script_path) {
     editor_set_unmodified(A.ed);
     A.file_mtime = file_mtime(A.path);
     A.editor_open = script_path == NULL;
+    load_recent();
+    if (script_path) note_recent(script_path);
     layout_reset(0);
     if (!load_source(text, LOAD_OPEN)) {
         A.editor_open = true; /* nothing to show: keep the editor up so the errors can be fixed */

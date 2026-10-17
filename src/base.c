@@ -294,6 +294,32 @@ bool fs_absolute(const char *path, char *out, int cap) {
     return ok;
 }
 
+bool fs_make_dirs(const char *path) {
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p != '/' && *p != '\\') continue;
+        char c = *p;
+        *p = 0;
+        if (!fs_is_dir(buf)) {
+#if FS_OS_WINDOWS
+            CreateDirectoryA(buf, NULL);
+#else
+            mkdir(buf, 0755);
+#endif
+        }
+        *p = c;
+    }
+    if (!fs_is_dir(buf)) {
+#if FS_OS_WINDOWS
+        CreateDirectoryA(buf, NULL);
+#else
+        mkdir(buf, 0755);
+#endif
+    }
+    return fs_is_dir(buf);
+}
+
 /* ---- UTF-8 --------------------------------------------------------- */
 int utf8_decode(const char *str, int len, u32 *cp) {
     const u8 *s = (const u8 *)str;

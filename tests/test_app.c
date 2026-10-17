@@ -317,10 +317,46 @@ TEST(app_folder_listing) {
     CHECK(fs_absolute("examples/../examples", abs, sizeof abs) && abs[0] != 0 && !strstr(abs, ".."));
 }
 
+/* the recent files: latest first, no duplicates, at most 12, kept in the settings folder */
+TEST(app_recent_files) {
+#if FS_OS_WINDOWS
+    SKIP("uses setenv");
+#else
+    const char *old = getenv("FS_CONFIG_DIR");
+    char *saved_env = old ? xstrdup(old) : NULL;
+    setenv("FS_CONFIG_DIR", "build/test-settings/deeper", 1);
+    remove("build/test-settings/deeper/recent.txt");
+    App saved = A;
+    A.nrecent = 0;
+    note_recent("examples/julia.fstream");
+    note_recent("examples/mandelbrot.fstream");
+    note_recent("examples/julia.fstream");
+    CHECK_INT(A.nrecent, 2);
+    CHECK(strstr(A.recent[0], "examples/julia.fstream") && A.recent[0][0] == '/');
+    CHECK(strstr(A.recent[1], "examples/mandelbrot.fstream"));
+    for (int k = 0; k < 20; k++) {
+        char name[64];
+        snprintf(name, sizeof name, "no-such-%d.fstream", k);
+        note_recent(name);
+    }
+    CHECK_INT(A.nrecent, 12);
+    CHECK(strstr(A.recent[0], "no-such-19.fstream") && strstr(A.recent[11], "no-such-8.fstream"));
+    A.nrecent = 0;
+    load_recent(); /* (read back) */
+    CHECK_INT(A.nrecent, 12);
+    CHECK(strstr(A.recent[0], "no-such-19.fstream") != NULL);
+    A = saved;
+    if (saved_env) setenv("FS_CONFIG_DIR", saved_env, 1);
+    else unsetenv("FS_CONFIG_DIR");
+    free(saved_env);
+#endif
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
     TESTCASE(app_copy_paste_location),
     TESTCASE(app_write_values_into_script),
     TESTCASE(app_folder_listing),
+    TESTCASE(app_recent_files),
 };

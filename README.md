@@ -22,8 +22,8 @@ end
 
 - Open the app without arguments (or double-click it) to get an editor with an example
   (Mandelbrot and Julia sets side by side). The pictures update as you type. Ctrl+O (Cmd+O)
-  opens a script: the dialog lists the folder (typing filters it) and has buttons for your home,
-  the examples and the script's folder.
+  opens a script: the dialog lists the folder (typing filters it, Enter opens the file you
+  mean) and has buttons for the recent scripts, your home, the examples and the script's folder.
 - `fractalstream script.fstream` opens a script. The script pane folds into a thin bar on the
   left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
   edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script. Changes
