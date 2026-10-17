@@ -3378,7 +3378,11 @@ static void help_overlay(float W, float H) {
         {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
+#if FS_OS_MACOS
+        {"F11, Cmd+Ctrl+F", "full screen"},
+#else
         {"F11", "full screen"},
+#endif
         {"F1, F2 (or " MODKEY "+?)", "this help, the language reference (from the script: at the word under the caret)"},
     };
     int prev = ui_layer(UI_LAYER_POPUP);
@@ -3804,6 +3808,9 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.editor_open = !A.editor_open;
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
+#if FS_OS_MACOS
+    if (ui_shortcut(UI_KEY_F, UI_MOD_MOD | UI_MOD_CTRL)) platform_toggle_fullscreen(); /* (Cmd+Ctrl+F, as on a Mac) */
+#endif
     if (ui_shortcut(UI_KEY_F1, 0)) A.help_open = !A.help_open;
     if (ui_shortcut(UI_KEY_F2, 0) || ui_shortcut(UI_KEY_SLASH, UI_MOD_MOD | UI_MOD_SHIFT)) { /* (F2 or Cmd+?; in the
                                                                     script: the reference at the word under the caret) */
