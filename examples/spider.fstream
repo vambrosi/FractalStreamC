@@ -14,7 +14,7 @@ p : Z = 9
 q : Z = 56
 
 @config "Computed values"
-kneading : List of Z up to 1024 = [] "Kneading sequence (0: ⋆₁, 1: ⋆₂, 2: A, 3: B)"
+kneading : List of Z up to 1024 = [] "Kneading sequence (0: ★₁, 1: ★₂, 2: A, 3: B)"
 preperiod : Z = 0 "Preperiod"
 period : Z = 0 "Period"
 
@@ -230,7 +230,7 @@ define apply_spider_map() = n : Z where
         # Determine if we should pick the preimage inside or outside the contour based on
         # the jth term of the kneading sequence. If it was A, pick the preimage with
         # sqrt_sign. If it was B, pick the preimage with negated sqrt_sign.
-        # TODO (in the original): deal with the ⋆s in the kneading sequence
+        # TODO (in the original): deal with the ★s in the kneading sequence
         symbol : Z = kneading[j]
         last_pre := 0
         if symbol == 2 then
@@ -324,9 +324,9 @@ on show do
         end
         s : Z = kneading[k]
         if s == 0 then
-            draw text "⋆₁" at x - 1.3i with color .black
+            draw text "★₁" at x - 1.3i with color .black
         else if s == 1 then
-            draw text "⋆₂" at x - 1.3i with color .black
+            draw text "★₂" at x - 1.3i with color .black
         else if s == 2 then
             draw text "A" at x - 1.3i with color .black
         else
