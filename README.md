@@ -27,8 +27,9 @@ end
   edge of a pane to resize it. Changes made to the file in another editor are picked up
   automatically.
 - Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
-  button on top of that strip switches views, splits them, floats them in a corner, and lists the
-  tools. F1 lists every key.
+  button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
+  the tools, and saves the picture as a PNG file (as on the screen, or four times larger for
+  print). F1 lists every key.
 
 Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
 the parameter space of complex Hénon maps after the program SaddleDrop); the language is

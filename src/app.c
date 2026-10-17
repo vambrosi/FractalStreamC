@@ -84,6 +84,8 @@ typedef struct App {
     /* deferred to the start of the next frame (see process_requests) */
     bool req_run, req_reload;
     char req_open[1024];
+    char req_export[1024];  /* save a picture there */
+    int export_viewer, export_scale, export_wait;
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
     bool help_open;
@@ -760,6 +762,8 @@ static void run_editor(void) { A.req_run = true; }
 
 static void request_open(const char *path) { snprintf(A.req_open, sizeof A.req_open, "%s", path); }
 
+static void export_picture(const char *path, int v, int scale);
+
 static void process_requests(void) {
     if (A.req_open[0]) {
         char path[1024];
@@ -772,6 +776,12 @@ static void process_requests(void) {
     if (A.req_run) {
         A.req_run = false;
         run_editor_now();
+    }
+    if (A.req_export[0] && --A.export_wait <= 0) { /* (after a frame showing "Saving...") */
+        char path[1024];
+        snprintf(path, sizeof path, "%s", A.req_export);
+        A.req_export[0] = 0;
+        export_picture(path, A.export_viewer, A.export_scale);
     }
 }
 
@@ -796,6 +806,72 @@ static void ask_open(void) {
     A.modal = 2;
     A.modal_focus = true;
     snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
+}
+
+/* the size of the picture of viewer v: `scale` times its size on the screen (within the GPU's limit) */
+static void export_size(int v, int scale, int *w, int *h) {
+    *w = *h = 1024;
+    for (int i = 0; i < A.nvis; i++)
+        if (A.vis[i].viewer == v && A.vis[i].r.w >= 1 && A.vis[i].r.h >= 1) {
+            *w = (int)A.vis[i].r.w;
+            *h = (int)A.vis[i].r.h;
+        }
+    *w *= scale;
+    *h *= scale;
+    int maxs = gfx_max_image_size();
+    if (maxs > 0 && (*w > maxs || *h > maxs)) {
+        float k = (float)maxs / (float)FS_MAX(*w, *h);
+        *w = FS_MAX(1, (int)(*w * k));
+        *h = FS_MAX(1, (int)(*h * k));
+    }
+}
+
+/* save the picture of viewer v, `scale` times the size of its tile */
+static void ask_export(int v, int scale) {
+    A.modal = 3;
+    A.modal_focus = true;
+    A.export_viewer = v;
+    A.export_scale = scale;
+    char dir[1024];
+    if (A.path[0]) {
+        snprintf(dir, sizeof dir, "%s", A.path);
+        char *slash = strrchr(dir, '/');
+        if (!slash) slash = strrchr(dir, '\\');
+        if (slash) *slash = 0;
+        else snprintf(dir, sizeof dir, ".");
+    } else {
+        default_save_path(dir, sizeof dir);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = 0;
+    }
+    const char *base = A.path[0] ? fs_basename(A.path) : "untitled";
+    char stem[256];
+    snprintf(stem, sizeof stem, "%.200s", base);
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = 0;
+    snprintf(A.modal_buf, sizeof A.modal_buf, "%.700s/%.200s-%.60s%s.png", dir, stem, A.prog->viewers[v]->name,
+             scale > 1 ? "-large" : "");
+}
+
+/* render viewer v again, offscreen, and write it to a PNG file */
+static void export_picture(const char *path, int v, int scale) {
+    Program *p = A.prog;
+    if (!p || v < 0 || v >= p->nviewers) return;
+    Section *s = p->viewers[v];
+    int w, h;
+    export_size(v, scale, &w, &h);
+    size_t bytes = sizeof(u32) * (size_t)p->state_words;
+    gfx_set_globals(A.state, (u32)bytes);
+    if (!A.uploaded) A.uploaded = (u32 *)xmalloc(bytes);
+    memcpy(A.uploaded, A.state, bytes);
+    u8 *rgba = (u8 *)xmalloc((size_t)w * h * 4);
+    char err[512] = "";
+    bool ok = A.vrt[v].is_flood ? flood_render_gpu(p, A.state, s, w, h, rgba, NULL, err, sizeof err)
+                                : gfx_render_to_memory(A.vrt[v].pipeline, w, h, 64, rgba, err, sizeof err);
+    if (!ok) set_status(true, "Can't render the picture: %s", err);
+    else if (!stbi_write_png(path, w, h, 4, rgba, w * 4)) set_status(true, "Can't write %s", path);
+    else set_status(false, "Saved %s (%dx%d)", path, w, h);
+    free(rgba);
 }
 
 /* ---- running tools ----------------------------------------------------------------- */
@@ -1230,7 +1306,7 @@ static void tile_chrome(int i) {
         snprintf(id, sizeof id, "##strip_menu%d", v);
         if (ui_icon_button_ex(id, "menu", "=", sx + pad, y, b, A.menu_viewer == v ? UI_SELECTED : UI_FLAT))
             A.menu_viewer = A.menu_viewer == v ? -1 : v;
-        ui_tooltip("Views and tools (Esc)");
+        ui_tooltip("Views, tools and pictures (Esc)");
         y += b + px(6);
         ui_rect(sx + pad + px(4), y - px(4), b - px(8), px(1), UI_COL_BORDER);
         for (int k = 0; k < n; k++) {
@@ -1326,7 +1402,8 @@ static void menu_overlay(float W, float H) {
     int rows_top = (nviews + cols - 1) / cols, rows_bot = (ntools + cols - 1) / cols;
     float pw = cols * (bw + gap) + gap;
     float head = px(34);
-    float ph = head + rows_top * (bh + gap) + px(30) + head + rows_bot * (bh + gap) + px(44);
+    float ph = px(12) + 3 * (head - px(10)) + 2 * px(22) + (rows_top + rows_bot + 1) * (bh + gap) +
+               ui_font_line_height(UI_FONT_SANS) + px(14);
     Rect pr = {(W - pw) / 2, FS_MAX((H - ph) / 2, px(10)), pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 240), px(10));
     float y = pr.y + px(12);
@@ -1391,7 +1468,29 @@ static void menu_overlay(float W, float H) {
             A.menu_viewer = -1;
         }
     }
-    y += rows_bot * (bh + gap);
+    y += rows_bot * (bh + gap) + px(8);
+    /* pictures */
+    ui_separator(pr.x + gap, y, pr.w - 2 * gap);
+    y += px(14);
+    snprintf(label, sizeof label, "Picture of %s (PNG, without the tools' drawings)",
+             p->viewers[mv]->display ? p->viewers[mv]->display : p->viewers[mv]->name);
+    ui_text(UI_FONT_SANS, pr.x + gap, y, label, -1, UI_COL_TEXT_DIM);
+    y += head - px(10);
+    for (int k = 0; k < 2; k++) {
+        int scale = k ? 4 : 1, ew, eh;
+        export_size(mv, scale, &ew, &eh);
+        snprintf(sub, sizeof sub, "%d x %d", ew, eh);
+        Rect r = {pr.x + gap + k * (bw + gap), y, bw, bh};
+        if (menu_button(k ? "##m_png4" : "##m_png", k ? "photo_size_select_large" : "image", NULL,
+                        k ? "Save it large" : "Save picture", sub, r, false, false) == 1) {
+            ask_export(mv, scale);
+            A.menu_viewer = -1;
+        }
+        if (ui_last_hovered())
+            ui_tooltip(k ? "Render this view again at four times the width and height (for print), and save it"
+                         : "Save this view as it is on the screen");
+    }
+    y += bh + gap;
     ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS),
              "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: help", UI_ALIGN_CENTER,
              UI_COL_TEXT_DIM);
@@ -1866,7 +1965,7 @@ static void help_overlay(float W, float H) {
         "  Left click / drag          use the view's selected tool",
         "  Left edge of a view        its tools; the menu button on top switches, splits and floats views",
         "Keys",
-        "  Esc                        open / close the menu of the view under the mouse",
+        "  Esc                        the menu of the view under the mouse (views, tools, save picture)",
         "  " MODKEY "+Enter or " MODKEY "+R          run the script",
         "  " MODKEY "+S, " MODKEY "+Shift+S          save, save as",
         "  " MODKEY "+O                       open a file (or drop it on the window)",
@@ -1899,7 +1998,8 @@ static void modal_dialog(float W, float H) {
     float pw = FS_MIN(px(640), W - px(40)), ph = px(130);
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
-    ui_text(UI_FONT_SANS, pr.x + px(16), pr.y + px(14), A.modal == 1 ? "Save as:" : "Open:", -1, UI_COL_TEXT);
+    ui_text(UI_FONT_SANS, pr.x + px(16), pr.y + px(14),
+            A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):" : "Open:", -1, UI_COL_TEXT);
     int r = ui_text_field_ex("##modal_path", pr.x + px(16), pr.y + px(44), pr.w - px(32), px(30), A.modal_buf,
                              (int)sizeof A.modal_buf, UI_TF_SELECT_ALL, "path of the file");
     if (A.modal_focus) {
@@ -1912,6 +2012,11 @@ static void modal_dialog(float W, float H) {
     if ((r & UI_TEXT_CANCEL) || ui_shortcut(UI_KEY_ESCAPE, 0)) cancel = true;
     if (ok && A.modal_buf[0]) {
         if (A.modal == 1) save_file(A.modal_buf);
+        else if (A.modal == 3) {
+            snprintf(A.req_export, sizeof A.req_export, "%s", A.modal_buf);
+            A.export_wait = 2;
+            set_status(false, "Saving the picture...");
+        }
         else request_open(A.modal_buf);
         A.modal = 0;
     } else if (cancel) {
