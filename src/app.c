@@ -3184,7 +3184,7 @@ static void help_overlay(float W, float H) {
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
         {"F11", "full screen"},
-        {"F1, F2", "this help, the language reference"},
+        {"F1, F2", "this help, the language reference (from the script: at the word under the caret)"},
     };
     int prev = ui_layer(UI_LAYER_POPUP);
     float lh = ui_font_line_height(UI_FONT_MONO) + px(3);

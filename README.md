@@ -45,7 +45,8 @@ end
   button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
   the tools, saves the picture as a PNG file (as on the screen, or four times larger for
   print) and has the view's place (back, forward, copy, paste). F1 lists every key; F2 (or the
-  book in the script's toolbar) shows the language reference, with a search field.
+  book in the script's toolbar) shows the language reference, with a search field (F2 in the
+  script looks up the word under the caret).
 
 Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
 the parameter space of complex Hénon maps after the program SaddleDrop); the language is
