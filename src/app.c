@@ -1230,15 +1230,28 @@ static void process_requests(void) {
     }
 }
 
-static void default_save_path(char *out, int cap) {
+/* ~/Documents/NAME (or ~/NAME) */
+static void default_save_path_named(char *out, int cap, const char *name) {
     const char *home = getenv("HOME");
     if (!home) home = getenv("USERPROFILE");
     if (!home) home = ".";
     char docs[900];
     snprintf(docs, sizeof docs, "%s/Documents", home);
     struct stat st;
-    snprintf(out, (size_t)cap, "%s/untitled.fstream", stat(docs, &st) == 0 ? docs : home);
+    snprintf(out, (size_t)cap, "%.800s/%.200s", stat(docs, &st) == 0 ? docs : home, name);
 }
+
+static void default_save_path(char *out, int cap) { default_save_path_named(out, cap, "untitled.fstream"); }
+
+/* a script inside the app (the examples in FractalStream.app): saved elsewhere, the app must stay as it is */
+static bool inside_app_bundle(const char *path) {
+    char abs[1024];
+    fs_absolute(path, abs, sizeof abs);
+    return strstr(abs, ".app/Contents/") != NULL;
+}
+
+/* Save: where the script came from, unless it has no file yet or its file is inside the app */
+static void save_or_ask(void);
 
 static void open_modal(int kind, const char *path);
 static const char *examples_dir(void);
@@ -1247,9 +1260,15 @@ static void ask_new(void);
 
 static void ask_save_as(void) {
     char path[1024];
-    if (A.path[0]) snprintf(path, sizeof path, "%s", A.path);
+    if (A.path[0] && inside_app_bundle(A.path)) default_save_path_named(path, sizeof path, fs_basename(A.path));
+    else if (A.path[0]) snprintf(path, sizeof path, "%s", A.path);
     else default_save_path(path, sizeof path);
     open_modal(1, path);
+}
+
+static void save_or_ask(void) {
+    if (A.path[0] && !inside_app_bundle(A.path)) save_file(A.path);
+    else ask_save_as();
 }
 
 /* the dialog starts in the folder of the script open now, else at the examples (else at home) */
@@ -1290,7 +1309,7 @@ static void ask_export(int v, int scale) {
     A.export_viewer = v;
     A.export_scale = scale;
     char dir[1024];
-    if (A.path[0]) {
+    if (A.path[0] && !inside_app_bundle(A.path)) {
         snprintf(dir, sizeof dir, "%s", A.path);
         char *slash = strrchr(dir, '/');
         if (!slash) slash = strrchr(dir, '\\');
@@ -2324,8 +2343,7 @@ static void editor_pane(float H) {
     ui_tooltip("A new script, from a template (" MODKEY "+N)");
     x += bhh + px(4);
     if (ui_icon_button_ex("##save", "save", "S", x, y, bhh, 0)) {
-        if (A.path[0]) save_file(A.path);
-        else ask_save_as();
+        save_or_ask();
     }
     ui_tooltip("Save (" MODKEY "+S), save as (" MODKEY "+Shift+S)");
     x += bhh + px(4);
@@ -3295,7 +3313,7 @@ static void unsaved_dialog(float W, float H) {
     if (ui_shortcut(UI_KEY_ESCAPE, 0)) cancel = true;
     if (save) {
         A.modal = 0;
-        if (A.path[0]) {
+        if (A.path[0] && !inside_app_bundle(A.path)) {
             if (save_file(A.path)) perform_pending();
             else A.pending = PENDING_NONE;
         } else {
@@ -3565,8 +3583,7 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_G, UI_MOD_MOD | UI_MOD_SHIFT) || ui_shortcut(UI_KEY_F3, UI_MOD_SHIFT)) find_step(true);
     if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD)) run_editor();
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD)) {
-        if (A.path[0]) save_file(A.path);
-        else ask_save_as();
+        save_or_ask();
     }
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD | UI_MOD_SHIFT)) ask_save_as();
     if (ui_shortcut(UI_KEY_O, UI_MOD_MOD)) ask_open();

@@ -315,6 +315,9 @@ TEST(app_folder_listing) {
     CHECK(has_ext("a.FStream", ".fstream") && !has_ext(".fstream", ".fstream") && !has_ext("a.png", ".fstream"));
     char abs[1024];
     CHECK(fs_absolute("examples/../examples", abs, sizeof abs) && abs[0] != 0 && !strstr(abs, ".."));
+    /* the examples inside the macOS app are saved elsewhere */
+    CHECK(inside_app_bundle("/Applications/FractalStream.app/Contents/Resources/examples/julia.fstream"));
+    CHECK(!inside_app_bundle("examples/julia.fstream"));
 }
 
 /* the recent files: latest first, no duplicates, at most 12, kept in the settings folder */
