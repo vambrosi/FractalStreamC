@@ -3370,7 +3370,7 @@ static void help_overlay(float W, float H) {
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
         {"F11", "full screen"},
-        {"F1, F2", "this help, the language reference (from the script: at the word under the caret)"},
+        {"F1, F2 (or " MODKEY "+?)", "this help, the language reference (from the script: at the word under the caret)"},
     };
     int prev = ui_layer(UI_LAYER_POPUP);
     float lh = ui_font_line_height(UI_FONT_MONO) + px(3);
@@ -3796,7 +3796,8 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
     if (ui_shortcut(UI_KEY_F1, 0)) A.help_open = !A.help_open;
-    if (ui_shortcut(UI_KEY_F2, 0)) { /* (in the script: the reference at the word under the caret) */
+    if (ui_shortcut(UI_KEY_F2, 0) || ui_shortcut(UI_KEY_SLASH, UI_MOD_MOD | UI_MOD_SHIFT)) { /* (F2 or Cmd+?; in the
+                                                                    script: the reference at the word under the caret) */
         A.ref_open = !A.ref_open;
         A.help_open = false;
         if (A.ref_open && editor_has_focus(A.ed)) {
