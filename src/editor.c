@@ -79,6 +79,14 @@ struct Editor {
     int nbuiltins;
     char *search; /* highlighted search text (NULL: none) */
     bool search_case;
+    /* completion: names offered while a word is typed ("name" or "name\tdetail"), see editor_set_completions */
+    char **comp;
+    int ncomp;
+    bool comp_open;
+    int comp_start;          /* where the word being completed starts */
+    int comp_sel;            /* the highlighted one, in comp_list */
+    bool comp_nav;           /* chosen with Up / Down (or the mouse): Enter takes it (else Enter is a new line) */
+    int comp_list[8], ncomp_list;
 };
 
 Editor *editor_create(void) {
@@ -107,6 +115,14 @@ static void edp_free_diags(Editor *ed) {
     ed->diags.len = 0;
 }
 
+static void edp_free_completions(Editor *ed) {
+    for (int i = 0; i < ed->ncomp; i++) free(ed->comp[i]);
+    free(ed->comp);
+    ed->comp = NULL;
+    ed->ncomp = 0;
+    ed->comp_open = false;
+}
+
 static void edp_free_builtins(Editor *ed) {
     for (int i = 0; i < ed->nbuiltins; i++) free(ed->builtins[i]);
     free(ed->builtins);
@@ -120,6 +136,7 @@ void editor_destroy(Editor *ed) {
     edp_free_history(ed);
     edp_free_diags(ed);
     edp_free_builtins(ed);
+    edp_free_completions(ed);
     vec_free(ed->undo);
     vec_free(ed->redo);
     vec_free(ed->diags);
@@ -577,6 +594,92 @@ static bool edp_opens_block(const Editor *ed, const char *s, int n) {
         return edp_in_list(openers, 4, s + toks[i].start, toks[i].end - toks[i].start);
     }
     return false;
+}
+
+void editor_set_completions(Editor *ed, const char *const *names, int n) {
+    edp_free_completions(ed);
+    if (n <= 0) return;
+    ed->comp = xcalloc((size_t)n, sizeof(char *));
+    for (int i = 0; i < n; i++) ed->comp[i] = xstrdup(names[i]);
+    ed->ncomp = n;
+}
+
+/* the name of a completion (without its "\tdetail") */
+static int edp_comp_name_len(const char *c) { return (int)strcspn(c, "\t"); }
+
+static bool edp_word_char(char c) { return isalnum((unsigned char)c) || c == '_' || (unsigned char)c >= 0x80; }
+
+/* Offer the names that continue the word before the caret (at least 2 characters, not a number, not in a comment or
+ * a string); close the list when there are none. */
+static void edp_comp_update(Editor *ed) {
+    bool was_open = ed->comp_open;
+    ed->comp_open = false;
+    if (!ed->ncomp || ed->cursor != ed->anchor) return;
+    int c = ed->cursor, a = c;
+    while (a > 0 && edp_word_char(ed->text[a - 1])) a--;
+    if (a > 0 && ed->text[a - 1] == '.' && (a < 2 || !edp_word_char(ed->text[a - 2]))) a--; /* .internal (not x.y) */
+    int n = c - a;
+    if (n < 2 || isdigit((unsigned char)ed->text[a]) || (ed->text[a] == '.' && n < 3)) return;
+    if (c < ed->len && edp_word_char(ed->text[c])) return; /* (inside a word) */
+    int ls = edp_ls(ed, edp_line_of(ed, c));
+    bool quote = false;
+    for (int i = ls; i < a; i++) { /* a comment or a string before it on the line */
+        if (ed->text[i] == '"') quote = !quote;
+        if (ed->text[i] == '#' && !quote) return;
+    }
+    if (quote) return;
+    ed->ncomp_list = 0;
+    for (int pass = 0; pass < 2; pass++) /* the ones with the same case first */
+        for (int i = 0; i < ed->ncomp && ed->ncomp_list < ARRAY_COUNT(ed->comp_list); i++) {
+            const char *name = ed->comp[i];
+            int l = edp_comp_name_len(name);
+            if (l <= n) continue;
+            bool same = strncmp(name, ed->text + a, (size_t)n) == 0;
+            if ((pass == 0) != same || (!same && strncasecmp(name, ed->text + a, (size_t)n) != 0)) continue;
+            bool dup = false;
+            for (int k = 0; k < ed->ncomp_list && !dup; k++)
+                dup = edp_comp_name_len(ed->comp[ed->comp_list[k]]) == l && !strncmp(ed->comp[ed->comp_list[k]], name, (size_t)l);
+            if (!dup) ed->comp_list[ed->ncomp_list++] = i;
+        }
+    if (!ed->ncomp_list) return;
+    if (!was_open || ed->comp_start != a) {
+        ed->comp_sel = 0;
+        ed->comp_nav = false;
+    }
+    ed->comp_sel = FS_CLAMP(ed->comp_sel, 0, ed->ncomp_list - 1);
+    ed->comp_start = a;
+    ed->comp_open = true;
+}
+
+/* replace the word with the chosen name (one undo step) */
+static void edp_comp_accept(Editor *ed, int k) {
+    if (!ed->comp_open || k < 0 || k >= ed->ncomp_list) return;
+    const char *name = ed->comp[ed->comp_list[k]];
+    int l = edp_comp_name_len(name);
+    edp_interrupt(ed);
+    edp_begin(ed, EDK_OTHER);
+    if (edp_replace(ed, ed->comp_start, ed->cursor - ed->comp_start, name, l)) ed->cursor = ed->anchor = ed->comp_start + l;
+    ed->want_col = -1;
+    ed->reveal = true;
+    edp_end(ed);
+    ed->comp_open = false;
+}
+
+/* the keys of the list while it is open: Up, Down, Tab (take it), Enter (take the one chosen with Up / Down; else a
+   new line, as `do` + Enter must stay), Esc (close) */
+static bool edp_comp_key(Editor *ed, const UiKeyEvent *e) {
+    if (!ed->comp_open || e->text || (e->mods & 15)) return false;
+    switch (e->key) {
+    case UI_KEY_DOWN: ed->comp_sel = (ed->comp_sel + 1) % ed->ncomp_list; ed->comp_nav = true; return true;
+    case UI_KEY_UP: ed->comp_sel = (ed->comp_sel + ed->ncomp_list - 1) % ed->ncomp_list; ed->comp_nav = true; return true;
+    case UI_KEY_TAB: edp_comp_accept(ed, ed->comp_sel); return true;
+    case UI_KEY_ENTER:
+        if (!ed->comp_nav) return false;
+        edp_comp_accept(ed, ed->comp_sel);
+        return true;
+    case UI_KEY_ESCAPE: ed->comp_open = false; return true;
+    default: return false;
+    }
 }
 
 void editor_set_builtins(Editor *ed, const char *const *names, int n) {
@@ -1476,13 +1579,21 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
         const UiKeyEvent *ev = ui_key_events(&n);
         for (int i = 0; i < n; i++) {
             if (ui_key_consumed(i)) continue;
+            if (edp_comp_key(ed, &ev[i])) { /* (the list of completions has these keys while it is open) */
+                ui_key_consume(i);
+                continue;
+            }
             if (edp_handle_key(ed, &ev[i])) {
                 ui_key_consume(i);
                 ed->caret_epoch = in->time;
+                bool typed = ev[i].text && ev[i].text < 0x80 && (edp_word_char((char)ev[i].text) || ev[i].text == '.');
+                if (typed || (ed->comp_open && ev[i].key == UI_KEY_BACKSPACE && !(ev[i].mods & 15))) edp_comp_update(ed);
+                else ed->comp_open = false;
             }
         }
         edp_layout(ed, x, y, w, h, &L); /* the font size or line count may have changed */
     }
+    if (!focused || rt.pressed || rg.pressed) ed->comp_open = false;
     if (ed->reveal) edp_reveal_caret(ed, &L);
     edp_clamp_scroll(ed, &L);
 
@@ -1590,6 +1701,44 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
         if (rb.clicked && over_msg) editor_goto(ed, sd->line, sd->col);
     }
     ui_rect_outline(x, y, w, h, 1, focused ? UI_COL_ACCENT : UI_COL_BORDER);
+
+    /* ---- the completions: a list under the word (above it near the bottom); a click takes one ---- */
+    if (ed->comp_open && focused) {
+        int line = edp_line_of(ed, ed->comp_start), ls = edp_ls(ed, line);
+        float wx = L.tx + L.pad - ed->scroll_x + edp_col_x(ed, ls, ed->comp_start) - ui_px(6);
+        float ry = L.ty + (float)line * L.row_h - ed->scroll_y;
+        float ih = L.row_h, lw = 0, dw = 0;
+        for (int k = 0; k < ed->ncomp_list; k++) {
+            const char *c = ed->comp[ed->comp_list[k]];
+            int nl = edp_comp_name_len(c);
+            lw = FS_MAX(lw, ui_text_width(UI_FONT_MONO, c, nl));
+            if (c[nl]) dw = FS_MAX(dw, ui_text_width(UI_FONT_SANS, c + nl + 1, -1));
+        }
+        float pw = lw + (dw > 0 ? dw + ui_px(24) : 0) + ui_px(20), ph = ih * (float)ed->ncomp_list + ui_px(8);
+        float py = ry + L.row_h + ui_px(2);
+        if (py + ph > L.ty + L.th && ry - ph - ui_px(2) >= L.ty) py = ry - ph - ui_px(2);
+        wx = FS_CLAMP(wx, x, FS_MAX(x, x + w - pw));
+        int prev = ui_layer(UI_LAYER_POPUP);
+        ui_panel_ex(wx, py, pw, ph, UI_COL_PANEL_HI, ui_px(6));
+        for (int k = 0; k < ed->ncomp_list; k++) {
+            const char *c = ed->comp[ed->comp_list[k]];
+            int nl = edp_comp_name_len(c);
+            float iy = py + ui_px(4) + ih * (float)k;
+            char iid[32];
+            snprintf(iid, sizeof iid, "##comp%d", k);
+            UiInteract it = ui_interact(iid, wx + ui_px(2), iy, pw - ui_px(4), ih);
+            if (it.hovered) ed->comp_sel = k;
+            if (k == ed->comp_sel) ui_rrect(wx + ui_px(3), iy, pw - ui_px(6), ih, ui_px(4), UI_COL_ACCENT_DIM);
+            ui_text(UI_FONT_MONO, wx + ui_px(10), iy + text_dy, c, nl, UI_COL_TEXT);
+            if (c[nl]) ui_text(UI_FONT_SANS, wx + pw - ui_px(10) - ui_text_width(UI_FONT_SANS, c + nl + 1, -1),
+                               iy + (ih - ui_font_line_height(UI_FONT_SANS)) * 0.5f, c + nl + 1, -1, UI_COL_TEXT_DIM);
+            if (it.clicked) {
+                edp_comp_accept(ed, k);
+                break;
+            }
+        }
+        ui_layer(prev);
+    }
 
     /* ---- hovering a diagnostic (the gutter marker or the underlined range) for a moment shows its message ---- */
     if (fabsf(in->mouse_x - ed->hover_x) > 2 || fabsf(in->mouse_y - ed->hover_y) > 2) {

@@ -1107,6 +1107,86 @@ TEST(editor_widget_scrolling) {
     editor_destroy(ed);
 }
 
+/* Completions: offered from the second character of a word; Tab takes one, Enter only one chosen with the arrows
+   (`do` + Enter stays a new line), Esc closes; not in comments or strings, not for numbers. */
+TEST(editor_widget_completions) {
+    te_setup(1.0f);
+    Editor *ed = te_new("");
+    const char *names[] = {"palette\tbuilt-in", "pal_size\tvariable", "dot\tbuilt-in", "do\tkeyword",
+                           ".maxIterations\tinternal", "Palette2", "palette\tfunction"};
+    editor_set_completions(ed, names, ARRAY_COUNT(names));
+    te_frame(ed, true);
+    tu_type("p");
+    te_frame(ed, false);
+    CHECK(!ed->comp_open); /* (one letter: not yet) */
+    tu_type("a");
+    te_frame(ed, false);
+    CHECK(ed->comp_open);
+    CHECK_INT(ed->ncomp_list, 3); /* palette, pal_size, then Palette2 (another case); the second palette is a duplicate */
+    CHECK(ed->ncomp_list == 3 && ed->comp_list[0] == 0 && ed->comp_list[1] == 1 && ed->comp_list[2] == 5);
+    te_key(ed, UI_KEY_TAB, 0);
+    CHECK_STR(te_show(ed), "palette|");
+    CHECK(!ed->comp_open);
+    CHECK(editor_undo(ed)); /* one step back: the word as typed */
+    CHECK_STR(te_text(ed), "pa");
+    /* Down, Enter */
+    editor_set_text(ed, "", 0);
+    tu_type("pa");
+    te_frame(ed, false);
+    te_key(ed, UI_KEY_DOWN, 0);
+    te_key(ed, UI_KEY_ENTER, 0);
+    CHECK_STR(te_show(ed), "pal_size|");
+    /* `do` + Enter: a new line (dot is offered, not taken) */
+    editor_set_text(ed, "", 0);
+    tu_type("do");
+    te_frame(ed, false);
+    CHECK(ed->comp_open);
+    te_key(ed, UI_KEY_ENTER, 0);
+    CHECK_STR(te_show(ed), "do\n    |");
+    CHECK(!ed->comp_open);
+    /* Esc closes the list and nothing else; Backspace keeps it up to date */
+    editor_set_text(ed, "", 0);
+    tu_type("pal");
+    te_frame(ed, false);
+    CHECK(ed->comp_open && ed->ncomp_list == 3);
+    tu_type("_");
+    te_frame(ed, false);
+    CHECK(ed->comp_open && ed->ncomp_list == 1);
+    te_key(ed, UI_KEY_BACKSPACE, 0);
+    CHECK(ed->comp_open && ed->ncomp_list == 3);
+    te_key(ed, UI_KEY_ESCAPE, 0);
+    CHECK(!ed->comp_open);
+    CHECK_STR(te_text(ed), "pal");
+    /* internals; not after a name and a dot; not in comments, strings or numbers */
+    editor_set_text(ed, "", 0);
+    tu_type("x = .ma");
+    te_frame(ed, false);
+    CHECK(ed->comp_open && ed->ncomp_list == 1);
+    te_key(ed, UI_KEY_TAB, 0);
+    CHECK_STR(te_text(ed), "x = .maxIterations");
+    editor_set_text(ed, "", 0);
+    tu_type("# pa");
+    te_frame(ed, false);
+    CHECK(!ed->comp_open);
+    editor_set_text(ed, "", 0);
+    tu_type("\"pa");
+    te_frame(ed, false);
+    CHECK(!ed->comp_open);
+    editor_set_text(ed, "", 0);
+    tu_type("12do");
+    te_frame(ed, false);
+    CHECK(!ed->comp_open);
+    /* a click elsewhere closes it */
+    editor_set_text(ed, "x\n", -1);
+    te_key(ed, UI_KEY_END, UI_MOD_MOD);
+    tu_type("pa");
+    te_frame(ed, false);
+    CHECK(ed->comp_open);
+    te_click(ed, 0, 0, 1);
+    CHECK(!ed->comp_open);
+    editor_destroy(ed);
+}
+
 TEST(editor_widget_keys_left_to_the_app) {
     te_setup(1.0f);
     Editor *ed = te_new("abc");
@@ -1432,6 +1512,7 @@ static const TestCase tests_editor[] = {
     TESTCASE(editor_widget_focus),
     TESTCASE(editor_widget_mouse_selection),
     TESTCASE(editor_widget_scrolling),
+    TESTCASE(editor_widget_completions),
     TESTCASE(editor_widget_keys_left_to_the_app),
     TESTCASE(editor_widget_status_bar_and_wake),
     TESTCASE(editor_widget_zoom_and_utf8),

@@ -881,6 +881,56 @@ static void destroy_rts(ViewerRT *vrt, int n) {
     free(vrt);
 }
 
+/* ---- completions in the script editor ------------------------------------------------------------------------ */
+/* the names offered while typing: the language's words and built-ins, and the script's own names (p may be NULL) */
+static void update_completions(Program *p) {
+    VEC(char *) names = {0};
+    static const char *words[] = {"critical", "root", "derivative", "seed", "continuing", "from", "erase", "all",
+                                  "on", "press", "release", "click", "hover", "show", "hide", "button", "append",
+                                  "clear", "line", "point", "circle", "disk", "text", "radius", "color", "width",
+                                  "List", "Integers", "Reals", "Complex", "Quaternions", "Bool", "Color", "up"};
+    static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".time", ".lastClick",
+                                      ".mouse", ".dragStart", ".width", ".height", ".title", ".stuck",
+                                      ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
+                                      ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan",
+                                      ".magenta", ".orange", ".purple", ".pink", ".brown"};
+    StrBuf sb = {0};
+#define ADD_NAME(name, detail) do { sb_clear(&sb); sb_printf(&sb, "%s\t%s", (name), (detail)); vec_push(names, xstrdup(sb_cstr(&sb))); } while (0)
+    for (int k = 0; k < ARRAY_COUNT(keywords); k++) ADD_NAME(keywords[k].word, "keyword");
+    for (int k = 0; k < ARRAY_COUNT(words); k++) ADD_NAME(words[k], "keyword");
+    for (int k = 0; k < ARRAY_COUNT(internals); k++) ADD_NAME(internals[k], "internal");
+    for (int k = 0; k < ARRAY_COUNT(intrinsics); k++)
+        if (intrinsics[k].name[0] != '_') ADD_NAME(intrinsics[k].name, "built-in");
+    ADD_NAME("palette", "built-in");
+    if (p) {
+        for (int i = 0; i < p->funcs.len; i++) {
+            Func *f = p->funcs.data[i];
+            if (f->name[0] != '_') ADD_NAME(f->name, f->prelude ? "built-in" : "function");
+        }
+        for (int i = 0; i < p->globals.len; i++) {
+            Sym *g = p->globals.data[i];
+            if (strchr(g->name, ' ') || (g->viewer_index >= 0 && strchr(g->name, '.'))) continue; /* (hidden, NAME.center) */
+            if (g->is_internal) {
+                sb_clear(&sb);
+                sb_printf(&sb, ".%s", g->name);
+                ADD_NAME(sb_cstr(&sb), "internal");
+            } else {
+                ADD_NAME(g->name, "variable");
+            }
+        }
+        for (int v = 0; v < p->nviewers; v++) ADD_NAME(p->viewers[v]->name, "view");
+        if (p->nviewers) {
+            ADD_NAME("center", "of a view");
+            ADD_NAME("radius", "of a view");
+        }
+    }
+#undef ADD_NAME
+    editor_set_completions(A.ed, (const char *const *)names.data, names.len);
+    for (int i = 0; i < names.len; i++) free(names.data[i]);
+    vec_free(names);
+    sb_free(&sb);
+}
+
 /* ---- values of the script -------------------------------------------------------------------- */
 /* globals the app sets by itself */
 static bool app_managed(Program *p, Sym *s) {
@@ -1044,6 +1094,7 @@ static bool load_source(const char *src, int mode) {
         Sym *ps = p->viewers[v]->picked;
         if (ps && (state[ps->slot] || state[ps->slot + 1])) vrt[v].picked = true;
     }
+    update_completions(p);
     update_title();
     return true;
 }
@@ -3176,6 +3227,7 @@ static void help_overlay(float W, float H) {
         {MODKEY "+S, " MODKEY "+Shift+S", "save, save as"},
         {MODKEY "+O, " MODKEY "+N", "open a script (or drop it on the window), a new one from a template"},
         {MODKEY "+F, " MODKEY "+Alt+F", "find, replace in the script (" MODKEY "+G: next)"},
+        {"Tab", "in the script, while a list of names is offered: take the one shown (Up, Down: choose)"},
         {MODKEY "+E, " MODKEY "+T", "show / hide the script, the config"},
         {MODKEY "+1, 2, ...", "show a view (or the shortcut written in the script)"},
         {"H, P, tool keys", "choose a tool of the view under the mouse"},
@@ -4053,6 +4105,7 @@ int app_run(const char *script_path) {
                                     "arg", "conj", "norm", "cis", "polar", "rgb", "gray", "grey", "hsv"};
         for (int k = 0; k < ARRAY_COUNT(pre) && n < 256; k++) names[n++] = pre[k];
         editor_set_builtins(A.ed, names, n);
+        update_completions(NULL); /* (the script's own names come when it compiles) */
     }
     const char *text = src ? src : welcome_script;
     editor_set_text(A.ed, text, (int)strlen(text));

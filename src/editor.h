@@ -102,6 +102,9 @@ bool editor_replace_ranges(Editor *ed, const EditorEdit *edits, int n);
 
 /* ---- highlighting and diagnostics ----------------------------------------------------------------------------------- */
 void editor_set_builtins(Editor *ed, const char *const *names, int n); /* function names to highlight */
+/* Names offered while a word is typed (2 characters or more): "name", or "name\tdetail" to show a detail
+ * (e.g. "palette\tfunction").  Up / Down choose, Tab or Enter take one, Esc closes the list. */
+void editor_set_completions(Editor *ed, const char *const *names, int n);
 
 /* Search (one line of text; match_case false folds ASCII letters).  The searched text is highlighted in the
  * rows while editor_set_search holds it (NULL or "" stops). */
