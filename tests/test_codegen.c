@@ -389,6 +389,17 @@ TEST(flood_spirv_validates) {
             CHECK_MSG(rc == 0, "spirv-val failed:\n%s", out ? out : "");
             free(out);
         }
+        /* and SPIRV-Cross (what MoltenVK uses) turns it into a Metal compute kernel */
+        static int have_cross = -1;
+        if (have_cross < 0) have_cross = system("which spirv-cross > /dev/null 2>&1") == 0;
+        if (have_cross) {
+            int rc2 = system("spirv-cross --msl build/test_flood.spv --output build/test_flood.metal > build/test_tmp.txt 2>&1");
+            CHECK_MSG(rc2 == 0, "spirv-cross --msl failed on the flood shader");
+            size_t len;
+            char *msl = rc2 == 0 ? fs_read_file("build/test_flood.metal", &len) : NULL;
+            CHECK(msl && strstr(msl, "kernel void main0("));
+            free(msl);
+        }
     }
     program_free(p);
 }
