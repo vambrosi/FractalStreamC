@@ -77,6 +77,7 @@ typedef struct ViewerRT {
     u32 *show_snap;    /* the state when the selected tool last ran `on show` (NULL: run it) */
     bool flood_checked; /* flood viewers: the start pixel's result was looked at */
     ViewHistory *hist;  /* Back / Forward (made on the first move; kept when the script runs again) */
+    bool grid;          /* show the axes and a grid with their values (flat views) */
 } ViewerRT;
 
 typedef struct App {
@@ -966,6 +967,7 @@ static bool load_source(const char *src, int mode) {
             if (s->mobius && os->mobius) memcpy(state + s->mobius->slot, A.state + os->mobius->slot, 32);
             vrt[v].hist = A.vrt[ov].hist; /* (Back still works) */
             A.vrt[ov].hist = NULL;
+            vrt[v].grid = A.vrt[ov].grid;
             if (s->picked && os->picked && s->picked->type == os->picked->type && A.vrt[ov].picked) {
                 memcpy(state + s->picked->slot, A.state + os->picked->slot, sizeof(u32) * (size_t)s->picked->type->size);
                 vrt[v].picked = true;
@@ -1655,6 +1657,61 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
     }
 }
 
+/* a value of the grid: `dec` decimals, "0" for zero */
+static void grid_label(char *out, int cap, double v, int dec, bool imag) {
+    if (fabs(v) >= 1e9 || (dec > 12 && fabs(v) >= 1e4)) snprintf(out, (size_t)cap, "%.6g", v);
+    else snprintf(out, (size_t)cap, "%.*f", dec, v);
+    if (!strcmp(out, "-0") || strspn(out, "-0.") == strlen(out)) snprintf(out, (size_t)cap, "0");
+    if (imag) strncat(out, "i", (size_t)cap - strlen(out) - 1);
+}
+
+/* The axes and grid lines of a flat view, with their values along the bottom and left edges: lines at 1, 2 or 5
+   times a power of 10, far enough apart for their values. */
+static void draw_grid(VisTile *t) {
+    if (A.prog->viewers[t->viewer]->mobius) return;
+    Rect r = t->r;
+    double cx, cy, sc = view_scale(t->viewer, r); /* (plane units per pixel) */
+    view_center_d(t->viewer, &cx, &cy);
+    if (!(sc > 0) || !isfinite(sc) || !isfinite(cx) || !isfinite(cy)) return;
+    double xl = cx - 0.5 * r.w * sc, xr = cx + 0.5 * r.w * sc, yb = cy - 0.5 * r.h * sc, yt = cy + 0.5 * r.h * sc;
+    float cw = ui_text_width(UI_FONT_MONO, "0", 1), lh = ui_font_line_height(UI_FONT_MONO);
+    double step = 0;
+    int dec = 0;
+    for (double e = pow(10, floor(log10(sc * px(60)))); step == 0 && e < 1e300; e *= 10) /* the smallest that fits */
+        for (int k = 0; k < 3 && step == 0; k++) {
+            double st = e * (k == 0 ? 1 : k == 1 ? 2 : 5);
+            int d = FS_CLAMP((int)ceil(-log10(st) - 1e-9), 0, 17);
+            char a[64], b[64];
+            grid_label(a, sizeof a, xl, d, false);
+            grid_label(b, sizeof b, xr, d, false);
+            float need = (float)(FS_MAX(strlen(a), strlen(b)) + 2) * cw + px(16);
+            if (st / sc >= FS_MAX(need, px(60))) {
+                step = st;
+                dec = d;
+            }
+        }
+    if (step == 0 || (xr - xl) / step > 400 || (yt - yb) / step > 400) return;
+    u32 line = UI_RGBA(255, 255, 255, 46), axis = UI_RGBA(255, 255, 255, 150), ink = UI_RGBA(255, 255, 255, 215),
+        shadow = UI_RGBA(0, 0, 0, 170);
+    char label[80];
+    for (double k = ceil(xl / step); k * step <= xr; k++) { /* vertical lines, values along the bottom */
+        float X = (float)(r.x + 0.5 * r.w + (k * step - cx) / sc);
+        ui_rect(X - px(0.5f), r.y, FS_MAX(px(1), 1.0f), r.h, k == 0 ? axis : line);
+        grid_label(label, sizeof label, k * step, dec, false);
+        float ty = r.y + r.h - lh - px(3);
+        ui_text(UI_FONT_MONO, X + px(4), ty + px(1), label, -1, shadow);
+        ui_text(UI_FONT_MONO, X + px(3), ty, label, -1, ink);
+    }
+    for (double k = ceil(yb / step); k * step <= yt; k++) { /* horizontal lines, values along the left */
+        float Y = (float)(r.y + 0.5 * r.h - (k * step - cy) / sc);
+        ui_rect(r.x, Y - px(0.5f), r.w, FS_MAX(px(1), 1.0f), k == 0 ? axis : line);
+        grid_label(label, sizeof label, k * step, dec, true);
+        float tx = r.x + px(40); /* (right of the tool strip's badge) */
+        ui_text(UI_FONT_MONO, tx + px(1), Y - lh - px(1) + px(1), label, -1, shadow);
+        ui_text(UI_FONT_MONO, tx, Y - lh - px(1), label, -1, ink);
+    }
+}
+
 /* the picture, the drawings, the picked point and the name */
 static void draw_tile(VisTile *t) {
     Program *p = A.prog;
@@ -1662,6 +1719,7 @@ static void draw_tile(VisTile *t) {
     Rect r = t->r;
     ui_push_clip(r.x, r.y, r.w, r.h);
     if (rt->target) ui_image(rt->target, r.x, r.y, (float)rt->tw, (float)rt->th);
+    if (rt->grid) draw_grid(t);
     for (int tool = 0; tool < p->ntools; tool++) draw_items(t, &A.draws[tool]);
     Section *s = p->viewers[t->viewer];
     if (rt->picked && s->picked) {
@@ -1845,7 +1903,7 @@ static void menu_overlay(float W, float H) {
     int nviews = p->nviewers + 2;
     int cols = (int)FS_MAX(1.0f, FS_MIN((W - px(40)) / (bw + gap), 5.0f));
     bool flat = !p->viewers[mv]->mobius;
-    int nplace = flat ? 5 : 3; /* back, forward, reset (copy and paste the location) */
+    int nplace = flat ? 6 : 3; /* back, forward, reset (copy and paste the location, the grid) */
     int rows = (nviews + cols - 1) / cols + (ntools + cols - 1) / cols + 1 + (nplace + cols - 1) / cols;
     int rows_top = (nviews + cols - 1) / cols, rows_bot = (ntools + cols - 1) / cols, rows_place = (nplace + cols - 1) / cols;
     float pw = cols * (bw + gap) + gap;
@@ -1963,23 +2021,26 @@ static void menu_overlay(float W, float H) {
     ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS), label, UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
     y += head - px(10);
     for (int k = 0; k < nplace; k++) {
-        static const char *icons[5] = {"arrow_back", "arrow_forward", "home", "content_copy", "content_paste"};
-        static const char *names[5] = {"Back", "Forward", "Reset view", "Copy location", "Paste location"};
-        static const char *subs[5] = {BACK_KEY, FORWARD_KEY, "Home", "centre and radius", "from the clipboard"};
-        static const char *tips[5] = {
+        static const char *icons[6] = {"arrow_back", "arrow_forward", "home", "content_copy", "content_paste", "grid_on"};
+        static const char *names[6] = {"Back", "Forward", "Reset view", "Copy location", "Paste location", "Axes and grid"};
+        static const char *subs[6] = {BACK_KEY, FORWARD_KEY, "Home", "centre and radius", "from the clipboard",
+                                      MODKEY "+Shift+A"};
+        static const char *tips[6] = {
             "Where this view was before the last zoom, pan or reset (the mouse's back button too)",
             "Undo Back", "The view the script starts with",
             "Copy the centre and the radius as script lines (\"mandel.center = ...\"), with all their digits",
-            "Go to the centre and radius in the clipboard (copied with Copy location, or a point like -0.75+0.1i)"};
+            "Go to the centre and radius in the clipboard (copied with Copy location, or a point like -0.75+0.1i)",
+            "Show the axes, and grid lines with their values"};
         Rect r = {pr.x + gap + (k % cols) * (bw + gap), y + (k / cols) * (bh + gap), bw, bh};
         char bid[32];
         snprintf(bid, sizeof bid, "##m_place%d", k);
         bool off = k < 2 && nav_count(mv, k == 1) == 0;
-        if (menu_button_ex(bid, icons[k], NULL, names[k], subs[k], r, false, false, off) == 1) {
+        if (menu_button_ex(bid, icons[k], NULL, names[k], subs[k], r, k == 5 && A.vrt[mv].grid, false, off) == 1) {
             if (k < 2) nav_go(mv, k == 1);
             else if (k == 2) reset_view(mv);
             else if (k == 3) copy_location(mv);
-            else paste_location(mv);
+            else if (k == 4) paste_location(mv);
+            else A.vrt[mv].grid = !A.vrt[mv].grid;
             A.menu_viewer = -1;
         }
         if (ui_last_hovered()) ui_tooltip(tips[k]);
@@ -2958,6 +3019,7 @@ static void help_overlay(float W, float H) {
         {"Home", "reset the view under the mouse"},
         {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
+        {MODKEY "+Shift+A", "axes and grid lines with their values"},
         {"F11", "full screen"},
         {"F1", "this help"},
     };
@@ -3286,6 +3348,8 @@ static void shortcuts(void) {
     if (tv >= 0 && (ui_shortcut(UI_KEY_RIGHT, UI_MOD_ALT) || ui_shortcut(UI_KEY_RIGHT_BRACKET, UI_MOD_MOD))) nav_key(tv, true);
     if (tv >= 0 && ui_shortcut(UI_KEY_C, UI_MOD_MOD | UI_MOD_SHIFT) && !A.prog->viewers[tv]->mobius) copy_location(tv);
     if (tv >= 0 && ui_shortcut(UI_KEY_V, UI_MOD_MOD | UI_MOD_SHIFT) && !A.prog->viewers[tv]->mobius) paste_location(tv);
+    if (tv >= 0 && ui_shortcut(UI_KEY_A, UI_MOD_MOD | UI_MOD_SHIFT) && !A.prog->viewers[tv]->mobius)
+        A.vrt[tv].grid = !A.vrt[tv].grid;
 }
 
 /* @prepare runs whenever the state changed (not for the mouse, the time, the last click) */

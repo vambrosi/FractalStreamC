@@ -28,8 +28,9 @@ end
   left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
   edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script. Changes
   made to the file in another editor are picked up automatically.
-- The coordinates of the point under the mouse show at the bottom left of the view. Zooming deep
-  (radius below about 1e-4) switches the view to double-single precision automatically.
+- The coordinates of the point under the mouse show at the bottom left of the view; Ctrl+Shift+A
+  (or the view's menu) adds the axes and grid lines with their values. Zooming deep (radius below
+  about 1e-4) switches the view to double-single precision automatically.
 - Each view remembers where it has been: Back and Forward (Alt+Left / Alt+Right, Cmd+[ / Cmd+]
   on a Mac, or the mouse's side buttons) step through its zooms and pans. Copy location
   (Ctrl+Shift+C) puts the view's centre and radius on the clipboard as script lines, with all
