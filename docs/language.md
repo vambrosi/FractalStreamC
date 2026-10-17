@@ -135,6 +135,22 @@ Functions see the global state (and may change it), their parameters, their resu
 variables; not the variables of the section that calls them. Functions with the same name but
 different parameter types are allowed (the closest match is used). Recursion is not supported.
 
+## Derivatives and Newton's method
+
+```
+derivative z -> z^3 + sin(z) at 2          # the value of d/dz (z^3 + sin z) at z = 2
+root z -> z^3 - 1 with seed 1 + i          # a zero, by Newton's method from the seed
+critical z -> z^2 + c with seed 1          # a critical point (a zero of the derivative)
+critical f with seed 0                     # also with the name of a function of one variable
+```
+
+Derivatives are exact (computed symbolically when the script is compiled) for `+ - * /`, powers,
+`exp log sqrt sin cos tan sinh cosh tanh asin acos atan` and one-line functions written with
+`define`. Other variables in the expression are constants for the derivative. After `root` and
+`critical`, `.stuck` is true if Newton's method did not converge within `.maxIterations` steps and
+`.iterations` is the number of steps. Non-holomorphic functions (`re`, `im`, `conj`, `|z|`, ...)
+can't be differentiated.
+
 ## Built-in functions
 
 | | |

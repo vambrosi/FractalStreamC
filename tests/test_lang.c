@@ -482,7 +482,43 @@ TEST(variable_integer_powers) {
     program_free(p);
 }
 
+TEST(automatic_differentiation) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "c := -0.75 + 0.1i\n"
+        "cp := critical z -> z^2 + c with seed 1\n"
+        "st1 := .stuck\n"
+        "r := root z -> z^3 - 1 with seed 0.8 + 0.1i\n"
+        "dv := derivative z -> z^3 + sin(z) at 2\n"
+        "define g(z) = z^3 - 2z + c\n"
+        "cg := critical g with seed 1\n"
+        "e2 := derivative w -> exp(2w) / w at 1\n"
+        "pw := derivative w -> w^2.5 at 4\n"
+        "nc := root z -> z^2 + 1 with seed 1\n"
+        "st2 := .stuck\n"
+        "@viewer v z\n"
+        "w := critical t -> t^3 - 3 z t with seed 1\n"
+        "color = gray(|w^2 - z|)\n");
+    CHECK_NEAR(gnum(p, "cp", 0), 0, 1e-5);
+    CHECK_NEAR(gnum(p, "cp", 1), 0, 1e-5);
+    CHECK_NEAR(gnum(p, "st1", 0), 0, 0);
+    CHECK_NEAR(gnum(p, "r", 0), 1, 1e-5);
+    CHECK_NEAR(gnum(p, "r", 1), 0, 1e-5);
+    CHECK_NEAR(gnum(p, "dv", 0), 12 + cos(2.0), 1e-4);
+    CHECK_NEAR(gnum(p, "cg", 0), sqrt(2.0 / 3.0), 1e-5);
+    CHECK_NEAR(gnum(p, "e2", 0), exp(2.0), 1e-4); /* (2w - 1) e^(2w) / w^2 at 1 */
+    CHECK_NEAR(gnum(p, "pw", 0), 2.5 * 8, 1e-3);
+    CHECK_NEAR(gnum(p, "st2", 0), 1, 0); /* z^2 + 1 from a real seed never converges */
+    float c[3];
+    viewer_rgb(p, 0, 0.7f, 0.4f, c);
+    CHECK_NEAR(c[0], 0, 1e-4);
+    program_free(p);
+    EXPECT_ERROR("@global\nx := root z -> conj(z) - 1 with seed 0\n", "can't differentiate");
+    EXPECT_ERROR("@global\nx := critical z -> 3z + 1 with seed 0\n", "constant");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(automatic_differentiation),
     TESTCASE(variable_integer_powers),
     TESTCASE(default_viewer), TESTCASE(mandelbrot), TESTCASE(brief_example), TESTCASE(types_and_conversions),
     TESTCASE(implicit_multiplication), TESTCASE(complex_functions), TESTCASE(loops_and_stuck),

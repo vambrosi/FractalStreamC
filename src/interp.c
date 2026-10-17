@@ -580,6 +580,7 @@ static void ev(Interp *I, Expr *e, u32 *out) {
     case E_COLOR_CONST:
         for (int i = 0; i < e->type->size; i++) out[i] = fw(e->cval[i]);
         return;
+    case E_SOLVE: return; /* rewritten into a call by the checker */
     }
 }
 

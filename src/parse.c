@@ -259,6 +259,38 @@ static Expr *parse_primary(Parser *p) {
             finish(p, e);
             return e;
         }
+        /* critical z -> f with seed s, root z -> f with seed s, derivative z -> f at p (or a function name) */
+        int solve = !strcmp(t->str, "critical") ? SOLVE_CRITICAL : !strcmp(t->str, "root") ? SOLVE_ROOT
+                  : !strcmp(t->str, "derivative") ? SOLVE_DERIVATIVE : 0;
+        if (solve && at(p, TK_IDENT) &&
+            (peek(p, 1)->kind == TK_ARROW ||
+             ((peek(p, 1)->kind == TK_WITH || peek(p, 1)->kind == TK_AT) && is_function_name(p, cur(p)->str)))) {
+            e = new_expr(p, E_SOLVE, t);
+            e->op = solve;
+            Token *v = advance(p);
+            if (accept(p, TK_ARROW)) {
+                e->name = v->str;
+                declare_var_name(p, v->str);
+                e->a = parse_arith(p);
+                if (!e->a) return NULL;
+            } else {
+                e->base_name = v->str;
+            }
+            if (solve == SOLVE_DERIVATIVE) {
+                if (!expect(p, TK_AT, "(as in: derivative z -> z^3 at 1)")) return NULL;
+            } else {
+                if (!expect(p, TK_WITH, "(as in: critical z -> z^2 + c with seed 0)")) return NULL;
+                if (!at(p, TK_IDENT) || strcmp(cur(p)->str, "seed") != 0) {
+                    perr(p, cur(p), "expected 'seed' after 'with', as in: with seed 0");
+                    return NULL;
+                }
+                advance(p);
+            }
+            e->b = parse_arith(p);
+            if (!e->b) return NULL;
+            finish(p, e);
+            return e;
+        }
         if (is_function_name(p, t->str)) {
             e = new_expr(p, E_CALL, t);
             e->name = t->str;

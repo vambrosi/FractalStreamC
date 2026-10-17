@@ -145,6 +145,12 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "end\n"
      "q := z^n\n"
      "color = [0.5 + 0.4 sin(re(w)), 0.5 + 0.4 cos(im(w)), .iterations / 4]\n", 0.01},
+    {"autodiff",
+     "@viewer v z\n"
+     "w := critical t -> t^3 - 3 z t with seed 1 + 0.5i\n"
+     "r := root t -> t^2 - z with seed 1\n"
+     "d := derivative t -> exp(t) * sin(z t) at z\n"
+     "color = [0.5 + 0.4 sin(re(w) + im(r)), 0.5 + 0.4 cos(re(d) * 0.1), 0.5]\n", 0.03},
     {"mandelbrot",
      "@config\n.maxIterations = 200\nplane.center = -0.5\nplane.radius = 1.5\n"
      "@viewer plane c\n"

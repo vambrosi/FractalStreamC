@@ -403,6 +403,7 @@ static Section *find_viewer(Program *p, const char *name) {
 /* ---- expressions ------------------------------------------------------- */
 static Type *chk(Checker *c, Expr *e);
 static void check_func(Checker *c, Func *f);
+static void layout_frame(SymVec *locals, int *frame_words);
 static Type *chk_call(Checker *c, Expr *e);
 
 static bool is_int_const(Expr *e, int *out) {
@@ -756,6 +757,377 @@ static Type *chk_call(Checker *c, Expr *e) {
     return f->ret;
 }
 
+/* ---- automatic differentiation (critical / root / derivative) ------------------
+ * The body of `critical z -> f with seed s` is differentiated symbolically
+ * (holomorphic rules, one-line user functions are inlined) and the whole form
+ * becomes a call to a synthetic function running Newton's method:
+ *     w = seed; while true do step = f0(w) / f1(w); w -= step; if step vanishes then break end end
+ * so .stuck tells whether it converged.  Locals used by the body are passed
+ * in as extra parameters. */
+typedef struct Diff {
+    Checker *c;
+    Expr *at; /* for positions and error messages */
+    Sym *var;
+    bool failed;
+} Diff;
+
+static Expr *dx_node(Diff *d, ExprKind k, Type *t) {
+    Expr *e = ARENA_NEW(&d->c->prog->arena, Expr);
+    e->kind = k;
+    e->type = t;
+    e->line = d->at->line;
+    e->col = d->at->col;
+    e->end_col = d->at->end_col;
+    return e;
+}
+static Expr *dx_const(Diff *d, float re, float im) {
+    Expr *e = dx_node(d, E_COLOR_CONST, t_complex);
+    e->cval[0] = re;
+    e->cval[1] = im;
+    return e;
+}
+static bool dx_is(Expr *e, float re) { return e->kind == E_COLOR_CONST && e->type == t_complex && e->cval[0] == re && e->cval[1] == 0; }
+static Expr *dx_c(Diff *d, Expr *e) { return e->type == t_complex ? e : mk_convert(d->c, e, t_complex); }
+static Expr *dx_bin(Diff *d, int op, Expr *a, Expr *b) {
+    a = dx_c(d, a);
+    b = dx_c(d, b);
+    if (op == TK_PLUS) { if (dx_is(a, 0)) return b; if (dx_is(b, 0)) return a; }
+    if (op == TK_MINUS && dx_is(b, 0)) return a;
+    if (op == TK_STAR) {
+        if (dx_is(a, 0) || dx_is(b, 0)) return dx_const(d, 0, 0);
+        if (dx_is(a, 1)) return b;
+        if (dx_is(b, 1)) return a;
+    }
+    if (op == TK_SLASH && dx_is(b, 1)) return a;
+    Expr *e = dx_node(d, E_BINARY, t_complex);
+    e->op = op;
+    e->a = a;
+    e->b = b;
+    return e;
+}
+static Expr *dx_neg(Diff *d, Expr *a) {
+    if (dx_is(a, 0)) return a;
+    Expr *e = dx_node(d, E_UNARY, t_complex);
+    e->op = TK_MINUS;
+    e->a = dx_c(d, a);
+    return e;
+}
+static Expr *dx_powi(Diff *d, Expr *a, int n) {
+    if (n == 0) return dx_const(d, 1, 0);
+    if (n == 1) return dx_c(d, a);
+    Expr *e = dx_node(d, E_POWI, t_complex);
+    e->a = dx_c(d, a);
+    e->ival = n;
+    return e;
+}
+/* call the complex version of a prelude function */
+static Expr *dx_call(Diff *d, const char *name, Expr *a) {
+    Expr *e = dx_node(d, E_CALL, t_complex);
+    e->name = (char *)name;
+    e->nargs = 1;
+    e->args = ARENA_ARRAY(&d->c->prog->arena, Expr *, 1);
+    e->args[0] = dx_c(d, a);
+    for (int i = 0; i < d->c->prog->funcs.len; i++) {
+        Func *f = d->c->prog->funcs.data[i];
+        if (strcmp(f->name, name) == 0 && f->nparams == 1 && f->params[0]->type == t_complex) {
+            if (f->check_state == 0) check_func(d->c, f);
+            e->fn = f;
+            return e;
+        }
+    }
+    d->failed = true;
+    return dx_const(d, 0, 0);
+}
+
+static bool dx_depends(Expr *e, Sym *var) {
+    if (!e) return false;
+    if (e->sym == var && (e->kind == E_NAME)) return true;
+    if (dx_depends(e->a, var) || dx_depends(e->b, var)) return true;
+    for (int i = 0; i < e->nargs; i++)
+        if (dx_depends(e->args[i], var)) return true;
+    return false;
+}
+
+/* deep copy of e with the symbols from[i] replaced by copies of to[i] */
+static Expr *dx_subst(Diff *d, Expr *e, Sym **from, Expr **to, int n) {
+    if (!e) return NULL;
+    if (e->kind == E_NAME)
+        for (int i = 0; i < n; i++)
+            if (e->sym == from[i]) return dx_subst(d, to[i], NULL, NULL, 0);
+    Expr *x = ARENA_NEW(&d->c->prog->arena, Expr);
+    *x = *e;
+    x->a = dx_subst(d, e->a, from, to, n);
+    x->b = dx_subst(d, e->b, from, to, n);
+    if (e->nargs) {
+        x->args = ARENA_ARRAY(&d->c->prog->arena, Expr *, e->nargs);
+        for (int i = 0; i < e->nargs; i++) x->args[i] = dx_subst(d, e->args[i], from, to, n);
+    }
+    return x;
+}
+
+static Expr *dx_fail(Diff *d, const char *what) {
+    if (!d->failed)
+        ERR(d->c, d->at, "can't differentiate %s; derivatives work with + - * /, powers, exp, log, sqrt, trigonometric "
+                         "and hyperbolic functions, and one-line functions made of these", what);
+    d->failed = true;
+    return dx_const(d, 0, 0);
+}
+
+static Expr *deriv(Diff *d, Expr *e) {
+    if (d->failed) return dx_const(d, 0, 0);
+    if (!dx_depends(e, d->var)) return dx_const(d, 0, 0);
+    if (e->type != t_complex && e->kind != E_CONVERT) return dx_fail(d, "a real-valued part of the expression (re, im, |z| ... are not holomorphic)");
+    switch (e->kind) {
+    case E_NAME: return dx_const(d, 1, 0); /* it is the variable (depends) */
+    case E_CONVERT: return deriv(d, e->a);
+    case E_UNARY: return e->op == TK_MINUS ? dx_neg(d, deriv(d, e->a)) : dx_fail(d, "'not'");
+    case E_POWI:
+        return dx_bin(d, TK_STAR, dx_bin(d, TK_STAR, dx_const(d, (float)e->ival, 0), dx_powi(d, e->a, e->ival - 1)), deriv(d, e->a));
+    case E_BINARY: {
+        Expr *a = e->a, *b = e->b, *da = deriv(d, a), *db = deriv(d, b);
+        switch (e->op) {
+        case TK_PLUS: return dx_bin(d, TK_PLUS, da, db);
+        case TK_MINUS: return dx_bin(d, TK_MINUS, da, db);
+        case TK_STAR: return dx_bin(d, TK_PLUS, dx_bin(d, TK_STAR, da, b), dx_bin(d, TK_STAR, a, db));
+        case TK_SLASH:
+            return dx_bin(d, TK_SLASH, dx_bin(d, TK_MINUS, dx_bin(d, TK_STAR, da, b), dx_bin(d, TK_STAR, a, db)), dx_powi(d, b, 2));
+        default: return dx_fail(d, "this operator");
+        }
+    }
+    case E_CALL: {
+        if (e->intrinsic || !e->fn) return dx_fail(d, e->name ? e->name : "this call");
+        Func *f = e->fn;
+        Expr *a = e->nargs ? e->args[0] : NULL;
+        if (!f->prelude) {
+            if (!f->body_expr || f->body_expr->kind == E_TUPLE)
+                return dx_fail(d, "a function written with 'where' (write it as a single expression)");
+            Sym *from[32];
+            int n = FS_MIN(f->nparams, 32);
+            for (int i = 0; i < n; i++) from[i] = f->params[i];
+            return deriv(d, dx_subst(d, f->body_expr, from, e->args, n));
+        }
+        if (e->nargs != 1 || a->type != t_complex) {
+            if (!strcmp(f->name, "__powc") || !strcmp(f->name, "__powci")) {
+                Expr *base = e->args[0], *ex = e->args[1];
+                if (!dx_depends(ex, d->var)) { /* b * a^(b-1) * da */
+                    Expr *em1 = dx_bin(d, TK_MINUS, ex, dx_const(d, 1, 0));
+                    Expr *pw = dx_node(d, E_CALL, t_complex);
+                    *pw = *e;
+                    pw->args = ARENA_ARRAY(&d->c->prog->arena, Expr *, 2);
+                    pw->args[0] = base;
+                    if (!strcmp(f->name, "__powci")) {
+                        Expr *n1 = dx_node(d, E_BINARY, t_int);
+                        n1->op = TK_MINUS;
+                        n1->a = ex;
+                        Expr *one = dx_node(d, E_INT, t_int);
+                        one->ival = 1;
+                        n1->b = one;
+                        pw->args[1] = n1;
+                    } else {
+                        pw->args[1] = em1;
+                    }
+                    return dx_bin(d, TK_STAR, dx_bin(d, TK_STAR, dx_c(d, ex), pw), deriv(d, base));
+                }
+                /* a^b = exp(b log a): a^b (db log a + b da / a) */
+                return dx_bin(d, TK_STAR, e, dx_bin(d, TK_PLUS, dx_bin(d, TK_STAR, deriv(d, ex), dx_call(d, "log", base)),
+                                                 dx_bin(d, TK_SLASH, dx_bin(d, TK_STAR, ex, deriv(d, base)), base)));
+            }
+            return dx_fail(d, f->name);
+        }
+        Expr *da = deriv(d, a), *g;
+        const char *n = f->name;
+        if (!strcmp(n, "exp")) g = e;
+        else if (!strcmp(n, "log") || !strcmp(n, "ln")) g = dx_bin(d, TK_SLASH, dx_const(d, 1, 0), a);
+        else if (!strcmp(n, "sqrt")) g = dx_bin(d, TK_SLASH, dx_const(d, 0.5f, 0), e);
+        else if (!strcmp(n, "sin")) g = dx_call(d, "cos", a);
+        else if (!strcmp(n, "cos")) g = dx_neg(d, dx_call(d, "sin", a));
+        else if (!strcmp(n, "tan")) g = dx_bin(d, TK_SLASH, dx_const(d, 1, 0), dx_powi(d, dx_call(d, "cos", a), 2));
+        else if (!strcmp(n, "sinh")) g = dx_call(d, "cosh", a);
+        else if (!strcmp(n, "cosh")) g = dx_call(d, "sinh", a);
+        else if (!strcmp(n, "tanh")) g = dx_bin(d, TK_SLASH, dx_const(d, 1, 0), dx_powi(d, dx_call(d, "cosh", a), 2));
+        else if (!strcmp(n, "asin")) g = dx_bin(d, TK_SLASH, dx_const(d, 1, 0), dx_call(d, "sqrt", dx_bin(d, TK_MINUS, dx_const(d, 1, 0), dx_powi(d, a, 2))));
+        else if (!strcmp(n, "acos")) g = dx_neg(d, dx_bin(d, TK_SLASH, dx_const(d, 1, 0), dx_call(d, "sqrt", dx_bin(d, TK_MINUS, dx_const(d, 1, 0), dx_powi(d, a, 2)))));
+        else if (!strcmp(n, "atan")) g = dx_bin(d, TK_SLASH, dx_const(d, 1, 0), dx_bin(d, TK_PLUS, dx_const(d, 1, 0), dx_powi(d, a, 2)));
+        else return dx_fail(d, n);
+        return dx_bin(d, TK_STAR, g, da);
+    }
+    default: return dx_fail(d, "this kind of expression");
+    }
+}
+
+static Sym *solve_sym(Checker *c, Func *f, const char *name, Type *t) {
+    Sym *s = new_sym(c, name, t, SYM_LOCAL, f->line, f->col);
+    s->owner = f;
+    vec_push(f->locals, s);
+    return s;
+}
+static Expr *solve_name(Diff *d, Sym *s) {
+    Expr *e = dx_node(d, E_NAME, s->type);
+    e->name = s->name;
+    e->sym = s;
+    return e;
+}
+static Stmt *solve_stmt(Diff *d, StmtKind k) {
+    Stmt *s = ARENA_NEW(&d->c->prog->arena, Stmt);
+    s->kind = k;
+    s->line = d->at->line;
+    s->col = d->at->col;
+    return s;
+}
+static Stmt *solve_assign(Diff *d, Sym *target, Expr *v) {
+    Stmt *s = solve_stmt(d, S_ASSIGN);
+    s->op = TK_ASSIGN;
+    s->target = solve_name(d, target);
+    s->value = v;
+    return s;
+}
+static Block solve_block(Diff *d, Stmt **st, int n) {
+    Block b;
+    b.n = n;
+    b.stmts = ARENA_ARRAY(&d->c->prog->arena, Stmt *, n);
+    memcpy(b.stmts, st, sizeof(Stmt *) * (size_t)n);
+    return b;
+}
+
+static void collect_captures(Expr *e, Sym *var, SymVec *out) {
+    if (!e) return;
+    if (e->kind == E_NAME && e->sym && e->sym->kind == SYM_LOCAL && e->sym != var) {
+        bool seen = false;
+        for (int i = 0; i < out->len; i++)
+            if (out->data[i] == e->sym) seen = true;
+        if (!seen) vec_push(*out, e->sym);
+    }
+    collect_captures(e->a, var, out);
+    collect_captures(e->b, var, out);
+    for (int i = 0; i < e->nargs; i++) collect_captures(e->args[i], var, out);
+}
+
+static Type *chk_solve(Checker *c, Expr *e) {
+    static int counter = 0;
+    if (chk(c, e->b) == t_error) return t_error;
+    e->b = coerce(c, e->b, t_complex, e->op == SOLVE_DERIVATIVE ? "the point after 'at'" : "the seed");
+    Program *p = c->prog;
+    Func *f = ARENA_NEW(&p->arena, Func);
+    f->name = arena_printf(&p->arena, "__%s%d", e->op == SOLVE_CRITICAL ? "critical" : e->op == SOLVE_ROOT ? "root" : "derivative", ++counter);
+    f->line = e->line;
+    f->col = e->col;
+    f->has_where = true;
+    /* the variable of the lambda */
+    Sym *var = new_sym(c, e->name ? e->name : "x", t_complex, SYM_LOCAL, e->line, e->col);
+    var->owner = f;
+    Expr *body = e->a;
+    if (!e->name) { /* a function name: body = f(x) */
+        body = ARENA_NEW(&p->arena, Expr);
+        body->kind = E_CALL;
+        body->line = e->line;
+        body->col = e->col;
+        body->end_col = e->end_col;
+        body->name = e->base_name;
+        body->nargs = 1;
+        body->args = ARENA_ARRAY(&p->arena, Expr *, 1);
+        body->args[0] = ARENA_NEW(&p->arena, Expr);
+        *body->args[0] = *body;
+        body->args[0]->kind = E_NAME;
+        body->args[0]->name = var->name;
+        body->args[0]->nargs = 0;
+        body->args[0]->args = NULL;
+    }
+    Scope lam = {{0}, c->scope};
+    vec_push(lam.syms, var);
+    Scope *saved = c->scope;
+    c->scope = &lam;
+    Type *bt = chk(c, body);
+    c->scope = saved;
+    vec_free(lam.syms);
+    if (bt == t_error) return t_error;
+    if (!type_is_number(bt) || bt == t_quat) {
+        ERR(c, body, "the expression after '->' must be a number, not %s", type_str(bt));
+        return t_error;
+    }
+    Diff D = {c, e, var, false};
+    Expr *f0, *f1;
+    Expr *d1 = deriv(&D, body);
+    if (e->op == SOLVE_CRITICAL) { f0 = d1; f1 = deriv(&D, d1); }
+    else { f0 = dx_c(&D, body); f1 = d1; }
+    if (D.failed) return t_error;
+    if (e->op != SOLVE_DERIVATIVE && dx_is(f1, 0)) {
+        ERR(c, e, "the %s is constant, so Newton's method can't be used here", e->op == SOLVE_CRITICAL ? "second derivative" : "derivative");
+        return t_error;
+    }
+    /* parameters: the seed, then the caller's locals used by the expression */
+    SymVec caps = {0};
+    collect_captures(f0, var, &caps);
+    collect_captures(f1, var, &caps);
+    f->nparams = 1 + caps.len;
+    f->params = ARENA_ARRAY(&p->arena, Sym *, f->nparams);
+    f->param_tsyn = ARENA_ARRAY(&p->arena, TypeSyntax *, f->nparams);
+    f->params[0] = solve_sym(c, f, "seed", t_complex);
+    Sym **from = ARENA_ARRAY(&p->arena, Sym *, caps.len + 1);
+    Expr **to = ARENA_ARRAY(&p->arena, Expr *, caps.len + 1);
+    for (int i = 0; i < caps.len; i++) {
+        f->params[1 + i] = solve_sym(c, f, caps.data[i]->name, caps.data[i]->type);
+        from[i] = caps.data[i];
+        to[i] = solve_name(&D, f->params[1 + i]);
+    }
+    f0 = dx_subst(&D, f0, from, to, caps.len);
+    f1 = dx_subst(&D, f1, from, to, caps.len);
+    vec_push(f->locals, var);
+    Sym *res = solve_sym(c, f, "result", t_complex);
+    f->noutputs = 1;
+    f->outputs = ARENA_ARRAY(&p->arena, Sym *, 1);
+    f->outputs[0] = res;
+    f->output_tsyn = ARENA_ARRAY(&p->arena, TypeSyntax *, 1);
+    f->ret = t_complex;
+    Stmt *st[4];
+    st[0] = solve_assign(&D, var, solve_name(&D, f->params[0]));
+    if (e->op == SOLVE_DERIVATIVE) {
+        st[1] = solve_assign(&D, res, f1);
+        f->body = solve_block(&D, st, 2);
+    } else {
+        Sym *step = solve_sym(c, f, "step", t_complex);
+        Stmt *loop[3];
+        loop[0] = solve_assign(&D, step, dx_bin(&D, TK_SLASH, f0, f1));
+        loop[1] = solve_assign(&D, var, dx_bin(&D, TK_MINUS, solve_name(&D, var), solve_name(&D, step)));
+        Stmt *brk = solve_stmt(&D, S_BREAK);
+        Stmt *iff = solve_stmt(&D, S_IF);
+        Expr *pred = dx_node(&D, E_PRED, t_bool);
+        pred->op = TK_VANISHES;
+        pred->a = solve_name(&D, step);
+        iff->value = pred;
+        iff->body = solve_block(&D, &brk, 1);
+        loop[2] = iff;
+        Stmt *wh = solve_stmt(&D, S_WHILE);
+        Expr *tru = dx_node(&D, E_BOOL, t_bool);
+        tru->ival = 1;
+        wh->value = tru;
+        wh->body = solve_block(&D, loop, 3);
+        st[1] = wh;
+        st[2] = solve_assign(&D, res, solve_name(&D, var));
+        f->body = solve_block(&D, st, 3);
+    }
+    layout_frame(&f->locals, &f->frame_words);
+    f->check_state = 2;
+    vec_push(p->funcs, f);
+    /* rewrite e into a call */
+    Expr *seed = e->b;
+    e->kind = E_CALL;
+    e->name = f->name;
+    e->fn = f;
+    e->nargs = f->nparams;
+    e->args = ARENA_ARRAY(&p->arena, Expr *, e->nargs);
+    e->args[0] = seed;
+    for (int i = 0; i < caps.len; i++) {
+        Expr *n = dx_node(&D, E_NAME, caps.data[i]->type);
+        n->name = caps.data[i]->name;
+        n->sym = caps.data[i];
+        e->args[1 + i] = n;
+    }
+    e->a = e->b = NULL;
+    vec_free(caps);
+    if (c->fn) c->fn->ncalls += 0;
+    return t_complex;
+}
+
 static Type *chk(Checker *c, Expr *e) {
     Type *t = t_error;
     switch (e->kind) {
@@ -875,6 +1247,7 @@ static Type *chk(Checker *c, Expr *e) {
     case E_POWI: case E_CONVERT: case E_COLOR_CONST:
         t = e->type;
         break;
+    case E_SOLVE: t = chk_solve(c, e); break;
     }
     e->type = t;
     return t;

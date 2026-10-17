@@ -102,7 +102,8 @@ typedef enum ExprKind {
     E_VECTOR,    /* [a, b, c] */
     E_TUPLE,     /* (a, b) -- only as function results / destructuring */
     E_CONVERT,   /* implicit numeric promotion of a to type */
-    E_COLOR_CONST
+    E_COLOR_CONST, /* constant of any number/vector type (cval) */
+    E_SOLVE      /* critical / root / derivative (op = SOLVE_*); rewritten by the checker into a call */
 } ExprKind;
 
 struct Expr {
@@ -123,6 +124,8 @@ struct Expr {
     float cval[4];     /* E_COLOR_CONST and folded constants */
     bool paren;        /* written in parentheses (for juxtaposition diagnostics) */
 };
+
+enum { SOLVE_CRITICAL = 1, SOLVE_ROOT, SOLVE_DERIVATIVE };
 
 typedef struct Block {
     Stmt **stmts;

@@ -638,7 +638,7 @@ static u32 gen_expr(Gen *g, Expr *e) {
         return construct(g, ty(g, e->type), items, e->nargs);
     }
     case E_COLOR_CONST: return const_value(g, e->type, e->cval);
-    case E_STRING: return 0;
+    case E_STRING: case E_SOLVE: return 0;
     }
     return 0;
 }
