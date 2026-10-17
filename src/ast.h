@@ -1,0 +1,272 @@
+/* ast.h - data structures of the FractalStream language front-end:
+ * tokens, types, AST, symbols, functions, sections, programs, diagnostics.
+ *
+ * Pipeline: lex.c (text -> tokens), parse.c (tokens -> AST), check.c (name
+ * resolution, types, implicit conversions, layout), then interp.c (CPU) or
+ * codegen.c (SPIR-V).  Everything a program allocates lives in its arena. */
+#ifndef FS_AST_H
+#define FS_AST_H
+
+/* ---- diagnostics ----------------------------------------------------- */
+typedef enum { DIAG_ERROR, DIAG_WARNING, DIAG_NOTE } DiagSeverity;
+typedef struct Diag {
+    DiagSeverity severity;
+    int line, col, end_col; /* 1-based; end_col exclusive (0 = unknown) */
+    char *msg;
+} Diag;
+typedef VEC(Diag) DiagVec;
+
+/* ---- tokens ---------------------------------------------------------- */
+typedef enum TokKind {
+    TK_EOF, TK_NEWLINE, TK_IDENT, TK_INTERNAL /* .name */, TK_INT, TK_REAL, TK_IMAG, TK_STRING,
+    TK_SECTION, /* @word */
+    TK_LPAREN, TK_RPAREN, TK_LBRACKET, TK_RBRACKET, TK_COMMA, TK_COLON, TK_SEMI, TK_BAR, TK_DOTDOT,
+    TK_PLUS, TK_MINUS, TK_STAR, TK_SLASH, TK_CARET,
+    TK_ASSIGN, TK_DECLARE /* := */, TK_PLUSEQ, TK_MINUSEQ, TK_STAREQ, TK_SLASHEQ,
+    TK_EQ, TK_NE, TK_LT, TK_LE, TK_GT, TK_GE, TK_ARROW,
+    /* keywords */
+    TK_DEFINE, TK_WHERE, TK_END, TK_FOR, TK_IN, TK_BY, TK_DO, TK_WHILE, TK_IF, TK_THEN, TK_ELSE,
+    TK_RETURN, TK_BREAK, TK_CONTINUE, TK_AND, TK_OR, TK_NOT, TK_TRUE, TK_FALSE, TK_ESCAPES,
+    TK_VANISHES, TK_DRAW, TK_AT, TK_WITH, TK_BETWEEN, TK_PX, TK_MOD, TK_OF,
+    TK_COUNT
+} TokKind;
+
+typedef struct Token {
+    TokKind kind;
+    int line, col, len;   /* position of the token text in the source */
+    bool space_before;    /* whitespace (or line start) precedes the token */
+    const char *text;     /* points into the source */
+    double num;           /* TK_INT / TK_REAL / TK_IMAG value */
+    char *str;            /* TK_STRING contents, TK_IDENT/TK_INTERNAL/TK_SECTION name (arena) */
+} Token;
+typedef VEC(Token) TokenVec;
+
+const char *tok_kind_name(TokKind k);
+
+/* ---- types ------------------------------------------------------------
+ * Types are interned: compare with ==.  Layout is in 32-bit words and
+ * follows std430 (the GPU storage-buffer layout), so the interpreter's
+ * frames and the global state buffer share one representation:
+ *   Bool -> u32 0/1, Z -> i32, R -> f32, C -> 2 x f32 (align 2),
+ *   H -> 4 x f32 (align 4), R^n etc. -> array, List -> {len, data[cap]}. */
+typedef enum TypeKind {
+    T_ERROR, T_VOID, T_BOOL, T_INT, T_REAL, T_COMPLEX, T_QUAT, T_VEC, T_LIST, T_TUPLE, T_STRING
+} TypeKind;
+
+typedef struct Type Type;
+struct Type {
+    TypeKind kind;
+    int n;           /* T_VEC: length, T_LIST: capacity, T_TUPLE: item count */
+    Type *elem;      /* T_VEC / T_LIST element (a scalar number type or Bool) */
+    Type **items;    /* T_TUPLE */
+    int size, align; /* words */
+    int stride;      /* T_VEC / T_LIST element stride in words */
+    int data_off;    /* T_LIST: word offset of data[] */
+    u32 spv_id;      /* codegen cache (per module, reset by codegen) */
+    u32 spv_buf_id;  /* codegen: explicitly laid out variant for the state buffer */
+    Type *next;      /* intern list */
+};
+
+extern Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color;
+void types_init(void);
+Type *type_vec(Type *elem, int n);
+Type *type_list(Type *elem, int cap);
+Type *type_tuple(Type **items, int n); /* items copied */
+bool type_is_number(Type *t);           /* Z R C H */
+bool type_is_scalar_real(Type *t);      /* Z R */
+int type_number_rank(Type *t);          /* Z=1 R=2 C=3 H=4, else 0 */
+Type *type_number_of_rank(int r);
+void type_name(Type *t, StrBuf *out);   /* "R^3", "List of C", ... */
+const char *type_str(Type *t);          /* static rotating buffer, for messages */
+
+/* ---- AST ---------------------------------------------------------------- */
+typedef struct Sym Sym;
+typedef struct Func Func;
+typedef struct Expr Expr;
+typedef struct Stmt Stmt;
+typedef struct Section Section;
+
+typedef enum ExprKind {
+    E_INT, E_REAL, E_IMAG, E_BOOL, E_STRING,
+    E_NAME,      /* variable (sym) */
+    E_INTERNAL,  /* .name (resolved to sym or constant) */
+    E_MEMBER,    /* viewer.prop (resolved to sym) */
+    E_UNARY,     /* op: '-' or TK_NOT */
+    E_BINARY,    /* op: TK_PLUS.. TK_GE, TK_AND, TK_OR, TK_MOD */
+    E_POWI,      /* a ^ n with n a small integer constant (ival) */
+    E_ABS,       /* |a| */
+    E_PRED,      /* a escapes / a vanishes (op = TK_ESCAPES / TK_VANISHES) */
+    E_CALL,      /* user/prelude function call (fn) or intrinsic (intrinsic != 0) */
+    E_INDEX,     /* a[b], 1-based */
+    E_VECTOR,    /* [a, b, c] */
+    E_TUPLE,     /* (a, b) -- only as function results / destructuring */
+    E_CONVERT,   /* implicit numeric promotion of a to type */
+    E_COLOR_CONST
+} ExprKind;
+
+struct Expr {
+    ExprKind kind;
+    int line, col, end_col;
+    Type *type;        /* set by the checker */
+    int op;            /* operator token / predicate / intrinsic id */
+    Expr *a, *b;
+    Expr **args;       /* call args, vector items, tuple items */
+    int nargs;
+    char *name;        /* E_NAME, E_INTERNAL, E_MEMBER (prop), E_CALL */
+    char *base_name;   /* E_MEMBER: viewer name */
+    Sym *sym;          /* resolved variable */
+    Func *fn;          /* resolved function */
+    int intrinsic;     /* E_CALL: intrinsic id (>0) */
+    i32 ival;          /* E_INT, E_BOOL, E_POWI exponent */
+    double rval;       /* E_REAL / E_IMAG */
+    float cval[4];     /* E_COLOR_CONST and folded constants */
+    bool paren;        /* written in parentheses (for juxtaposition diagnostics) */
+};
+
+typedef struct Block {
+    Stmt **stmts;
+    int n;
+} Block;
+
+typedef enum StmtKind {
+    S_EXPR, S_DECL, S_ASSIGN, S_DESTRUCTURE, S_IF, S_WHILE, S_DOWHILE, S_FOR, S_FOREACH,
+    S_BREAK, S_CONTINUE, S_RETURN, S_DRAW, S_DEFINE, S_APPEND
+} StmtKind;
+
+typedef enum DrawShape { DRAW_POINT, DRAW_CIRCLE, DRAW_DISK, DRAW_LINE } DrawShape;
+
+typedef struct TypeSyntax TypeSyntax; /* parsed type annotation */
+struct TypeSyntax {
+    char *base;       /* "Z", "R", "C", "H", "Color", "Bool", "List", ... */
+    int power;        /* R^n : n, 0 if none */
+    TypeSyntax *elem; /* List of <elem> */
+    int cap;          /* List capacity (0 = default) */
+    int line, col;
+};
+
+struct Stmt {
+    StmtKind kind;
+    int line, col, end_col;
+    Expr *target;       /* S_DECL/S_ASSIGN/S_APPEND: lvalue */
+    Expr *value;        /* initializer / assigned value / condition (S_IF/S_WHILE/S_DOWHILE) */
+    int op;             /* S_ASSIGN: TK_ASSIGN, TK_PLUSEQ, ... */
+    TypeSyntax *tsyn;   /* S_DECL: annotation (NULL for :=) */
+    Sym *sym;           /* declared symbol (S_DECL, S_FOR, S_FOREACH) */
+    bool implicit_decl; /* S_ASSIGN that declared a new variable */
+    Expr *range_lo, *range_hi; /* @config slider range `in a..b` */
+    Block body, else_body;
+    Expr *from, *to, *step;    /* S_FOR range; S_FOREACH uses `from` as the collection */
+    Sym *loop_end, *loop_step; /* hidden locals for S_FOR */
+    Expr **targets; int ntargets; bool declare; /* S_DESTRUCTURE */
+    /* S_DRAW */
+    DrawShape shape;
+    Expr *p0, *p1, *radius, *color, *width;
+    bool radius_px;
+    char *in_viewer; int viewer_index;
+    Func *fn;           /* S_DEFINE */
+};
+
+/* ---- symbols --------------------------------------------------------- */
+typedef enum SymKind {
+    SYM_GLOBAL,   /* program state (lives in the state buffer) */
+    SYM_LOCAL,    /* section or function local (frame slot) */
+    SYM_EXEC,     /* per-execution internals: .stuck .iterations */
+    SYM_CONST     /* read-only constants (.red, pi) */
+} SymKind;
+
+struct Sym {
+    char *name;
+    Type *type;
+    SymKind kind;
+    int slot;          /* word offset: state buffer (globals) or frame (locals) */
+    int line, col;
+    bool is_config;    /* declared in @config: shown in the config panel */
+    bool is_internal;  /* .name */
+    bool readonly;
+    bool has_range;    /* config slider range */
+    double range_lo, range_hi;
+    float cval[4];     /* SYM_CONST value */
+    Func *owner;       /* function owning this local, NULL for section locals */
+    int viewer_index;  /* viewer property/picked point: owning viewer, else -1 */
+    const char *doc;   /* short description (internals) */
+    u32 spv_var;       /* codegen: variable id for the current module */
+    bool used;         /* referenced by the section being compiled (codegen) */
+};
+typedef VEC(Sym *) SymVec;
+
+/* ---- functions --------------------------------------------------------- */
+struct Func {
+    char *name;
+    int line, col;
+    bool prelude;
+    Sym **params; int nparams;
+    TypeSyntax **param_tsyn;
+    Sym **outputs; int noutputs;
+    TypeSyntax **output_tsyn;
+    Expr *body_expr;    /* `define f(x) = expr` */
+    Block body;         /* `define f(x) = (u, v) where ... end` */
+    bool has_where;
+    Type *ret;          /* single output type or tuple */
+    SymVec locals;      /* every frame slot: params, outputs, locals */
+    int frame_words;
+    int check_state;    /* 0 unchecked, 1 in progress, 2 done */
+    bool failed;
+    bool uses_draw;
+    Func *next_overload;
+    u32 spv_fn;         /* codegen */
+    bool spv_emitted;
+    int ncalls;
+};
+typedef VEC(Func *) FuncVec;
+
+/* ---- sections ----------------------------------------------------------- */
+typedef enum SectionKind { SEC_GLOBAL, SEC_CONFIG, SEC_VIEWER, SEC_TOOL } SectionKind;
+
+struct Section {
+    SectionKind kind;
+    int line;
+    int index;          /* viewer index / tool index within its kind */
+    char *name;         /* viewer name */
+    char *var;          /* viewer coordinate variable */
+    char *display;      /* display name */
+    char *shortcut;     /* "Ctrl + 1" */
+    bool projective;
+    Block body;
+    SymVec locals;
+    int frame_words;
+    Sym *coord;         /* viewer coordinate variable */
+    Sym *color;         /* viewer output */
+    Sym *picked;        /* viewer: .var (picked point) */
+    Sym *center, *radius; /* viewer properties */
+    bool panning, hover; /* tool settings */
+    bool uses_time, uses_mouse; /* viewer depends on .time / .mouse */
+    bool implicit;      /* the whole file was this (default) viewer */
+};
+typedef VEC(Section *) SectionVec;
+
+/* ---- program ------------------------------------------------------------ */
+typedef struct Program {
+    Arena arena;
+    const char *source;
+    const char *path;
+    TokenVec tokens;
+    SectionVec sections;
+    Section **viewers; int nviewers;
+    Section **tools; int ntools;
+    FuncVec funcs;       /* all user + prelude functions (overloads chained) */
+    SymVec globals;      /* state variables in layout order */
+    SymVec consts;
+    int state_words;     /* size of the state buffer in words */
+    u32 *initial_state;  /* state after running @global/@config */
+    DiagVec diags;
+    int nerrors;
+    /* internals with fixed meaning */
+    Sym *s_max_iter, *s_epsilon, *s_escape, *s_time, *s_last_click, *s_mouse, *s_width, *s_height;
+    Sym *s_stuck, *s_iterations;
+    char *title;
+    int prelude_lines;   /* diagnostics inside the prelude are reported as internal errors */
+} Program;
+
+void prog_diag(Program *p, DiagSeverity sev, int line, int col, int end_col, const char *fmt, ...) FS_PRINTF(6, 7);
+
+#endif

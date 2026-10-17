@@ -11,14 +11,26 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
 #include "stb_truetype.h"
+#undef STB_TRUETYPE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
 #include "stb_image_write.h"
+#undef STB_IMAGE_WRITE_IMPLEMENTATION
 
 /* language */
-#if __has_include("lang.c")
-#include "lang.c"
+#include "ast.h"
+#include "lex.c"
+#include "builtins.c"
+#include "parse.c"
+#include "check.c"
+#include "interp.c"
+#if __has_include("spirv.c")
+#include "spirv.c"
 #endif
+#if __has_include("codegen.c")
+#include "codegen.c"
+#endif
+#include "program.c"
 /* graphics */
 #if __has_include("gfx.c")
 #include "gfx.c"
