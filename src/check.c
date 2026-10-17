@@ -1017,6 +1017,13 @@ static void chk_range(Checker *c, Stmt *s, Sym *sym) {
     sym->range_hi = hi;
 }
 
+/* is e a text, or a sum with a text in it ("period " + n)? */
+static bool is_text(Expr *e) {
+    if (!e) return false;
+    if (e->kind == E_STRING) return true;
+    return e->kind == E_BINARY && e->op == TK_PLUS && (is_text(e->a) || is_text(e->b));
+}
+
 /* built-in colour helpers that a script may define again (scripts written for the first FractalStream did) */
 static bool replaceable_builtin(const char *name) {
     static const char *names[] = {"rainbow", "cycle", "blend", "dark", "light", "invert"};
@@ -1032,6 +1039,23 @@ static bool shortcut_key(const char *sc, char *out, int cap) {
         if (*q != ' ') out[n++] = (char)toupper((unsigned char)*q);
     out[n] = 0;
     return n > 0;
+}
+
+/* the text of `draw text`: texts in quotes and numbers joined with + */
+static void chk_text(Checker *c, Expr *e) {
+    if (e->kind == E_STRING) {
+        e->type = t_string;
+        return;
+    }
+    if (e->kind == E_BINARY && e->op == TK_PLUS && (is_text(e->a) || is_text(e->b))) {
+        chk_text(c, e->a);
+        chk_text(c, e->b);
+        e->type = t_string;
+        return;
+    }
+    Type *t = chk(c, e);
+    if (t != t_error && !type_is_number(t) && t != t_bool && t->kind != T_VEC)
+        ERR(c, e, "only texts in quotes, numbers and vectors can be written (joined with +), not %s", type_str(t));
 }
 
 static void config_add_var(Checker *c, Sym *sym) {
@@ -1368,6 +1392,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
             return;
         }
         if (c->fn) c->fn->uses_draw = true;
+        if (s->text) chk_text(c, s->text);
         if (s->p0 && chk(c, s->p0) != t_error) s->p0 = coerce(c, s->p0, t_complex, "the position");
         if (s->p1 && chk(c, s->p1) != t_error) s->p1 = coerce(c, s->p1, t_complex, "the end point");
         if (s->radius && chk(c, s->radius) != t_error) s->radius = coerce(c, s->radius, t_real, "the radius");

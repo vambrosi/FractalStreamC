@@ -265,7 +265,8 @@ draw circle at z with radius 4 px and color .red
 - `@tool` (without a viewer) makes a tool available in every viewer; it reads the clicked point
   from `.lastClick`.
 - `draw point at P`, `draw circle at P with radius R [px]`, `draw disk at P with radius R [px]`,
-  `draw line between A and B`, with optional `with/and color C` and `width W px`, and
+  `draw line between A and B`, `draw text "period " + n at P` (texts in quotes and values joined
+  with `+`), with optional `with/and color C` and `width W px`, and
   `in VIEWER` to draw in another viewer. Radii are in plane units unless followed by `px`, which
   keeps them that many pixels wide on the screen when you zoom afterwards.
 - Each run of a tool replaces the drawings of its previous run, unless the tool sets

@@ -149,7 +149,7 @@ typedef enum StmtKind {
 /* the events a tool can handle with `on EVENT do ... end` */
 enum { TOOL_EV_PRESS, TOOL_EV_DRAG, TOOL_EV_RELEASE, TOOL_EV_CLICK, TOOL_EV_HOVER, TOOL_EV_SHOW, TOOL_EV_HIDE, TOOL_EV_COUNT };
 
-typedef enum DrawShape { DRAW_POINT, DRAW_CIRCLE, DRAW_DISK, DRAW_LINE } DrawShape;
+typedef enum DrawShape { DRAW_POINT, DRAW_CIRCLE, DRAW_DISK, DRAW_LINE, DRAW_TEXT } DrawShape;
 
 typedef struct TypeSyntax TypeSyntax; /* parsed type annotation */
 struct TypeSyntax {
@@ -179,6 +179,7 @@ struct Stmt {
     /* S_DRAW */
     DrawShape shape;
     Expr *p0, *p1, *radius, *color, *width;
+    Expr *text;         /* draw text: "..." + values */
     bool radius_px;
     char *in_viewer; int viewer_index;
     Func *fn;           /* S_DEFINE */

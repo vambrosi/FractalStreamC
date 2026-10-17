@@ -17,6 +17,7 @@ typedef struct DrawItem {
     bool radius_px;
     float color[3];
     float width;      /* pixels */
+    char text[96];    /* DRAW_TEXT */
     int viewer;       /* -1: the viewer the tool ran in */
 } DrawItem;
 typedef VEC(DrawItem) DrawItemVec;
@@ -644,6 +645,49 @@ static bool after_body(Interp *I) {
     return I->signal != SIG_NONE; /* return / abort */
 }
 
+/* a number as `draw text` writes it */
+static void format_value(Type *t, const u32 *v, StrBuf *sb) {
+    switch (t->kind) {
+    case T_INT: sb_printf(sb, "%d", (i32)v[0]); break;
+    case T_BOOL: sb_puts(sb, v[0] ? "true" : "false"); break;
+    case T_REAL: sb_printf(sb, "%.6g", wf(v[0])); break;
+    case T_COMPLEX: {
+        float re = wf(v[0]), im = wf(v[1]);
+        if (im == 0) sb_printf(sb, "%.6g", re);
+        else if (re == 0) sb_printf(sb, "%.6gi", im);
+        else sb_printf(sb, "%.6g %c %.6gi", re, im < 0 ? '-' : '+', fabsf(im));
+        break;
+    }
+    case T_QUAT: sb_printf(sb, "quat(%.4g, %.4g, %.4g, %.4g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
+    case T_VEC:
+        sb_putc(sb, '[');
+        for (int i = 0; i < t->n; i++) {
+            if (i) sb_puts(sb, ", ");
+            format_value(t->elem, v + i * t->stride, sb);
+        }
+        sb_putc(sb, ']');
+        break;
+    default: break;
+    }
+}
+
+static void format_text(Interp *I, Expr *e, StrBuf *sb) {
+    if (e->kind == E_STRING) {
+        sb_puts(sb, e->name);
+        return;
+    }
+    if (e->type == t_string && e->kind == E_BINARY) {
+        format_text(I, e->a, sb);
+        format_text(I, e->b, sb);
+        return;
+    }
+    int mark = I->sp;
+    u32 *tmp = push_words(I, e->type->size);
+    ev(I, e, tmp);
+    format_value(e->type, tmp, sb);
+    I->sp = mark;
+}
+
 static void exec_stmt(Interp *I, Stmt *s) {
     int mark = I->sp;
     i32 maxit = s->quiet ? 0x7fffffff : wi(I->state[I->prog->s_max_iter->slot]);
@@ -799,6 +843,12 @@ static void exec_stmt(Interp *I, Stmt *s) {
         if (s->radius) { ev(I, s->radius, v); d.radius = wf(v[0]); d.radius_px = s->radius_px; }
         if (s->width) { ev(I, s->width, v); d.width = wf(v[0]); }
         if (s->color) { ev(I, s->color, v); for (int i = 0; i < 3; i++) d.color[i] = wf(v[i]); }
+        if (s->text) {
+            StrBuf sb = {0};
+            format_text(I, s->text, &sb);
+            snprintf(d.text, sizeof d.text, "%s", sb_cstr(&sb));
+            sb_free(&sb);
+        }
         if (I->signal != SIG_ABORT) vec_push(*I->draws, d);
         break;
     }

@@ -327,11 +327,12 @@ int cli_main(int argc, char **argv) {
                 if (!interp_run_tool_event(&I, t, evs[k], re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
             }
         }
-        static const char *shapes[] = {"point", "circle", "disk", "line"};
+        static const char *shapes[] = {"point", "circle", "disk", "line", "text"};
         for (int k = 0; k < draws.len; k++) {
             DrawItem *d = &draws.data[k];
             printf("draw %s at %g%+gi", shapes[d->shape], d->p0[0], d->p0[1]);
             if (d->shape == DRAW_LINE) printf(" to %g%+gi", d->p1[0], d->p1[1]);
+            if (d->shape == DRAW_TEXT) printf(" \"%s\"", d->text);
             if (d->shape == DRAW_CIRCLE || d->shape == DRAW_DISK) printf(" radius %g%s", d->radius, d->radius_px ? " px" : "");
             printf(" color [%g, %g, %g] width %g px", d->color[0], d->color[1], d->color[2], d->width);
             if (d->viewer >= 0) printf(" in %s", p->viewers[d->viewer]->name);

@@ -1125,6 +1125,14 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
             }
             break;
         }
+        case DRAW_TEXT: { /* left end of the baseline... simply: the text starts just right of the point */
+            if (!(fabsf(x0) < 1e6f && fabsf(y0) < 1e6f) || !d->text[0]) break;
+            float lh = ui_font_line_height(UI_FONT_SANS);
+            float tx = x0 + px(4), ty = y0 - lh / 2;
+            ui_text(UI_FONT_SANS, tx + px(1), ty + px(1), d->text, -1, shadow);
+            ui_text(UI_FONT_SANS, tx, ty, d->text, -1, col);
+            break;
+        }
         }
     }
 }

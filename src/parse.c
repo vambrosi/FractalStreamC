@@ -668,11 +668,16 @@ static Stmt *parse_draw_body(Parser *p, Token *t) {
     else if (strcmp(nm, "circle") == 0) s->shape = DRAW_CIRCLE;
     else if (strcmp(nm, "disk") == 0) s->shape = DRAW_DISK;
     else if (strcmp(nm, "line") == 0 || strcmp(nm, "segment") == 0) s->shape = DRAW_LINE;
+    else if (strcmp(nm, "text") == 0) s->shape = DRAW_TEXT;
     else {
-        perr(p, shape, "expected point, circle, disk or line after 'draw', found %s", tok_desc(shape));
+        perr(p, shape, "expected point, circle, disk, line or text after 'draw', found %s", tok_desc(shape));
         return NULL;
     }
     advance(p);
+    if (s->shape == DRAW_TEXT) { /* draw text "period " + n at P */
+        s->text = parse_arith(p);
+        if (!s->text) return NULL;
+    }
     if (s->shape == DRAW_LINE) {
         if (!expect(p, TK_BETWEEN, "(as in: draw line between a and b)")) return NULL;
         s->p0 = parse_arith(p);

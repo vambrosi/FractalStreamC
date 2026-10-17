@@ -910,7 +910,34 @@ TEST(tool_events) {
                  "unknown name 'q'");
 }
 
+TEST(draw_text) {
+    Program *p = LOAD_OK(
+        "@viewer v z\n"
+        "color = .red\n"
+        "@v.tool \"T\"\n"
+        "n : Z = 3\n"
+        "draw text \"n = \" + n + \", z = \" + z + \" \" + (n > 2) + \" \" + [1, 2.5] at z\n");
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, state);
+    DrawItemVec draws = {0};
+    I.draws = &draws;
+    CHECK(interp_run_tool(&I, p->tools[0], 1, -2));
+    CHECK_INT(draws.len, 1);
+    if (draws.len == 1) {
+        CHECK(draws.data[0].shape == DRAW_TEXT);
+        CHECK_STR(draws.data[0].text, "n = 3, z = 1 - 2i true [1, 2.5]");
+    }
+    vec_free(draws);
+    interp_free(&I);
+    free(state);
+    program_free(p);
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\ndraw text \"a\" + .red + L at 0\n", "unknown name 'L'");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(draw_text),
     TESTCASE(tool_events),
     TESTCASE(colour_helpers_and_palettes),
     TESTCASE(if_expressions),
