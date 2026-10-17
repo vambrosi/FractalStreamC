@@ -2396,10 +2396,18 @@ static bool block_assigns(Block *b, Sym *s) {
     return false;
 }
 
-/* a value the script computes again whenever the state changes (@prepare): not a setting */
+/* a value the script computes again whenever the state changes: given by a statement of @prepare that always runs
+   (one in an `if` only adjusts the value now and then: it stays a setting) */
 static bool prepared(Program *p, Sym *s) {
-    for (int i = 0; i < p->nprepares; i++)
-        if (block_assigns(&p->prepares[i]->body, s)) return true;
+    for (int i = 0; i < p->nprepares; i++) {
+        Block *b = &p->prepares[i]->body;
+        for (int k = 0; k < b->n; k++) {
+            Stmt *st = b->stmts[k];
+            if (st->kind != S_IF && st->kind != S_WHILE && st->kind != S_DOWHILE && st->kind != S_FOR &&
+                st->kind != S_FOREACH && stmt_assigns(st, s))
+                return true;
+        }
+    }
     return false;
 }
 

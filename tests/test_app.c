@@ -362,10 +362,12 @@ TEST(app_settings_and_prepare) {
                               "@global\n"
                               "w0 := 1\n"
                               "k : Z = 2\n"
+                              "q := 0\n"
                               "@prepare\n"
                               "t := a\n"
                               "a = 0\n"
                               "a = t\n"
+                              "q = 2 k\n"
                               "if k > 0 then\n"
                               "    w0 = w0 + 1\n"
                               "end\n"
@@ -373,17 +375,19 @@ TEST(app_settings_and_prepare) {
                               "color = .black\n", "t");
     CHECK_INT(p->nerrors, 0);
     if (p->nerrors) { program_free(p); return; }
-    Sym *a = NULL, *w0 = NULL, *k = NULL;
+    Sym *a = NULL, *w0 = NULL, *k = NULL, *q = NULL;
     for (int i = 0; i < p->globals.len; i++) {
         Sym *g = p->globals.data[i];
         if (!strcmp(g->name, "a")) a = g;
         if (!strcmp(g->name, "w0")) w0 = g;
         if (!strcmp(g->name, "k")) k = g;
+        if (!strcmp(g->name, "q")) q = g;
     }
-    CHECK(a && w0 && k);
-    if (a && w0 && k) {
-        CHECK(script_setting(p, a));
-        CHECK(!script_setting(p, w0)); /* (assigned inside an if of @prepare) */
+    CHECK(a && w0 && k && q);
+    if (a && w0 && k && q) {
+        CHECK(script_setting(p, a));  /* (in @config) */
+        CHECK(script_setting(p, w0)); /* (only adjusted, inside an if of @prepare) */
+        CHECK(!script_setting(p, q)); /* (computed by @prepare every time) */
         CHECK(script_setting(p, k));
         CHECK(!script_setting(p, p->s_mouse) && !script_setting(p, p->viewers[0]->center));
     }
