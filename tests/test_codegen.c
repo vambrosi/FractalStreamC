@@ -157,6 +157,15 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "r := root t -> t^2 - z with seed 1\n"
      "d := derivative t -> exp(t) * sin(z t) at z\n"
      "color = [0.5 + 0.4 sin(re(w) + im(r)), 0.5 + 0.4 cos(re(d) * 0.1), 0.5]\n", 0.03},
+    {"if_expressions",
+     "@global\n"
+     "define sq(z) = z^2\n"
+     "@viewer v z\n"
+     "w := if re(z) > 0 then sq(z) else z^3 + 1\n"
+     "k : Z = if im(z) > 0 then 3 else 5\n"
+     "col : Color = if |z| < 1 then [0.2, 0.4, 0.6] else if |z| < 1.5 then .orange else gray(0.3)\n"
+     "d := derivative t -> (if re(t) > 0 then t^2 else sin(t)) at z\n"
+     "color = mix(col, [0.5 + 0.4 sin(re(w)), k / 6, 0.5 + 0.4 cos(re(d))], 0.5)\n", 0.01},
     {"autodiff_loops",
      "@config\n.maxIterations = 40\n.escapeRadius = 100\n"
      "@global\n"

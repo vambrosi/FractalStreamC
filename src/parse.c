@@ -184,6 +184,32 @@ static Expr *parse_app_arg(Parser *p) {
     return e;
 }
 
+/* `if c then a else b` as a value (no `end`; `else if` chains); the branches extend as far as possible */
+static Expr *parse_if_expr(Parser *p) {
+    Token *t = advance(p);
+    Expr *e = new_expr(p, E_COND, t);
+    e->nargs = 3;
+    e->args = ARENA_ARRAY(&p->prog->arena, Expr *, 3);
+    int saved = p->abs_depth;
+    p->abs_depth = 0;
+    e->args[0] = parse_expr(p);
+    if (!e->args[0] || !expect(p, TK_THEN, "after the condition (as in: if c then a else b)")) goto fail;
+    e->args[1] = parse_expr(p);
+    if (!e->args[1]) goto fail;
+    if (!accept(p, TK_ELSE)) {
+        perr(p, cur(p), "a value 'if' needs an 'else' (as in: if c then a else b), found %s", tok_desc(cur(p)));
+        goto fail;
+    }
+    e->args[2] = parse_expr(p);
+    if (!e->args[2]) goto fail;
+    p->abs_depth = saved;
+    finish(p, e);
+    return e;
+fail:
+    p->abs_depth = saved;
+    return NULL;
+}
+
 static Expr *parse_primary(Parser *p) {
     Token *t = cur(p);
     Expr *e;
@@ -219,6 +245,7 @@ static Expr *parse_primary(Parser *p) {
         e = new_expr(p, E_INTERNAL, t);
         e->name = t->str;
         return e;
+    case TK_IF: return parse_if_expr(p);
     case TK_LPAREN: {
         advance(p);
         int n;

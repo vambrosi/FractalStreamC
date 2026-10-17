@@ -102,6 +102,15 @@ static void dump_expr(Expr *e, StrBuf *o) {
         else sb_printf(o, "const<%s>(%g, %g, %g, %g)", type_str(e->type), e->cval[0], e->cval[1], e->cval[2], e->cval[3]);
         break;
     case E_SOLVE: sb_puts(o, "<solve>"); break;
+    case E_COND:
+        sb_puts(o, "(if ");
+        dump_expr(e->args[0], o);
+        sb_puts(o, " then ");
+        dump_expr(e->args[1], o);
+        sb_puts(o, " else ");
+        dump_expr(e->args[2], o);
+        sb_putc(o, ')');
+        break;
     }
 }
 

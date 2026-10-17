@@ -103,7 +103,8 @@ typedef enum ExprKind {
     E_TUPLE,     /* (a, b) -- only as function results / destructuring */
     E_CONVERT,   /* implicit numeric promotion of a to type */
     E_COLOR_CONST, /* constant of any number/vector type (cval) */
-    E_SOLVE      /* critical / root / derivative (op = SOLVE_*); rewritten by the checker into a call */
+    E_SOLVE,     /* critical / root / derivative (op = SOLVE_*); rewritten by the checker into a call */
+    E_COND       /* if args[0] then args[1] else args[2] */
 } ExprKind;
 
 struct Expr {
@@ -229,6 +230,7 @@ struct Func {
     bool failed;
     bool uses_draw;
     Func *next_overload;
+    bool shadowed;      /* a built-in function the script defines again (the script's one is used) */
     u32 spv_fn;         /* codegen */
     bool spv_emitted;
     int ncalls;

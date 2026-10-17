@@ -368,6 +368,7 @@ static void setup_internals(Checker *c) {
     p->s_iterations = add_internal(c, "iterations", t_int, SYM_EXEC, "number of iterations of the last loop");
     p->s_pixel = add_internal(c, "pixel", t_real, SYM_EXEC, "size of a pixel of the viewer (in a tool: of the viewer clicked)");
     p->s_pixel->readonly = true;
+    add_color(c, "violet", 1, 0, 160.0f / 255.0f);
     add_color(c, "red", 1, 0, 0);
     add_color(c, "green", 0, 1, 0);
     add_color(c, "blue", 0, 0, 1);
@@ -669,6 +670,23 @@ static Type *chk_generic_intrinsic(Checker *c, Expr *e, int id) {
 
 static Type *chk_call(Checker *c, Expr *e) {
     const char *name = e->name;
+    if (name && !strcmp(name, "palette") && e->nargs == 2 && e->args[0]->kind == E_STRING) {
+        /* palette("fire", t): the colour map of that name */
+        static const char *maps[] = {"rainbow", "arenberg", "romao", "bamo", "broco", "corko", "viko", "ice", "fire",
+                                     "wheat", "rose", "forest", "ocean", "winter", "spring", "summer", "fall"};
+        const char *m = e->args[0]->name;
+        int k = 0;
+        while (k < ARRAY_COUNT(maps) && strcmp(maps[k], m) != 0) k++;
+        if (k == ARRAY_COUNT(maps)) {
+            ERR(c, e->args[0], "there is no palette \"%s\"; the palettes are rainbow, arenberg, romao, bamo, broco, "
+                               "corko, viko, ice, fire, wheat, rose, forest, ocean, winter, spring, summer and fall", m);
+            return t_error;
+        }
+        e->name = arena_printf(&c->prog->arena, "__palette_%s", m);
+        name = e->name;
+        e->args[0] = e->args[1];
+        e->nargs = 1;
+    }
     for (int k = 0; k < ARRAY_COUNT(intrinsics); k++)
         if (strcmp(intrinsics[k].name, name) == 0 && intrinsics[k].params[0] == '*')
             return chk_generic_intrinsic(c, e, intrinsics[k].id);
@@ -702,7 +720,9 @@ static Type *chk_call(Checker *c, Expr *e) {
     Func *head = NULL;
     for (int i = 0; i < c->prog->funcs.len; i++)
         if (strcmp(c->prog->funcs.data[i]->name, name) == 0) { head = c->prog->funcs.data[i]; break; }
+    bool in_prelude = c->fn && c->fn->prelude;
     for (Func *f = head; f; f = f->next_overload) {
+        if (in_prelude ? !f->prelude : f->shadowed) continue; /* built-ins only call built-ins */
         any_name = true;
         if (f->nparams != e->nargs) continue;
         int cost = 0;
@@ -910,6 +930,22 @@ static Type *chk(Checker *c, Expr *e) {
         t = e->type;
         break;
     case E_SOLVE: t = chk_solve(c, e); break;
+    case E_COND: {
+        Type *tc = chk(c, e->args[0]);
+        Type *ta = chk(c, e->args[1]), *tb = chk(c, e->args[2]);
+        if (tc == t_error || ta == t_error || tb == t_error) break;
+        e->args[0] = coerce(c, e->args[0], t_bool, "the condition of 'if'");
+        if (type_is_number(ta) && type_is_number(tb)) t = join_numbers(ta, tb);
+        else if (ta == tb && ta != t_void && ta->kind != T_TUPLE) t = ta;
+        else if (ta->kind == T_VEC && tb->kind == T_VEC && ta->n == tb->n) t = type_vec(join_numbers(ta->elem, tb->elem), ta->n);
+        else {
+            ERR(c, e, "the two values of this 'if' are %s and %s, which don't mix", type_str(ta), type_str(tb));
+            break;
+        }
+        e->args[1] = coerce(c, e->args[1], t, "the value after 'then'");
+        e->args[2] = coerce(c, e->args[2], t, "the value after 'else'");
+        break;
+    }
     }
     e->type = t;
     return t;
@@ -977,6 +1013,14 @@ static void chk_range(Checker *c, Stmt *s, Sym *sym) {
     sym->has_range = true;
     sym->range_lo = lo;
     sym->range_hi = hi;
+}
+
+/* built-in colour helpers that a script may define again (scripts written for the first FractalStream did) */
+static bool replaceable_builtin(const char *name) {
+    static const char *names[] = {"rainbow", "cycle", "blend", "dark", "light", "invert"};
+    for (int i = 0; i < ARRAY_COUNT(names); i++)
+        if (!strcmp(names[i], name)) return true;
+    return false;
 }
 
 /* a shortcut like "Shift + p" in a comparable form ("SHIFT+P"); false if there is none */
@@ -1553,23 +1597,46 @@ bool check_program(Program *p) {
     for (int i = 0; i < p->funcs.len; i++) resolve_signature(c, p->funcs.data[i]);
     for (int i = 0; i < p->funcs.len; i++) {
         Func *f = p->funcs.data[i];
-        for (int j = 0; j < i; j++) {
-            Func *g = p->funcs.data[j];
-            if (strcmp(f->name, g->name) != 0) continue;
-            bool same = f->nparams == g->nparams;
+        if (!f->prelude) /* functions of the machine itself (sin of a real...) can't be replaced */
+            for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) {
+                const IntrinsicInfo *in = &intrinsics[k];
+                if (strcmp(in->name, f->name) != 0 || in->nparams != f->nparams) continue;
+                bool same = true;
+                for (int q = 0; q < f->nparams && same; q++) {
+                    char pc = in->params[q];
+                    Type *pt = pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : t_bool;
+                    if (f->params[q]->type != pt) same = false;
+                }
+                if (same) {
+                    prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
+                    break;
+                }
+            }
+        Func *head = NULL;
+        for (int j = 0; j < i && !head; j++)
+            if (strcmp(f->name, p->funcs.data[j]->name) == 0) head = p->funcs.data[j];
+        if (!head) continue;
+        bool dup = false;
+        for (Func *g = head; g; g = g->next_overload) {
+            bool same = f->nparams == g->nparams && !g->shadowed;
             for (int k = 0; same && k < f->nparams; k++)
                 if (f->params[k]->type != g->params[k]->type) same = false;
-            if (same) {
-                if (g->prelude && !f->prelude)
-                    prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
-                else
-                    prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is already defined with the same parameter types (line %d)", f->name, g->line);
+            if (!same) continue;
+            if (g->prelude && !f->prelude && replaceable_builtin(g->name)) {
+                g->shadowed = true; /* the script's own rainbow(t) replaces the built-in one (built-ins keep theirs) */
+            } else if (g->prelude && !f->prelude) {
+                prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
+                dup = true;
+            } else {
+                prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is already defined with the same parameter types (line %d)", f->name, g->line);
+                dup = true;
             }
-            Func *last = g;
-            while (last->next_overload) last = last->next_overload;
-            if (last != f && !same) last->next_overload = f;
             break;
         }
+        if (dup) continue;
+        Func *last = head;
+        while (last->next_overload) last = last->next_overload;
+        if (last != f) last->next_overload = f;
     }
     /* 1: @global/@config in file order, 2: remaining user functions, 3: viewers and tools */
     for (int i = 0; i < p->sections.len; i++) {

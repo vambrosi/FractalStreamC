@@ -664,6 +664,21 @@ static u32 gen_expr(Gen *g, Expr *e) {
     }
     case E_COLOR_CONST: return const_value(g, e->type, e->cval);
     case E_STRING: case E_SOLVE: return 0;
+    case E_COND: { /* branches, so that only one value is computed */
+        u32 c = gen_expr(g, e->args[0]);
+        u32 tmp = local_var(g, e->type);
+        u32 lt = new_label(g), lf = new_label(g), merge = new_label(g);
+        spv_selection_merge(&g->s, merge);
+        spv_branch_cond(&g->s, c, lt, lf);
+        label(g, lt);
+        store(g, tmp, gen_expr(g, e->args[1]));
+        branch(g, merge);
+        label(g, lf);
+        store(g, tmp, gen_expr(g, e->args[2]));
+        branch(g, merge);
+        label(g, merge);
+        return load(g, ty(g, e->type), tmp);
+    }
     }
     return 0;
 }

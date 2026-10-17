@@ -791,7 +791,73 @@ TEST(friendly_messages) {
                    "key of Pick point");
 }
 
+TEST(if_expressions) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define f(z) = if re(z) > 0 then z^2 else z^3\n"
+        "a := if 1 > 2 then 5 else 7\n"
+        "b : R = if true then 1 else 2.5\n"
+        "c := if false then .red else if true then .green else .blue\n"
+        "d1 := derivative t -> f(t) at 2\n"
+        "d2 := derivative t -> (if re(t) > 0 then t^2 else t^3) at -2\n"
+        "n : Z = 0\n"
+        "define bump() = r where\n"
+        "    n += 1\n"
+        "    r = 1\n"
+        "end\n"
+        "e := if true then 1 else bump()\n");   /* only the chosen value is computed */
+    CHECK_NEAR(gnum(p, "a", 0), 7, 0);
+    CHECK_NEAR(gnum(p, "b", 0), 1, 0);
+    CHECK_NEAR(gnum(p, "c", 1), 1, 0);
+    CHECK_NEAR(gnum(p, "d1", 0), 4, 1e-5);
+    CHECK_NEAR(gnum(p, "d2", 0), 12, 1e-4);
+    CHECK_NEAR(gnum(p, "n", 0), 0, 0);
+    program_free(p);
+    EXPECT_ERROR("@global\nx := if true then 1 end\n", "needs an 'else'");
+    EXPECT_ERROR("@global\nx := if true then 1 else .red\n", "don't mix");
+    EXPECT_ERROR("@global\nx := if 1 then 1 else 2\n", "condition");
+}
+
+TEST(colour_helpers_and_palettes) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "a := rainbow(0.3)\n"
+        "b := palette(\"fire\", 0)\n"
+        "c := cycle(0.25, .red, .blue)\n"
+        "d := dark(.white)\n"
+        "e := light(.black)\n"
+        "f := invert(.violet)\n"
+        "g := blend(0.25, .red, .blue)\n"
+        "h := palette(\"rainbow\", 1.3)\n");
+    CHECK_NEAR(gnum(p, "a", 0), 0.6, 1e-5);
+    CHECK_NEAR(gnum(p, "a", 1), 1 - 0.4 * (1 - 180.0 / 255), 1e-4);
+    CHECK_NEAR(gnum(p, "a", 2), 0, 1e-6);
+    CHECK_NEAR(gnum(p, "b", 1), 0x3d / 255.0, 1e-3);
+    CHECK_NEAR(gnum(p, "c", 0), 0.5, 1e-6);
+    CHECK_NEAR(gnum(p, "c", 2), 0.5, 1e-6);
+    CHECK_NEAR(gnum(p, "d", 1), 2.0 / 3, 1e-5);
+    CHECK_NEAR(gnum(p, "e", 2), 1.0 / 3, 1e-5);
+    CHECK_NEAR(gnum(p, "f", 2), 1 - 160.0 / 255, 1e-5);
+    CHECK_NEAR(gnum(p, "g", 0), 0.25, 1e-6);
+    CHECK_NEAR(gnum(p, "g", 2), 0.75, 1e-6);
+    CHECK_NEAR(gnum(p, "h", 1), gnum(p, "a", 1), 1e-5);
+    program_free(p);
+    /* a script may define its own rainbow; the built-in palettes keep using the built-in one */
+    p = LOAD_OK(
+        "@global\n"
+        "define rainbow(t : R) = gray(t)\n"
+        "a := rainbow(0.3)\n"
+        "b := palette(\"rainbow\", 0.3)\n");
+    CHECK_NEAR(gnum(p, "a", 1), 0.3, 1e-6);
+    CHECK_NEAR(gnum(p, "b", 0), 0.6, 1e-5);
+    program_free(p);
+    EXPECT_ERROR("@global\nx := palette(\"nope\", 0)\n", "no palette");
+    EXPECT_ERROR("@global\ndefine hsv(h : R, s : R, v : R) = gray(h)\n", "built-in");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(colour_helpers_and_palettes),
+    TESTCASE(if_expressions),
     TESTCASE(friendly_messages),
     TESTCASE(config_groups_notes_labels_choices),
     TESTCASE(for_loops_run_their_range),

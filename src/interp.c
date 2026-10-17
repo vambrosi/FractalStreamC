@@ -608,6 +608,13 @@ static void ev(Interp *I, Expr *e, u32 *out) {
         for (int i = 0; i < e->type->size; i++) out[i] = fw(e->cval[i]);
         return;
     case E_SOLVE: return; /* rewritten into a call by the checker */
+    case E_COND: {
+        u32 c;
+        ev(I, e->args[0], &c);
+        if (I->signal == SIG_ABORT) return;
+        ev(I, e->args[c ? 1 : 2], out);
+        return;
+    }
     }
 }
 

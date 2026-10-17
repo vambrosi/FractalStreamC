@@ -622,6 +622,28 @@ static Jet ad_jet(AD *ad, Expr *e) {
     case E_POWI:
         if (e->type == t_complex) return jet_powi(ad, ad_jet(ad, e->a), e->ival);
         break;
+    case E_COND: {
+        /* if c then a else b: the condition only chooses; each branch computes its own jet */
+        if (e->type != t_complex) break;
+        Sym *v = ad_temp(ad, t_complex), *d1 = ad_temp(ad, t_complex), *d2 = ad->order >= 2 ? ad_temp(ad, t_complex) : NULL;
+        Stmt *iff = ad_stmt_new(ad, S_IF);
+        iff->value = ad_copy(ad, e->args[0]);
+        StmtVec *saved = ad->out;
+        for (int k = 1; k <= 2; k++) {
+            StmtVec br = {0};
+            ad->out = &br;
+            Jet j = ad_jet(ad, e->args[k]);
+            ad_assign(ad, v, j.v);
+            ad_assign(ad, d1, j.d1 ? j.d1 : ad_cconst(ad, 0, 0));
+            if (d2) ad_assign(ad, d2, j.d2 ? j.d2 : ad_cconst(ad, 0, 0));
+            if (k == 1) iff->body = ad_take_block(ad, &br);
+            else iff->else_body = ad_take_block(ad, &br);
+        }
+        ad->out = saved;
+        ad_emit(ad, iff);
+        Jet r = {ad_name(ad, v), ad_name(ad, d1), d2 ? ad_name(ad, d2) : NULL};
+        return r;
+    }
     case E_CALL: {
         if (e->intrinsic || !e->fn) break;
         Func *f = e->fn;

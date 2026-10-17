@@ -44,6 +44,7 @@ Program *program_load(const char *source, const char *path) {
 
     NameVec builtins = {0}, ufuncs = {0}, gvars = {0};
     for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) vec_push(builtins, intrinsics[k].name);
+    vec_push(builtins, "palette"); /* palette("fire", t), rewritten by the checker */
 
     /* prelude */
     lex_program(p, prelude_source, PRELUDE_LINE0 + 1);

@@ -109,6 +109,9 @@ Precedence, loosest first: `or`, `and`, `not`, comparisons / `escapes` / `vanish
   Also `z not escapes`, `z not vanishes`.
 - `px` after a number is a length in pixels of the viewer: `8 px` is `8 .pixel`, as in
   `if |z - a| < 8 px then`.
+- `if c then a else b` is a value: `color = if .stuck then .black else rainbow(.iterations / 30)`.
+  Only the chosen side is computed; `else if` chains work; the branches extend as far as possible,
+  so put the whole `if` in parentheses inside a larger expression.
 - Out-of-range indices are clamped to the first/last entry (indices start at 1).
 
 ## Statements
@@ -213,9 +216,11 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 | quaternions | `quat(a, b, c, d)`, `conj`, `abs`, `q[1]` ... `q[4]` |
 | vectors / lists | `dot(u, v)`, `length(v)`, `append(L, x)`, `clear(L)` |
 | colours | `rgb(r, g, b)`, `hsv(h, s, v)` (hue in turns: 0 red, 1/3 green, 2/3 blue), `gray(v)`, `mix(a, b, t)` |
+| palettes | `rainbow(t)`, `palette("name", t)` with the maps `rainbow arenberg romao bamo broco corko viko` (cyclic) and `ice fire wheat rose forest ocean winter spring summer fall` (there and back); all repeat with period 1 in `t` |
+| from the first FractalStream | `cycle(t, a, b)` (b, then a at t = 1/2, back to b), `blend(t, a, b)` (= `mix(b, a, t)`), `dark(c)`, `light(c)`, `invert(c)`; a script may define its own versions of these and of `rainbow` |
 
 Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.red .green .blue
-.black .white .gray .yellow .cyan .magenta .orange .purple .pink .brown`, quaternion units
+.black .white .gray .yellow .cyan .magenta .orange .purple .pink .brown .violet`, quaternion units
 `.j .k`.
 
 ## Internals (names starting with a dot)
