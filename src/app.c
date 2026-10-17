@@ -48,6 +48,7 @@ typedef struct ViewerRT {
     bool picked;       /* show the picked-point marker */
     int tool;          /* this viewer's selected tool: TOOL_PAN, TOOL_PICK or a script tool */
     double strip_until; /* show the tool strip until then (after a change by keyboard) */
+    u32 *show_snap;    /* the state when the selected tool last ran `on show` (NULL: run it) */
 } ViewerRT;
 
 typedef struct App {
@@ -503,9 +504,39 @@ static Shortcut tool_shortcut(int tool) {
     return parse_shortcut(A.prog->tools[tool]->shortcut);
 }
 
+/* Does the tool handle event ev (TOOL_EV_*)?  A tool without `on` blocks runs its body on a press and
+   while dragging, or (.panning) on a click; with .hover also when the mouse moves. */
+static bool tool_handles(int tool, int ev) {
+    if (tool < 0 || !A.prog) return false;
+    Section *t = A.prog->tools[tool];
+    if (t->has_events) return t->on[ev] != NULL;
+    if (ev == TOOL_EV_HOVER) return t->hover;
+    if (t->panning || t->button) return ev == TOOL_EV_CLICK;
+    return ev == TOOL_EV_PRESS || ev == TOOL_EV_DRAG;
+}
+
+static void run_tool(int tool, int viewer, int ev, float re, float im);
+
+/* run an event of a tool where no point was clicked: at the centre of the view */
+static void run_tool_at_center(int tool, int v, int ev) {
+    Section *s = A.prog->viewers[v];
+    run_tool(tool, v, ev, wf(A.state[s->center->slot]), wf(A.state[s->center->slot + 1]));
+}
+
 static void select_tool(int v, int tool, bool flash) {
-    A.vrt[v].tool = tool;
-    if (flash) A.vrt[v].strip_until = fs_time_seconds() + 1.5;
+    ViewerRT *rt = &A.vrt[v];
+    if (tool >= 0 && A.prog->tools[tool]->button) { /* an action: runs once, isn't selected */
+        if (tool_handles(tool, TOOL_EV_CLICK)) run_tool_at_center(tool, v, TOOL_EV_CLICK);
+        else if (tool_handles(tool, TOOL_EV_PRESS)) run_tool_at_center(tool, v, TOOL_EV_PRESS);
+        return;
+    }
+    if (rt->tool != tool) {
+        if (tool_handles(rt->tool, TOOL_EV_HIDE)) run_tool_at_center(rt->tool, v, TOOL_EV_HIDE);
+        rt->tool = tool;
+        free(rt->show_snap); /* the next frame runs `on show` */
+        rt->show_snap = NULL;
+    }
+    if (flash) rt->strip_until = fs_time_seconds() + 1.5;
 }
 
 /* ---- program loading ------------------------------------------------------------ */
@@ -518,6 +549,7 @@ static void free_viewers(void) {
         if (rt->target) gfx_target_destroy(rt->target);
         free(rt->snap);
         free(rt->used);
+        free(rt->show_snap);
     }
     free(A.vrt);
     A.vrt = NULL;
@@ -734,10 +766,12 @@ static void ask_open(void) {
 }
 
 /* ---- running tools ----------------------------------------------------------------- */
-static void run_tool(int tool, int viewer, float re, float im) {
+/* run event ev (TOOL_EV_*) of a tool in a viewer, at the point (re, im) */
+static void run_tool(int tool, int viewer, int ev, float re, float im) {
     Program *p = A.prog;
-    set_c(p->s_last_click, re, im);
-    set_c(p->s_mouse, re, im);
+    Section *t = p->tools[tool];
+    if (ev == TOOL_EV_PRESS || ev == TOOL_EV_DRAG || ev == TOOL_EV_RELEASE || ev == TOOL_EV_CLICK) set_c(p->s_last_click, re, im);
+    if (ev != TOOL_EV_SHOW && ev != TOOL_EV_HIDE) set_c(p->s_mouse, re, im);
     /* remember the picked points: a tool that moves one makes its marker appear */
     float before[64][2];
     for (int v = 0; v < p->nviewers && v < 64; v++) {
@@ -756,12 +790,21 @@ static void run_tool(int tool, int viewer, float re, float im) {
         }
     DrawItemVec out = {0};
     A.interp.draws = &out;
-    if (!interp_run_tool(&A.interp, p->tools[tool], re, im)) set_status(true, "%s: %s", p->tools[tool]->display, A.interp.error);
+    A.interp.erased = A.interp.erased_all = false;
+    bool ok = t->has_events ? interp_run_tool_event(&A.interp, t, ev, re, im) : interp_run_tool(&A.interp, t, re, im);
+    if (!ok) set_status(true, "%s: %s", t->display, A.interp.error);
     A.interp.draws = NULL;
     for (int k = 0; k < out.len; k++)
         if (out.data[k].viewer < 0) out.data[k].viewer = viewer;
-    vec_free(A.draws[tool]);
-    A.draws[tool] = out;
+    if (A.interp.erased_all)
+        for (int k = 0; k < p->ntools; k++) vec_clear(A.draws[k]);
+    if (t->keep && !A.interp.erased) { /* .keep: the drawings build up until `erase` */
+        for (int k = 0; k < out.len; k++) vec_push(A.draws[tool], out.data[k]);
+        vec_free(out);
+    } else {
+        vec_free(A.draws[tool]);
+        A.draws[tool] = out;
+    }
     for (int v = 0; v < p->nviewers && v < 64; v++) {
         Sym *ps = p->viewers[v]->picked;
         if (ps && (wf(A.state[ps->slot]) != before[v][0] || wf(A.state[ps->slot + 1]) != before[v][1]))
@@ -930,13 +973,20 @@ static void viewer_interaction(void) {
             platform_set_cursor(UI_CURSOR_CROSSHAIR);
             break;
         case DRAG_TOOL:
-            if ((dx || dy) && A.drag_tool >= 0 && A.drag_tool < p->ntools) run_tool(A.drag_tool, t->viewer, re, im);
+            if ((dx || dy) && tool_handles(A.drag_tool, TOOL_EV_DRAG)) run_tool(A.drag_tool, t->viewer, TOOL_EV_DRAG, re, im);
+            if (!any_down) {
+                if (tool_handles(A.drag_tool, TOOL_EV_RELEASE)) run_tool(A.drag_tool, t->viewer, TOOL_EV_RELEASE, re, im);
+                if (!A.moved && tool_handles(A.drag_tool, TOOL_EV_CLICK)) run_tool(A.drag_tool, t->viewer, TOOL_EV_CLICK, re, im);
+            }
             platform_set_cursor(UI_CURSOR_CROSSHAIR);
             break;
         case DRAG_CLICK: /* a tool with .panning: dragging pans, a click runs the tool */
             if (A.moved && (dx || dy)) pan_by(t->viewer, t->r, dx, dy);
-            if (in->mouse_released[0] && !A.moved && A.drag_tool >= 0 && A.drag_tool < p->ntools)
-                run_tool(A.drag_tool, t->viewer, re, im);
+            if (in->mouse_released[0] && !A.moved && A.drag_tool >= 0 && A.drag_tool < p->ntools) {
+                static const int evs[3] = {TOOL_EV_PRESS, TOOL_EV_RELEASE, TOOL_EV_CLICK};
+                for (int k = 0; k < 3; k++)
+                    if (tool_handles(A.drag_tool, evs[k])) run_tool(A.drag_tool, t->viewer, evs[k], re, im);
+            }
             break;
         }
         if (!any_down) A.drag = DRAG_NONE;
@@ -962,7 +1012,7 @@ static void viewer_interaction(void) {
     plane_of(v, t->r, mx, my, &re, &im);
     if (re != wf(A.state[p->s_mouse->slot]) || im != wf(A.state[p->s_mouse->slot + 1])) {
         set_c(p->s_mouse, re, im);
-        if (rt->tool >= 0 && p->tools[rt->tool]->hover && (mx != A.last_mx || my != A.last_my)) run_tool(rt->tool, v, re, im);
+        if (tool_handles(rt->tool, TOOL_EV_HOVER) && (mx != A.last_mx || my != A.last_my)) run_tool(rt->tool, v, TOOL_EV_HOVER, re, im);
     }
     if (in->scroll_y != 0) zoom_at(v, t->r, mx, my, powf(0.85f, in->scroll_y));
     /* the border of a floating view: drag it somewhere else */
@@ -998,11 +1048,36 @@ static void viewer_interaction(void) {
         pick(v, re, im);
     } else if (p->tools[rt->tool]->panning) {
         A.drag = DRAG_CLICK;
+        set_c(p->s_drag_start, re, im);
     } else {
         A.drag = DRAG_TOOL;
-        run_tool(rt->tool, v, re, im);
+        set_c(p->s_drag_start, re, im);
+        if (tool_handles(rt->tool, TOOL_EV_PRESS)) run_tool(rt->tool, v, TOOL_EV_PRESS, re, im);
     }
     ui_set_mouse_captured(true);
+}
+
+/* `on show`: runs when its tool is selected, and again whenever the state changes while it is (not for
+   the mouse, the time or the last click, which change all the time) */
+static void tools_show(void) {
+    Program *p = A.prog;
+    size_t bytes = sizeof(u32) * (size_t)p->state_words;
+    Sym *volatile_syms[4] = {p->s_mouse, p->s_time, p->s_last_click, p->s_drag_start};
+    for (int i = 0; i < A.nvis; i++) {
+        int v = A.vis[i].viewer;
+        ViewerRT *rt = &A.vrt[v];
+        if (!tool_handles(rt->tool, TOOL_EV_SHOW)) continue;
+        if (rt->show_snap) {
+            for (int k = 0; k < 4; k++)
+                memcpy(rt->show_snap + volatile_syms[k]->slot, A.state + volatile_syms[k]->slot,
+                       sizeof(u32) * (size_t)volatile_syms[k]->type->size);
+            if (memcmp(rt->show_snap, A.state, bytes) == 0) continue;
+        } else {
+            rt->show_snap = (u32 *)xmalloc(bytes);
+        }
+        run_tool_at_center(rt->tool, v, TOOL_EV_SHOW);
+        memcpy(rt->show_snap, A.state, bytes);
+    }
 }
 
 /* ---- drawing tiles ------------------------------------------------------------------ */
@@ -1125,7 +1200,8 @@ static void tile_chrome(int i) {
             if (ui_icon_button_ex(id, tool_icon(tool), letter, sx + pad, y, b, rt->tool == tool ? UI_SELECTED : UI_FLAT))
                 select_tool(v, tool, false);
             shortcut_text(tool_shortcut(tool), sc, sizeof sc);
-            snprintf(tip, sizeof tip, "%s%s%s%s", tool_name(tool), sc[0] ? " (" : "", sc, sc[0] ? ")" : "");
+            snprintf(tip, sizeof tip, "%s%s%s%s%s", tool_name(tool), sc[0] ? " (" : "", sc, sc[0] ? ")" : "",
+                     tool >= 0 && p->tools[tool]->button ? ": runs once" : "");
             ui_tooltip(tip);
             y += b + gap;
         }
@@ -1831,6 +1907,7 @@ static void frame(void) {
     A.state[p->s_time->slot] = fw(t);
 
     viewer_interaction();
+    tools_show();
     for (int i = 0; i < A.nvis; i++) {
         int prev = ui_layer(tile_layer(&A.vis[i]));
         draw_tile(&A.vis[i]);

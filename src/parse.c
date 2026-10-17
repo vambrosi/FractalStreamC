@@ -852,8 +852,43 @@ static bool is_lvalue(Expr *e) {
     return false;
 }
 
+static const char *tool_event_names[TOOL_EV_COUNT] = {"press", "drag", "release", "click", "hover", "show", "hide"};
+
 static Stmt *parse_stmt(Parser *p, int top_level) {
     Token *t = cur(p);
+    if (t->kind == TK_IDENT && !strcmp(t->str, "on") && peek(p, 1)->kind == TK_IDENT && peek(p, 2)->kind == TK_DO) {
+        /* on press do ... end (tools; the checker says where else not) */
+        advance(p);
+        Token *ev = advance(p);
+        advance(p);
+        Stmt *s = new_stmt(p, S_ON, t);
+        s->op = -1;
+        for (int k = 0; k < TOOL_EV_COUNT; k++)
+            if (!strcmp(ev->str, tool_event_names[k])) s->op = k;
+        if (s->op < 0) {
+            perr(p, ev, "'%s' is not an event; tools can handle press, drag, release, click, hover, show and hide", ev->str);
+            return NULL;
+        }
+        if (!top_level) {
+            perr(p, t, "'on %s do' must be at the top of a tool section, not inside another block", ev->str);
+            return NULL;
+        }
+        s->body = parse_block(p, TK_END, TK_END, false, 0);
+        expect_end(p, t, "on");
+        return s;
+    }
+    if (t->kind == TK_IDENT && !strcmp(t->str, "erase")) {
+        Token *n = peek(p, 1);
+        bool all = n->kind == TK_IDENT && !strcmp(n->str, "all");
+        TokKind k = peek(p, all ? 2 : 1)->kind;
+        if (k == TK_NEWLINE || k == TK_EOF || k == TK_SEMI || k == TK_END || k == TK_ELSE || k == TK_SECTION) {
+            advance(p);
+            if (all) advance(p);
+            Stmt *s = new_stmt(p, S_ERASE, t);
+            s->op = all; /* erase all: the drawings of every tool */
+            return s;
+        }
+    }
     switch (t->kind) {
     case TK_IF: return parse_if(p);
     case TK_WHILE: {
@@ -1095,6 +1130,8 @@ static void parse_section_header(Parser *p, Section *s, Token *h) {
             s->icon = a->str;
         else if (a->kind == TK_IDENT && strcmp(a->str, "projective") == 0 && s->kind == SEC_VIEWER)
             s->projective = true;
+        else if (a->kind == TK_IDENT && strcmp(a->str, "button") == 0 && s->kind == SEC_TOOL)
+            s->button = true;
         else {
             p->nerr_stmt = 0;
             perr(p, a, "unexpected %s in the section header", tok_desc(a));

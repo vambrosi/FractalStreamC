@@ -797,7 +797,7 @@ static void loop_end(Gen *g, LoopVars *L) {
 
 static void gen_stmt(Gen *g, Stmt *s) {
     switch (s->kind) {
-    case S_DEFINE: case S_APPEND: case S_DRAW: break;
+    case S_DEFINE: case S_APPEND: case S_DRAW: case S_ON: case S_ERASE: break;
     case S_EXPR:
         if (s->value) gen_expr(g, s->value);
         break;

@@ -232,6 +232,7 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.r
 | `.escapeRadius` | R | `escapes` threshold (default 2) |
 | `.stuck`, `.iterations` | Bool, Z | result of the last loop |
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
+| `.dragStart` | C | where the mouse button went down (for tools: `on drag`, `on release`) |
 | `.mouse` | C | point under the mouse |
 | `.time` | R | seconds since the script started (viewers using it are animated) |
 | `.pixel` | R | size of a pixel of the viewer, in the plane (in a tool: of the viewer clicked) |
@@ -267,9 +268,38 @@ draw circle at z with radius 4 px and color .red
   `draw line between A and B`, with optional `with/and color C` and `width W px`, and
   `in VIEWER` to draw in another viewer. Radii are in plane units unless followed by `px`, which
   keeps them that many pixels wide on the screen when you zoom afterwards.
-- Each run of a tool replaces the drawings of its previous run.
+- Each run of a tool replaces the drawings of its previous run, unless the tool sets
+  `.keep = true`: then they build up until it runs `erase`. `erase all` clears the drawings of every
+  tool.
 - Settings at the top of a tool: `.panning = true` makes dragging pan the view, so the tool only
-  runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button.
+  runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button;
+  `.keep = true` as above.
+- `button` at the end of the header (`@tool "Clear" "X" "delete" button`) makes an action: clicking
+  its button (or its key) runs it once, at the centre of the view, and it is never selected.
+
+### Events
+
+A tool can handle each event in its own block; the statements outside the blocks run first, every
+time:
+
+```
+@plane.tool "Move root" "M" "open_with"
+on press do                 # the button went down at z
+    grabbed = nearest(z, 10 px)        # (a global, so that the next events see it)
+end
+on drag do                  # the mouse moved to z, button down; .dragStart is where it went down
+    move(grabbed, z)
+end
+on release do               # the button went up at z
+    grabbed = 0
+end
+```
+
+The events are `press`, `drag`, `release`, `click` (a press and release without moving), `hover`
+(the mouse moves without a button), `show` (the tool was selected, or the state changed while it
+is: a config value, a global set by another tool...) and `hide` (another tool was selected; for
+example `on hide do erase end`). Each block is its own scope: share values between events through
+globals.
 
 Every viewer also has the built-in tools **Pan** (drag to move, wheel to zoom) and **Pick point**
 (sets `.VAR` of the viewer you click in and marks it). The mouse wheel always zooms, and dragging

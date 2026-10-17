@@ -32,6 +32,8 @@ typedef struct Interp {
     bool stuck;
     i32 iterations;
     float pixel;      /* .pixel: size of a pixel of the viewer being drawn or clicked, in plane units */
+    bool erased;      /* a tool ran `erase` */
+    bool erased_all;  /* ... `erase all` */
     int signal;
     DrawItemVec *draws;
     double steps, step_limit;
@@ -773,6 +775,12 @@ static void exec_stmt(Interp *I, Stmt *s) {
         if (I->signal == SIG_NONE && !I->quiet && !s->quiet) { I->iterations = n; I->stuck = stuck; }
         break;
     }
+    case S_ON: break; /* event handlers run through interp_run_tool_event */
+    case S_ERASE:
+        if (I->draws) I->draws->len = 0;
+        I->erased = true;
+        if (s->op) I->erased_all = true;
+        break;
     case S_BREAK: I->signal = SIG_BREAK; break;
     case S_CONTINUE: I->signal = SIG_CONTINUE; break;
     case S_RETURN: I->signal = SIG_RETURN; break;
@@ -856,6 +864,21 @@ bool interp_run_tool(Interp *I, Section *t, float re, float im) {
         frame[t->coord->slot + 1] = fw(im);
     }
     exec_block(I, &t->body);
+    return interp_finish(I);
+}
+
+/* Run event `ev` (TOOL_EV_*) of a tool written with `on ... do` blocks: the statements outside the blocks,
+   then the block of the event (if there is one). */
+bool interp_run_tool_event(Interp *I, Section *t, int ev, float re, float im) {
+    u32 *frame;
+    interp_run_section_frame(I, t, &frame);
+    if (t->coord) {
+        frame[t->coord->slot] = fw(re);
+        frame[t->coord->slot + 1] = fw(im);
+    }
+    exec_block(I, &t->body);
+    if (I->signal == SIG_NONE && ev >= 0 && ev < TOOL_EV_COUNT && t->on[ev]) exec_block(I, t->on[ev]);
+    if (I->signal == SIG_RETURN) I->signal = SIG_NONE;
     return interp_finish(I);
 }
 

@@ -724,7 +724,7 @@ static void ad_store(AD *ad, Sym *src, Jet j) {
 static void ad_stmt(AD *ad, Stmt *s) {
     if (ad->failed) return;
     switch (s->kind) {
-    case S_DEFINE: case S_APPEND: case S_DRAW: return; /* drawing has no place in a derivative */
+    case S_DEFINE: case S_APPEND: case S_DRAW: case S_ON: case S_ERASE: return; /* drawing has no place in a derivative */
     case S_EXPR:
         if (!s->value) return;
         if (ad_depends(ad, s->value)) {

@@ -361,6 +361,8 @@ static void setup_internals(Checker *c) {
     p->s_last_click = add_internal(c, "lastClick", t_complex, SYM_GLOBAL, "point of the last click or drag");
     p->s_mouse = add_internal(c, "mouse", t_complex, SYM_GLOBAL, "point under the mouse");
     p->s_mouse->readonly = true;
+    p->s_drag_start = add_internal(c, "dragStart", t_complex, SYM_GLOBAL, "where the button went down (tools)");
+    p->s_drag_start->readonly = true;
     p->s_width = add_internal(c, "width", t_int, SYM_GLOBAL, "initial window width");
     p->s_height = add_internal(c, "height", t_int, SYM_GLOBAL, "initial window height");
     add_internal(c, "title", t_string, SYM_GLOBAL, "window title");
@@ -1134,7 +1136,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
             s->value = NULL;
             return;
         }
-        if (tg->kind == E_INTERNAL && (!strcmp(tg->name, "panning") || !strcmp(tg->name, "hover"))) {
+        if (tg->kind == E_INTERNAL && (!strcmp(tg->name, "panning") || !strcmp(tg->name, "hover") || !strcmp(tg->name, "keep"))) {
             ERR(c, tg, ".%s is a tool setting; set it with a plain true/false at the top of a @tool section", tg->name);
             return;
         }
@@ -1380,6 +1382,26 @@ static void chk_stmt(Checker *c, Stmt *s) {
         break;
     }
     case S_APPEND: break;
+    case S_ERASE: {
+        bool ok_place = (c->fn != NULL) || (c->sec && c->sec->kind == SEC_TOOL);
+        if (!ok_place) prog_diag(c->prog, DIAG_ERROR, s->line, s->col, s->end_col, "'erase' can only be used in tools");
+        if (c->fn) c->fn->uses_draw = true;
+        break;
+    }
+    case S_ON: {
+        if (!c->sec || c->sec->kind != SEC_TOOL || c->fn) {
+            prog_diag(c->prog, DIAG_ERROR, s->line, s->col, s->end_col, "'on ... do' handles an event of a tool, so it belongs in a tool section");
+            break;
+        }
+        /* each handler is its own scope: share values between events through globals */
+        Scope hscope = {{0}, c->scope};
+        Scope *saved = c->scope;
+        c->scope = &hscope;
+        chk_block(c, &s->body);
+        c->scope = saved;
+        vec_free(hscope.syms);
+        break;
+    }
     }
 }
 
@@ -1471,13 +1493,23 @@ static void check_func(Checker *c, Func *f) {
 static void extract_tool_settings(Checker *c, Section *s) {
     for (int i = 0; i < s->body.n; i++) {
         Stmt *st = s->body.stmts[i];
+        if (st->kind == S_ON) { /* the event handlers */
+            if (s->on[st->op])
+                prog_diag(c->prog, DIAG_ERROR, st->line, st->col, st->end_col, "this tool already has an 'on' block for this event");
+            s->on[st->op] = &st->body;
+            s->has_events = true;
+            continue;
+        }
         if (st->kind != S_ASSIGN && st->kind != S_DECL) continue;
         Expr *tg = st->target;
-        if (tg->kind != E_INTERNAL || (strcmp(tg->name, "panning") && strcmp(tg->name, "hover"))) continue;
+        if (tg->kind != E_INTERNAL || (strcmp(tg->name, "panning") && strcmp(tg->name, "hover") && strcmp(tg->name, "keep")))
+            continue;
         if (!st->value || st->value->kind != E_BOOL) {
             ERR(c, tg, ".%s must be set to true or false", tg->name);
         } else if (!strcmp(tg->name, "panning")) {
             s->panning = st->value->ival != 0;
+        } else if (!strcmp(tg->name, "keep")) {
+            s->keep = st->value->ival != 0;
         } else {
             s->hover = st->value->ival != 0;
         }

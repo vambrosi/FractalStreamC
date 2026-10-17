@@ -15,8 +15,9 @@ static const char *cli_usage =
     "      --size WxH       image size in pixels (default 512x512)\n"
     "      --cpu            use the CPU interpreter instead of the GPU (slow, for testing)\n"
     "      --set NAME=VALUE set a global first, e.g. --set c=-0.8+0.156i or --set plane.radius=0.5\n"
-    "  fractalstream --tool NAME --at X+Yi [--viewer NAME] SCRIPT\n"
-    "                                      run a tool once at a point; print its draw calls and the globals\n"
+    "  fractalstream --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
+    "                                      run a tool once at a point (a click, or one event of a tool with\n"
+    "                                      'on' blocks); print its draw calls and the globals\n"
     "  fractalstream --version | --help\n";
 
 static int cli_load(const char *path, Program **out) {
@@ -204,7 +205,7 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
 #include "app.h"
 
 int cli_main(int argc, char **argv) {
-    const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL;
+    const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL, *event = NULL;
     int w = 512, h = 512;
     bool cpu = false;
     const char *sets[32];
@@ -218,6 +219,7 @@ int cli_main(int argc, char **argv) {
         if (!strcmp(a, "--viewer") && i + 1 < argc) { viewer = argv[++i]; continue; }
         if (!strcmp(a, "--tool") && i + 1 < argc) { mode = a; tool = argv[++i]; continue; }
         if (!strcmp(a, "--at") && i + 1 < argc) { at = argv[++i]; continue; }
+        if (!strcmp(a, "--event") && i + 1 < argc) { event = argv[++i]; continue; }
         if (!strcmp(a, "--size") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &w, &h) != 2 || w < 1 || h < 1 || w > 16384 || h > 16384) {
                 fprintf(stderr, "error: --size expects WxH, like 800x600\n");
@@ -305,7 +307,26 @@ int cli_main(int argc, char **argv) {
         /* .pixel as if the tool's viewer were rendered at --size */
         Section *tv = t->viewer_of >= 0 ? p->viewers[t->viewer_of] : v;
         if (tv) I.pixel = viewer_pixel_size(p, state, tv, (float)w, (float)h, 0.5f * w, 0.5f * h);
-        if (!interp_run_tool(&I, t, re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
+        state[p->s_drag_start->slot] = fw(re);
+        state[p->s_drag_start->slot + 1] = fw(im);
+        if (!t->has_events) {
+            if (event) fprintf(stderr, "warning: the tool has no 'on' blocks; --event is ignored\n");
+            if (!interp_run_tool(&I, t, re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
+        } else {
+            /* one event, or a click: press, release, click */
+            static const char *evn[TOOL_EV_COUNT] = {"press", "drag", "release", "click", "hover", "show", "hide"};
+            int evs[3] = {TOOL_EV_PRESS, TOOL_EV_RELEASE, TOOL_EV_CLICK}, nev = 3;
+            if (event) {
+                nev = 0;
+                for (int k = 0; k < TOOL_EV_COUNT; k++)
+                    if (!strcmp(evn[k], event)) evs[nev++] = k;
+                if (!nev) { fprintf(stderr, "error: unknown event '%s'\n", event); rc = 2; goto done; }
+            }
+            for (int k = 0; k < nev && !rc; k++) {
+                if (!t->on[evs[k]]) continue;
+                if (!interp_run_tool_event(&I, t, evs[k], re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
+            }
+        }
         static const char *shapes[] = {"point", "circle", "disk", "line"};
         for (int k = 0; k < draws.len; k++) {
             DrawItem *d = &draws.data[k];

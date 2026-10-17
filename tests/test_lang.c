@@ -855,7 +855,63 @@ TEST(colour_helpers_and_palettes) {
     EXPECT_ERROR("@global\ndefine hsv(h : R, s : R, v : R) = gray(h)\n", "built-in");
 }
 
+TEST(tool_events) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "n : Z = 0\n"
+        "@viewer v z\n"
+        "color = .red\n"
+        "@v.tool \"T\" \"T\" \"brush\"\n"
+        ".keep = true\n"
+        "k : Z = 10\n"                    /* runs before every event */
+        "on press do\n"
+        "    n += k\n"
+        "    draw point at z\n"
+        "end\n"
+        "on drag do\n"
+        "    n += 1\n"
+        "    draw line between .dragStart and z\n"
+        "end\n"
+        "on hide do\n"
+        "    erase\n"
+        "end\n"
+        "@tool \"Clear\" button\n"
+        "erase all\n");
+    Section *t = p->tools[0];
+    CHECK(t->has_events && t->keep && t->on[TOOL_EV_PRESS] && t->on[TOOL_EV_DRAG] && t->on[TOOL_EV_HIDE]);
+    CHECK(!t->on[TOOL_EV_CLICK] && !t->on[TOOL_EV_SHOW]);
+    CHECK(p->tools[1]->button && !p->tools[1]->has_events);
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    Interp I;
+    interp_init(&I, p, state);
+    DrawItemVec draws = {0};
+    I.draws = &draws;
+    CHECK(interp_run_tool_event(&I, t, TOOL_EV_PRESS, 1, 2));
+    CHECK(interp_run_tool_event(&I, t, TOOL_EV_DRAG, 2, 2));
+    CHECK(interp_run_tool_event(&I, t, TOOL_EV_CLICK, 2, 2)); /* no handler: only the shared part runs */
+    Sym *n = find_global(p, "n");
+    CHECK(n && (i32)state[n->slot] == 11);
+    CHECK_INT(draws.len, 2);
+    I.erased = I.erased_all = false;
+    CHECK(interp_run_tool_event(&I, t, TOOL_EV_HIDE, 0, 0));
+    CHECK(I.erased && !I.erased_all && draws.len == 0);
+    CHECK(interp_run_tool(&I, p->tools[1], 0, 0));
+    CHECK(I.erased_all);
+    vec_free(draws);
+    interp_free(&I);
+    free(state);
+    program_free(p);
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\non press do\nend\non press do\nend\n", "already has an 'on' block");
+    EXPECT_ERROR("@viewer v z\non press do\nend\ncolor = .red\n", "belongs in a tool section");
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\non squeeze do\nend\n", "not an event");
+    EXPECT_ERROR("@viewer v z\nerase\ncolor = .red\n", "only be used in tools");
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@v.tool \"T\"\non press do\n    q := 1\nend\non drag do\n    draw point at q\nend\n",
+                 "unknown name 'q'");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(tool_events),
     TESTCASE(colour_helpers_and_palettes),
     TESTCASE(if_expressions),
     TESTCASE(friendly_messages),

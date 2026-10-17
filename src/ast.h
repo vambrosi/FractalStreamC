@@ -141,8 +141,13 @@ typedef struct Block {
 
 typedef enum StmtKind {
     S_EXPR, S_DECL, S_ASSIGN, S_DESTRUCTURE, S_IF, S_WHILE, S_DOWHILE, S_FOR, S_FOREACH,
-    S_BREAK, S_CONTINUE, S_RETURN, S_DRAW, S_DEFINE, S_APPEND
+    S_BREAK, S_CONTINUE, S_RETURN, S_DRAW, S_DEFINE, S_APPEND,
+    S_ON,    /* tools: on EVENT do body end (op = the TOOL_EV_*) */
+    S_ERASE  /* tools: erase the tool's drawings */
 } StmtKind;
+
+/* the events a tool can handle with `on EVENT do ... end` */
+enum { TOOL_EV_PRESS, TOOL_EV_DRAG, TOOL_EV_RELEASE, TOOL_EV_CLICK, TOOL_EV_HOVER, TOOL_EV_SHOW, TOOL_EV_HIDE, TOOL_EV_COUNT };
 
 typedef enum DrawShape { DRAW_POINT, DRAW_CIRCLE, DRAW_DISK, DRAW_LINE } DrawShape;
 
@@ -257,7 +262,10 @@ struct Section {
     Sym *picked;        /* viewer: .var (picked point) */
     Sym *center, *radius; /* viewer properties */
     Sym *mobius;        /* projective viewers: view map, C^4 (a, b, c, d) */
-    bool panning, hover; /* tool settings */
+    bool panning, hover, keep; /* tool settings */
+    bool button;        /* tool: `button` in the header, an action run once (not selected) */
+    Block *on[TOOL_EV_COUNT]; /* tool: the handler of each event (NULL: none) */
+    bool has_events;    /* tool: written with `on ... do` blocks */
     char *icon;         /* tool: Material Icons name ("timeline"), NULL = first letter */
     char *of_viewer;    /* tool: written @NAME.tool, the viewer it belongs to (NULL = every viewer) */
     int viewer_of;      /* tool: index of that viewer, -1 = every viewer */
@@ -292,7 +300,7 @@ typedef struct Program {
     DiagVec diags;
     int nerrors;
     /* internals with fixed meaning */
-    Sym *s_max_iter, *s_epsilon, *s_escape, *s_time, *s_last_click, *s_mouse, *s_width, *s_height;
+    Sym *s_max_iter, *s_epsilon, *s_escape, *s_time, *s_last_click, *s_mouse, *s_width, *s_height, *s_drag_start;
     Sym *s_stuck, *s_iterations, *s_pixel;
     char *title;
     int prelude_lines;   /* diagnostics inside the prelude are reported as internal errors */
