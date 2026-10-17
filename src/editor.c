@@ -1185,7 +1185,8 @@ static bool edp_handle_key(Editor *ed, const UiKeyEvent *e) {
         editor_newline(ed);
         return true;
     case UI_KEY_TAB:
-        if (mod || (m & UI_MOD_ALT)) return false;
+        /* Ctrl/Cmd/Alt + Tab belong to the app (and on macOS Ctrl is not the Mod key) */
+        if (mod || (m & (UI_MOD_CTRL | UI_MOD_SUPER | UI_MOD_ALT))) return false;
         editor_tab(ed, shift);
         return true;
     case UI_KEY_A: if (!mod) return false; editor_select_all(ed); return true;

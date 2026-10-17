@@ -917,6 +917,21 @@ static void mark_block(Gen *g, Block *b) {
     }
 }
 
+/* Debug names (OpName).  Translators turn them into identifiers: SPIRV-Cross
+ * keeps a function called "clamp" or "atan2" as is, which then clashes with
+ * the Metal library functions of the same name (MoltenVK fails to compile the
+ * shader).  So every name gets a prefix and is reduced to [A-Za-z0-9_]. */
+static void spv_name_safe(Spv *s, u32 id, const char *prefix, const char *name) {
+    char buf[64];
+    int n = snprintf(buf, sizeof buf, "%s", prefix);
+    for (const u8 *c = (const u8 *)name; *c && n < (int)sizeof buf - 1; c++) {
+        bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
+        buf[n++] = ok ? (char)*c : '_';
+    }
+    buf[n] = 0;
+    spv_name(s, id, buf);
+}
+
 /* ---- functions and module ------------------------------------------------------ */
 static void emit_func(Gen *g, Func *f) {
     u32 ptypes[32], pids[32];
@@ -925,7 +940,7 @@ static void emit_func(Gen *g, Func *f) {
     u32 ret = ty(g, f->ret);
     u32 ft = spv_type_fn(&g->s, ret, ptypes, np);
     spv_begin_function(&g->s, f->spv_fn, ret, ft, ptypes, pids, np);
-    spv_name(&g->s, f->spv_fn, f->name);
+    spv_name_safe(&g->s, f->spv_fn, "fs_", f->name);
     for (int i = 0; i < f->locals.len; i++) {
         Sym *s = f->locals.data[i];
         s->spv_var = local_var(g, s->type);
@@ -1048,7 +1063,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
         Sym *gs = p->globals.data[i];
         if (!gs->used) continue;
         gs->spv_var = spv_global_var(s, ptr(g, SpvSCPrivate, ty(g, gs->type)), SpvSCPrivate, 0);
-        spv_name(s, gs->spv_var, gs->name);
+        spv_name_safe(s, gs->spv_var, "g_", gs->name);
     }
     g->stuck_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tbool), SpvSCPrivate, spv_const_bool(s, false));
     g->iter_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
@@ -1063,7 +1078,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
     for (int i = 0; i < v->locals.len; i++) {
         Sym *ls = v->locals.data[i];
         ls->spv_var = local_var(g, ls->type);
-        spv_name(s, ls->spv_var, ls->name);
+        spv_name_safe(s, ls->spv_var, "v_", ls->name);
     }
     for (int i = 0; i < p->globals.len; i++) {
         Sym *gs = p->globals.data[i];

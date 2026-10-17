@@ -1,3 +1,4 @@
+#include <ctype.h>
 /* test_codegen.c - SPIR-V generation: validation with spirv-val (when installed)
  * and GPU-vs-CPU agreement (when a Vulkan device is available, e.g. lavapipe). */
 
@@ -225,6 +226,55 @@ TEST(spirv_validates) {
     }
 }
 
+/* MoltenVK translates SPIR-V to Metal with SPIRV-Cross; function names that are
+ * also Metal library functions (clamp, atan2, ...) used to break compilation on
+ * macOS.  Check that every function in the translated code has our prefix. */
+TEST(msl_function_names) {
+    static int have = -1;
+    if (have < 0) have = system("spirv-cross --help > /dev/null 2>&1") == 0 || system("which spirv-cross > /dev/null 2>&1") == 0;
+    if (!have) SKIP("spirv-cross not installed");
+    for (int i = 0; i < ARRAY_COUNT(cg_scripts); i++) {
+        Program *p = program_load(cg_scripts[i].src, cg_scripts[i].name);
+        if (p->nerrors) { program_free(p); continue; }
+        u32 n;
+        char err[256];
+        u32 *words = codegen_viewer(p, p->viewers[0], &n, err, sizeof err);
+        program_free(p);
+        if (!words) continue;
+        fs_write_file("build/test_msl.spv", words, n * 4);
+        free(words);
+        if (system("spirv-cross --msl build/test_msl.spv --output build/test_msl.metal > build/test_msl.txt 2>&1") != 0) {
+            CHECK_MSG(false, "%s: spirv-cross failed", cg_scripts[i].name);
+            continue;
+        }
+        size_t len;
+        char *msl = fs_read_file("build/test_msl.metal", &len);
+        if (!msl) continue;
+        /* function definitions look like "float fs_name(float _12, ...)" at the start of a line */
+        for (char *line = msl; line && *line;) {
+            char *next = strchr(line, '\n');
+            if (next) *next = 0;
+            /* a definition: starts in column 0, has "(", ends with ")" and no ";" or "=" */
+            size_t ll = strlen(line);
+            char *paren = strchr(line, '(');
+            if (paren && ll > 0 && line[ll - 1] == ')' && line[0] != ' ' && line[0] != '#' && !strchr(line, ';') &&
+                !strchr(line, '=') && strncmp(line, "struct", 6) != 0 && strncmp(line, "template", 8) != 0 &&
+                strncmp(line, "fragment", 8) != 0 && strncmp(line, "kernel", 6) != 0 && strncmp(line, "static", 6) != 0) {
+                char *e = paren, *b;
+                while (e > line && e[-1] == ' ') e--;
+                b = e;
+                while (b > line && (isalnum((unsigned char)b[-1]) || b[-1] == '_')) b--;
+                char name[128];
+                snprintf(name, sizeof name, "%.*s", (int)(e - b), b);
+                CHECK_MSG(strncmp(name, "fs_", 3) == 0 || strcmp(name, "main0") == 0 || strncmp(name, "spv", 3) == 0,
+                          "%s: Metal function '%s' (line: %s)", cg_scripts[i].name, name, line);
+            }
+            line = next ? next + 1 : NULL;
+        }
+        free(msl);
+    }
+}
+
 TEST(gpu_matches_cpu) {
 #ifdef FS_HAVE_GFX
     char err[512];
@@ -271,5 +321,6 @@ TEST(gpu_matches_cpu) {
 
 static const TestCase tests_codegen[] = {
     TESTCASE(spirv_validates),
+    TESTCASE(msl_function_names),
     TESTCASE(gpu_matches_cpu),
 };

@@ -29,7 +29,7 @@ typedef struct IntrinsicInfo {
     const char *name;
     int id;
     int nparams;
-    char params[4]; /* 'Z' 'R' 'C' 'H' 'B', '*' generic */
+    char params[5]; /* 'Z' 'R' 'C' 'H' 'B', '*' generic (a string: NUL-terminated) */
     char ret;
 } IntrinsicInfo;
 
