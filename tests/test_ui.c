@@ -1,8 +1,8 @@
 /* test_ui.c - tests for platform.c (input layer) and ui.c (fonts, draw lists, widgets).
  *
  * Widgets are driven with synthetic UiInput frames (no window needed).  The CPU rasterizer in raster.c turns
- * draw lists into pixels so tests can check what is actually drawn, and "ui_preview" writes PNGs
- * (build/ui_preview*.png) for looking at the result by eye. */
+ * draw lists into pixels so tests can check what is actually drawn, and "ui_preview" / "ui_icons_preview" write
+ * PNGs (build/ui_preview*.png, build/ui_icons_preview*.png) for looking at the result by eye. */
 #include "raster.c"
 
 #define FS_TEST_UI_HARNESS 1 /* test_editor.c reuses the harness below (T, tu_*) */
@@ -61,11 +61,14 @@ static void tu_type(const char *s) {
 /* Run an empty frame (time advances, edges clear). */
 static void tu_idle(void) { tu_begin(); tu_end(); }
 
+static int tu_atlas_updates; /* how many times the atlas was rebuilt and picked up through tu_atlas() */
+
+/* What the app does right after ui_begin_frame: pick up a rebuilt atlas (cached for rendering the draw list). */
 static RasterTexture tu_atlas(void) {
     RasterTexture t = { 0, 0, NULL };
     t.rgba = ui_take_atlas_update(&t.w, &t.h);
     static RasterTexture last;
-    if (t.rgba) last = t;
+    if (t.rgba) { last = t; tu_atlas_updates++; }
     return last;
 }
 
@@ -1257,6 +1260,569 @@ TEST(ui_preview) {
     preview_scene(2.0f, "build/ui_preview_2x.png", true);
 }
 
+/* ---- icons ----------------------------------------------------------------------------------------------------
+ * Icon glyphs are baked on demand and stay in ui.c's table for the whole process.  Tests that look at the first
+ * request of an icon forget the table first (the unity build lets a test reach into ui.c). */
+
+static void tu_forget_icons(void) {
+    ui.icons.len = 0;
+    ui.bake_needed = true;
+}
+
+/* Run frames until the atlas holds everything requested so far, like the app's main loop does by itself. */
+static void tu_settle_atlas(void) {
+    for (int i = 0; i < 2; i++) { tu_begin(); tu_atlas(); tu_end(); }
+}
+
+/* Bounding box of the pixels in [rx0,rx1) x [ry0,ry1) that differ from bg by more than `min_dist`. */
+static bool tu_ink_bbox(const RasterImage *im, int rx0, int ry0, int rx1, int ry1, u32 bg, int min_dist, int *x0, int *y0, int *x1, int *y1) {
+    *x0 = *y0 = 1 << 30;
+    *x1 = *y1 = -1;
+    for (int y = ry0; y < ry1; y++)
+        for (int x = rx0; x < rx1; x++)
+            if (raster_color_dist(raster_pixel(im, x, y), bg) > min_dist) {
+                *x0 = FS_MIN(*x0, x);
+                *y0 = FS_MIN(*y0, y);
+                *x1 = FS_MAX(*x1, x + 1);
+                *y1 = FS_MAX(*y1, y + 1);
+            }
+    return *x1 > 0;
+}
+
+/* Is this icon/size pair baked into the atlas? */
+static bool tu_icon_baked(u32 cp, int px) {
+    for (int i = 0; i < ui.icons.len; i++)
+        if (ui.icons.data[i].g.cp == cp && ui.icons.data[i].px == px) return ui.icons.data[i].ready;
+    return false;
+}
+
+TEST(ui_icon_lookup) {
+    static const struct { const char *name; u32 cp; } known[] = {
+        { "menu", 0xe5d2 }, { "pan_tool", 0xe925 }, { "my_location", 0xe55c }, { "close", 0xe5cd }, { "tune", 0xe429 },
+        { "code", 0xe86f }, { "chevron_left", 0xe5cb }, { "chevron_right", 0xe5cc }, { "play_arrow", 0xe037 },
+        { "save", 0xe161 }, { "folder_open", 0xe2c8 }, { "help_outline", 0xe8fd }, { "vertical_split", 0xe949 },
+        { "picture_in_picture_alt", 0xe911 }, { "fullscreen", 0xe5d0 }, { "refresh", 0xe5d5 }, { "timeline", 0xe922 },
+        { "10k", 0xe951 }, { "3d_rotation", 0xe84d },   /* the first names of the table start with digits */
+        { "zoom_out_map", 0xe56b },                     /* the last one */
+        { "fluorescent", 0xec31 }, { "flourescent", 0xec31 }, /* upstream lists a misspelt alias too */
+    };
+    for (int i = 0; i < ARRAY_COUNT(known); i++)
+        CHECK_MSG(ui_icon_lookup(known[i].name) == known[i].cp, "%s -> %x", known[i].name, ui_icon_lookup(known[i].name));
+    /* unknown: not a name, wrong case (names are exact), near misses, prefixes and extensions of real names */
+    static const char *unknown[] = { NULL, "", " ", "no_such_icon", "Menu", "MENU", "menu ", " menu", "men", "menu_", "menus",
+                                     "pan-tool", "pan tool", "e5d2", "0", "~", "zzzzzz", "\xE2\x98\xB0" };
+    for (int i = 0; i < ARRAY_COUNT(unknown); i++)
+        CHECK_MSG(ui_icon_lookup(unknown[i]) == 0, "'%s'", unknown[i] ? unknown[i] : "(null)");
+}
+
+TEST(ui_icon_table_matches_font) {
+    stbtt_fontinfo info;
+    CHECK(stbtt_InitFont(&info, font_icons_ttf, stbtt_GetFontOffsetForIndex(font_icons_ttf, 0)) != 0);
+    int n = ARRAY_COUNT(material_icon_names), unsorted = 0, lost = 0, no_glyph = 0;
+    for (int i = 0; i < n; i++) {
+        if (i > 0 && strcmp(material_icon_names[i - 1].name, material_icon_names[i].name) >= 0) unsorted++;
+        if (ui_icon_lookup(material_icon_names[i].name) != material_icon_names[i].cp) lost++; /* binary search finds all */
+        if (!stbtt_FindGlyphIndex(&info, (int)material_icon_names[i].cp)) no_glyph++;         /* codepoints match the font */
+    }
+    CHECK(n > 2000);
+    CHECK_INT(unsorted, 0);
+    CHECK_INT(lost, 0);
+    CHECK_INT(no_glyph, 0);
+    /* the placement code centres the em box: a 512-unit square from the baseline up, one em wide */
+    int asc, desc, gap, adv, lsb;
+    stbtt_GetFontVMetrics(&info, &asc, &desc, &gap);
+    CHECK_INT(asc, 512);
+    CHECK_INT(desc, 0);
+    CHECK_NEAR(stbtt_ScaleForMappingEmToPixels(&info, 512), 1.0, 1e-6);
+    stbtt_GetGlyphHMetrics(&info, stbtt_FindGlyphIndex(&info, (int)ui_icon_lookup("menu")), &adv, &lsb);
+    CHECK_INT(adv, 512);
+}
+
+TEST(ui_icon_bake_on_demand) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    int updates = tu_atlas_updates;
+    const u32 white = 0xFFFFFFFFu;
+
+    /* frame 1: the first draw of an icon at a size only schedules it.  Nothing is drawn (not the fallback letter
+     * either), the atlas is not touched in the middle of the frame, and the UI wants another frame right away. */
+    tu_begin();
+    tu_atlas();
+    ui_icon("menu", "M", 100, 100, 24, white);
+    CHECK(ui_redraw_in() == 0.0);
+    const GfxDrawList *dl = tu_end();
+    CHECK_INT(dl->nverts, 0);
+    CHECK_INT(tu_atlas_updates, updates);
+
+    /* frame 2: the atlas was rebuilt before the frame was built, and the icon is one textured quad */
+    tu_begin();
+    RasterTexture atlas = tu_atlas();
+    CHECK_INT(tu_atlas_updates, updates + 1);
+    ui_icon("menu", "M", 100, 100, 24, white);
+    CHECK(ui_redraw_in() > 0.0);
+    dl = tu_end();
+    CHECK_INT(dl->nverts, 4);
+    CHECK_INT(dl->nindices, 6);
+    CHECK_INT(dl->ncmds, 1);
+    CHECK_INT(dl->cmds[0].texture, 0);
+    const GfxVertex *q = dl->verts; /* top-left, top-right, bottom-right, bottom-left */
+    float qw = q[2].x - q[0].x, qh = q[2].y - q[0].y;
+    CHECK(q[0].x == floorf(q[0].x) && q[0].y == floorf(q[0].y)); /* on whole pixels */
+    CHECK(q[0].x >= 100 && q[2].x <= 124 && q[0].y >= 100 && q[2].y <= 124);
+    CHECK_MSG(qw >= 16 && qw <= 20 && qh >= 10 && qh <= 14, "%g x %g", qw, qh); /* three bars, 18 x 12 dp */
+    CHECK_INT(q[0].rgba, white);
+
+    /* the atlas texels under the quad: about half ink, and a clear 1 px border around them (no bleeding) */
+    int ax0 = (int)floorf(q[0].u * (float)atlas.w + 0.5f), ay0 = (int)floorf(q[0].v * (float)atlas.h + 0.5f);
+    int ax1 = (int)floorf(q[2].u * (float)atlas.w + 0.5f), ay1 = (int)floorf(q[2].v * (float)atlas.h + 0.5f);
+    CHECK_INT(ax1 - ax0, (int)qw);
+    CHECK_INT(ay1 - ay0, (int)qh);
+    int lit = 0, border = 0;
+    for (int y = ay0 - 1; y <= ay1; y++) {
+        for (int x = ax0 - 1; x <= ax1; x++) {
+            int a = atlas.rgba[((size_t)y * (size_t)atlas.w + (size_t)x) * 4 + 3];
+            bool inside = x >= ax0 && x < ax1 && y >= ay0 && y < ay1;
+            if (inside && a >= 128) lit++;
+            if (!inside && a != 0) border++;
+        }
+    }
+    int area = (ax1 - ax0) * (ay1 - ay0);
+    CHECK_MSG(lit > area * 4 / 10 && lit < area * 8 / 10, "lit %d of %d", lit, area);
+    CHECK_INT(border, 0);
+
+    /* on screen it is centred in the square it was given (the glyph is symmetric) */
+    RasterImage im = tu_render(dl, BGC);
+    int x0, y0, x1, y1;
+    CHECK(tu_ink_bbox(&im, 90, 90, 140, 140, BGC, 40, &x0, &y0, &x1, &y1));
+    CHECK_MSG(abs(x0 + x1 - 224) <= 2 && abs(y0 + y1 - 224) <= 2, "ink (%d,%d)-(%d,%d)", x0, y0, x1, y1);
+    raster_free(&im);
+
+    /* frame 3: nothing new, so no rebuild.  Sizes are rounded to whole pixels: 24.3 is the same glyph... */
+    tu_begin();
+    tu_atlas();
+    ui_icon("menu", "M", 100, 100, 24.3f, white);
+    CHECK(ui_redraw_in() > 0.0);
+    dl = tu_end();
+    CHECK_INT(dl->nverts, 4);
+    CHECK_INT(tu_atlas_updates, updates + 1);
+    /* ... and 24.6 is the next one: a new request */
+    tu_begin();
+    tu_atlas();
+    ui_icon("menu", "M", 100, 100, 24.6f, white);
+    CHECK(ui_redraw_in() == 0.0);
+    dl = tu_end();
+    CHECK_INT(dl->nverts, 0);
+}
+
+TEST(ui_icon_edge_cases) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    const float nan = nanf("");
+    tu_begin();
+    tu_atlas();
+    ui_icon("menu", "M", 10, 10, 24, 0x00FFFFFFu);    /* invisible */
+    ui_icon("menu", "M", 10, 10, 0, 0xFFFFFFFFu);     /* no size */
+    ui_icon("menu", "M", 10, 10, -5, 0xFFFFFFFFu);
+    ui_icon("menu", "M", 10, 10, nan, 0xFFFFFFFFu);
+    ui_push_clip(0, 0, 50, 50);
+    ui_icon("menu", "M", 100, 100, 24, 0xFFFFFFFFu);  /* outside the clip: nobody sees it, so it is not even baked */
+    ui_icon(NULL, "M", 100, 100, 24, 0xFFFFFFFFu);
+    ui_pop_clip();
+    CHECK(ui_redraw_in() > 0.0);
+    const GfxDrawList *dl = tu_end();
+    CHECK_INT(dl->nverts, 0);
+    CHECK_INT(ui.icons.len, 0);
+    /* absurd sizes are clamped to the 4..256 px the atlas supports, centred on the square they were given */
+    for (int frame = 0; frame < 2; frame++) {
+        tu_begin();
+        tu_atlas();
+        ui_icon("menu", NULL, 400.0f - 50000.0f, 300.0f - 50000.0f, 100000.0f, 0xFFFFFFFFu);
+        ui_icon("menu", NULL, 10, 10, 1.5f, 0xFFFFFFFFu);
+        dl = tu_end();
+    }
+    CHECK_INT(dl->nverts, 8);
+    float big = dl->verts[2].x - dl->verts[0].x, small = dl->verts[6].x - dl->verts[4].x;
+    CHECK(big > 100 && big <= 256);
+    CHECK(small >= 1 && small <= 4);
+    CHECK_NEAR((dl->verts[0].x + dl->verts[2].x) * 0.5f, 400, 2);
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icon_fallback_text) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    int updates = tu_atlas_updates;
+    /* NULL, empty, unknown or wrongly cased names draw the fallback right away (nothing to bake), centred */
+    static const char *bad[] = { NULL, "", "no_such_icon", "Menu" };
+    for (int i = 0; i < ARRAY_COUNT(bad); i++) {
+        tu_begin();
+        tu_atlas();
+        ui_icon(bad[i], "H", 100, 100, 40, UI_COL_TEXT);
+        CHECK(ui_redraw_in() > 0.0);
+        const GfxDrawList *dl = tu_end();
+        CHECK_INT(dl->nverts, 4);
+        RasterImage im = tu_render(dl, BGC);
+        int x0, y0, x1, y1;
+        CHECK(tu_ink_bbox(&im, 90, 90, 150, 150, BGC, 40, &x0, &y0, &x1, &y1));
+        CHECK_MSG(abs(x0 + x1 - 240) <= 2 && abs(y0 + y1 - 240) <= 2, "%d: ink (%d,%d)-(%d,%d)", i, x0, y0, x1, y1);
+        raster_free(&im);
+    }
+    CHECK_INT(tu_atlas_updates, updates);
+
+    /* the same baseline for letters of one row: an 'H' and an 'O' sit on the same line (O only overshoots a little) */
+    tu_begin();
+    tu_atlas();
+    ui_icon(NULL, "H", 100, 100, 40, UI_COL_TEXT);
+    ui_icon(NULL, "O", 200, 100, 40, UI_COL_TEXT);
+    RasterImage im = tu_render(tu_end(), BGC);
+    int hx0, hy0, hx1, hy1, ox0, oy0, ox1, oy1;
+    CHECK(tu_ink_bbox(&im, 90, 90, 150, 150, BGC, 40, &hx0, &hy0, &hx1, &hy1));
+    CHECK(tu_ink_bbox(&im, 190, 90, 250, 150, BGC, 40, &ox0, &oy0, &ox1, &oy1));
+    CHECK(abs(hy1 - oy1) <= 1);
+    raster_free(&im);
+
+    /* no usable fallback: nothing is drawn */
+    tu_begin();
+    tu_atlas();
+    ui_icon("no_such_icon", NULL, 10, 10, 24, UI_COL_TEXT);
+    ui_icon(NULL, "", 40, 10, 24, UI_COL_TEXT);
+    ui_icon(NULL, NULL, 70, 10, 24, UI_COL_TEXT);
+    CHECK_INT(tu_end()->nverts, 0);
+
+    /* any UTF-8 text will do, and a real icon wins over its fallback: while it is pending nothing is shown */
+    tu_begin();
+    tu_atlas();
+    ui_icon(NULL, "\xCE\xA9", 10, 10, 24, UI_COL_TEXT);
+    ui_icon("close", "X", 40, 10, 24, UI_COL_TEXT);
+    CHECK_INT(tu_end()->nverts, 4);
+    tu_begin();
+    tu_atlas();
+    ui_icon("close", "X", 40, 10, 24, UI_COL_TEXT);
+    CHECK_INT(tu_end()->nverts, 4); /* the icon only, not the icon and an X */
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+/* The text pass of the "text pixels" test: both fonts and a widget. */
+static RasterImage tu_text_image(void) {
+    tu_begin();
+    tu_atlas();
+    ui_text(UI_FONT_SANS, 10, 10, "The quick brown fox \xCE\xB8 \xE2\x89\xA4 \xE2\x88\x9E jumps", -1, UI_COL_TEXT);
+    ui_text(UI_FONT_MONO, 10, 40, "z := z^2 + c  # mono \xCF\x80", -1, UI_COL_TEXT_DIM);
+    ui_button("Run", 10, 70, 80, 28);
+    const GfxDrawList *dl = tu_end();
+    return tu_render(dl, BGC);
+}
+
+TEST(ui_icon_keeps_text_pixels) {
+    /* Baking icons into the atlas must not change what existing text looks like (here at two content scales). */
+    for (int pass = 0; pass < 2; pass++) {
+        tu_reset(pass ? 2.0f : 1.0f);
+        tu_forget_icons();
+        tu_settle_atlas();
+        RasterImage before = tu_text_image();
+        tu_begin();
+        tu_atlas();
+        static const char *names[] = { "menu", "close", "code", "tune", "save", "refresh", "fullscreen", "timeline" };
+        for (int i = 0; i < ARRAY_COUNT(names); i++)
+            for (int k = 0; k < 3; k++) ui_icon(names[i], NULL, 10, 10, 18.0f + 6.0f * (float)k, 0xFFFFFFFFu);
+        tu_end();
+        RasterImage after = tu_text_image();
+        CHECK_INT(ui.icons.len, 24);
+        CHECK(tu_icon_baked(ui_icon_lookup("save"), 30));
+        CHECK(tu_count_diff(&before, 0, 0, T.fb_w, T.fb_h, BGC) > 200); /* the text is really there */
+        int differing = 0; /* the glyphs sit elsewhere in the atlas, so bilinear weights may differ in the last bit */
+        for (int i = 0; i < before.w * before.h; i++) differing += raster_color_dist(before.px[i], after.px[i]) > 1;
+        CHECK_INT(differing, 0);
+        raster_free(&before);
+        raster_free(&after);
+    }
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icon_rebuild_once_and_kept) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    static const char *names[] = { "menu", "close", "code", "tune", "save", "refresh", "fullscreen", "timeline", "pan_tool", "my_location" };
+    const int n = ARRAY_COUNT(names);
+    const u32 white = 0xFFFFFFFFu;
+    int updates = tu_atlas_updates;
+    /* ten icons at two sizes (20 requests) show up in one frame: a single rebuild, before the next frame is built */
+    for (int frame = 0; frame < 3; frame++) {
+        tu_begin();
+        tu_atlas();
+        for (int i = 0; i < n; i++) {
+            ui_icon(names[i], NULL, 10.0f + 40.0f * (float)i, 10, 24, white);
+            ui_icon(names[i], NULL, 10.0f + 40.0f * (float)i, 60, 32, white);
+        }
+        CHECK_INT(tu_end()->nverts, frame == 0 ? 0 : 8 * n);
+        CHECK_INT(tu_atlas_updates, updates + (frame > 0));
+    }
+    /* a new size of one icon: only that one is missing for a frame, the others stay; one more rebuild */
+    for (int frame = 0; frame < 3; frame++) {
+        tu_begin();
+        tu_atlas();
+        for (int i = 0; i < n; i++) {
+            ui_icon(names[i], NULL, 10.0f + 40.0f * (float)i, 10, 24, white);
+            ui_icon(names[i], NULL, 10.0f + 40.0f * (float)i, 60, 32, white);
+        }
+        ui_icon("menu", NULL, 10, 120, 40, white);
+        CHECK_INT(tu_end()->nverts, 4 * (2 * n + (frame > 0)));
+        CHECK_INT(tu_atlas_updates, updates + 1 + (frame > 0));
+    }
+    /* a content-scale change rebakes the text for the new scale; the icons asked for earlier are drawn at once */
+    T.content_scale = 2.0f;
+    tu_begin();
+    tu_atlas();
+    CHECK_INT(tu_atlas_updates, updates + 3);
+    for (int i = 0; i < n; i++) ui_icon(names[i], NULL, 10.0f + 40.0f * (float)i, 10, 24, white);
+    ui_icon("menu", NULL, 10, 120, 40, white);
+    CHECK_INT(tu_end()->nverts, 4 * (n + 1));
+    /* what the app would ask for at 2x is new, and arrives one frame later */
+    tu_begin();
+    tu_atlas();
+    ui_icon("menu", NULL, 10, 10, 48, white);
+    ui_icon("menu", NULL, 10, 70, 24, white);
+    CHECK_INT(tu_end()->nverts, 4);
+    tu_begin();
+    tu_atlas();
+    CHECK_INT(tu_atlas_updates, updates + 4);
+    ui_icon("menu", NULL, 10, 10, 48, white);
+    ui_icon("menu", NULL, 10, 70, 24, white);
+    CHECK_INT(tu_end()->nverts, 8);
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icon_budget) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    const u32 white = 0xFFFFFFFFu;
+    /* more icon/size pairs than the table keeps: 75 icons at 8 sizes = 600 > 512 */
+    u32 first_cp = 0, last_cp = 0;
+    tu_begin();
+    tu_atlas();
+    for (int i = 0, count = 0; i < ARRAY_COUNT(material_icon_names) && count < 75; i += 20, count++) {
+        if (!first_cp) first_cp = material_icon_names[i].cp;
+        last_cp = material_icon_names[i].cp;
+        for (int px = 6; px < 14; px++) ui_icon(material_icon_names[i].name, NULL, 10, 10, (float)px, white);
+    }
+    CHECK(ui.icons.len > 512);
+    tu_end();
+    tu_begin();
+    tu_atlas();
+    CHECK_INT(ui.icons.len, 512);
+    CHECK(tu_icon_baked(last_cp, 13));  /* the newest requests survive ... */
+    CHECK(!tu_icon_baked(first_cp, 6)); /* ... the oldest are dropped (and would be baked again if asked for) */
+    tu_end();
+
+    /* too many atlas pixels: three icons at 41 sizes up to 220 px would take about 2M of them */
+    tu_forget_icons();
+    tu_settle_atlas();
+    tu_begin();
+    tu_atlas();
+    for (int px = 20; px <= 220; px += 5)
+        for (int i = 0; i < 3; i++) ui_icon(i == 0 ? "menu" : i == 1 ? "close" : "code", NULL, 10, 10, (float)px, white);
+    CHECK_INT(ui.icons.len, 123);
+    tu_end();
+    RasterTexture atlas;
+    tu_begin();
+    atlas = tu_atlas();
+    long area = 0;
+    for (int i = 0; i < ui.icons.len; i++) area += (long)(ui.icons.data[i].px + 2) * (long)(ui.icons.data[i].px + 2);
+    CHECK(area <= UIP_ICON_MAX_AREA && ui.icons.len >= 20 && ui.icons.len < 123);
+    CHECK(tu_icon_baked(ui_icon_lookup("code"), 220));
+    CHECK(atlas.w <= 4096 && atlas.h <= 4096);
+    tu_end();
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icon_button_click) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    bool clicked = false, any = false;
+    /* hover (the icon is still being baked during these first frames: that must not matter) */
+    tu_move(40, 40);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); bool hov = ui_last_hovered(); bool wm = ui_wants_mouse(); tu_end();
+    CHECK(!clicked && hov && wm);
+    /* press, hold, release inside: one click */
+    tu_press(0, 1);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); CHECK(ui_active_id() != 0); tu_end();
+    CHECK(!clicked);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); tu_end();
+    CHECK(!clicked);
+    tu_release(0);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); tu_end();
+    CHECK(clicked);
+    CHECK_INT(ui_active_id(), 0);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); tu_end();
+    CHECK(!clicked);
+    /* press, drag out, release: no click */
+    tu_press(0, 1);
+    tu_begin(); ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); tu_end();
+    tu_move(300, 300);
+    tu_begin(); any |= ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); CHECK(ui_wants_mouse()); tu_end();
+    tu_release(0);
+    tu_begin(); any |= ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); tu_end();
+    CHECK(!any);
+    /* press and release within one frame still clicks; "selected" is only a look, the app decides what it means */
+    tu_move(40, 40);
+    tu_press(0, 1);
+    tu_release(0);
+    tu_begin(); clicked = ui_icon_button("run", "play_arrow", "P", 20, 20, 40, true); tu_end();
+    CHECK(clicked);
+    /* the id is the identity: two buttons side by side, press on one and release on the other clicks neither */
+    tu_move(40, 40);
+    tu_press(0, 1);
+    bool a, b;
+    tu_begin(); ui_icon_button("a", "play_arrow", NULL, 20, 20, 40, false); ui_icon_button("b", "play_arrow", NULL, 70, 20, 40, false); tu_end();
+    tu_move(90, 40);
+    tu_release(0);
+    tu_begin(); a = ui_icon_button("a", "play_arrow", NULL, 20, 20, 40, false); b = ui_icon_button("b", "play_arrow", NULL, 70, 20, 40, false); tu_end();
+    CHECK(!a && !b);
+    tu_press(0, 1);
+    tu_release(0);
+    tu_begin(); a = ui_icon_button("a", "play_arrow", NULL, 20, 20, 40, false); b = ui_icon_button("b", "play_arrow", NULL, 70, 20, 40, false); tu_end();
+    CHECK(!a && b);
+    /* disabled buttons do not click but still block the mouse; a NULL id and unknown icons do not crash */
+    tu_press(0, 1);
+    tu_release(0);
+    tu_begin(); clicked = ui_icon_button_ex("off", "play_arrow", "P", 70, 20, 40, UI_DISABLED); CHECK(ui_wants_mouse()); tu_end();
+    CHECK(!clicked);
+    tu_begin(); ui_icon_button_ex(NULL, "nope", NULL, 70, 20, 40, UI_FLAT); tu_end();
+    /* mouse elsewhere: the UI does not want it */
+    tu_move(400, 400);
+    tu_begin(); ui_icon_button("run", "play_arrow", "P", 20, 20, 40, false); CHECK(!ui_wants_mouse()); tu_end();
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icon_button_look) {
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+    /* five 40 px buttons showing "menu" (its middle bar passes through the centre pixel): normal, hovered, selected,
+     * accent, disabled.  A pixel inside the left edge shows the fill, the centre pixel the icon color (the glyph's
+     * outline is not exactly on the pixel grid, so its coverage there is a bit under 100%). */
+    static const struct { int flags; u32 fill, ink; } look[5] = {
+        { 0, UI_COL_WIDGET, UI_COL_TEXT },
+        { 0, UI_COL_WIDGET_HOVER, UI_COL_TEXT },
+        { UI_SELECTED, UI_COL_ACCENT_DIM, UI_COL_TEXT },
+        { UI_ACCENT, UI_COL_ACCENT, UI_COL_ON_ACCENT },
+        { UI_DISABLED, UI_COL_WIDGET, UI_COL_TEXT_OFF },
+    };
+    RasterImage im = { 0 };
+    tu_move(20 + 60 + 20, 40); /* over the second button */
+    for (int frame = 0; frame < 4; frame++) {
+        tu_begin();
+        tu_atlas();
+        ui_rect(0, 0, (float)T.fb_w, (float)T.fb_h, UI_COL_BG);
+        for (int i = 0; i < 5; i++) {
+            ui_push_id_int(i);
+            ui_icon_button_ex("b", "menu", "M", 20.0f + 60.0f * (float)i, 20, 40, look[i].flags);
+            ui_pop_id();
+        }
+        const GfxDrawList *dl = tu_end();
+        if (frame == 3) im = tu_render(dl, UI_COL_BG);
+    }
+    CHECK(im.px != NULL);
+    if (im.px) {
+        for (int i = 0; i < 5; i++) {
+            int bx = 20 + 60 * i;
+            CHECK_MSG(raster_color_dist(raster_pixel(&im, bx + 3, 40), look[i].fill) < 3, "button %d fill %08x", i, raster_pixel(&im, bx + 3, 40));
+            CHECK_MSG(raster_color_dist(raster_pixel(&im, bx + 20, 40), look[i].ink) < 10, "button %d icon %08x", i, raster_pixel(&im, bx + 20, 40));
+        }
+        CHECK(raster_color_dist(raster_pixel(&im, 20 + 120, 40), UI_COL_ACCENT) < 6); /* the selected button has an accent border */
+        CHECK(raster_color_dist(raster_pixel(&im, 20, 40), UI_COL_BORDER) < 6);       /* the others a plain one */
+        raster_free(&im);
+    }
+    /* a fallback letter takes the same color as an icon would (here a disabled button) */
+    tu_move(-100, -100);
+    tu_begin();
+    tu_atlas();
+    ui_icon_button_ex("off", NULL, "H", 20, 20, 40, UI_DISABLED);
+    im = tu_render(tu_end(), BGC);
+    int x0, y0, x1, y1;
+    CHECK(tu_ink_bbox(&im, 28, 28, 52, 52, UI_COL_WIDGET, 20, &x0, &y0, &x1, &y1));
+    CHECK(abs(x0 + x1 - 80) <= 2 && abs(y0 + y1 - 80) <= 2);
+    raster_free(&im);
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+/* A toolbar like the app's: icon buttons in every state, the icons of the app's chrome, and several sizes. */
+static void icons_preview_scene(float scale, const char *png_path, int zoom) {
+    tu_reset(scale);
+    tu_forget_icons();
+    float s = scale;
+    T.fb_w = (int)(600 * s);
+    T.fb_h = (int)(232 * s);
+    static const struct { const char *name, *fallback; int flags; } btn[] = {
+        { "menu", "M", 0 }, { "pan_tool", "P", UI_SELECTED }, { "my_location", "L", 0 }, { "tune", "T", 0 },
+        { "code", "C", UI_DISABLED }, { "chevron_left", "<", UI_FLAT }, { "chevron_right", ">", UI_FLAT },
+        { "play_arrow", "R", UI_ACCENT }, { "no_such_icon", "O", 0 }, { NULL, "J", UI_SELECTED },
+    };
+    static const char *chrome[] = { "menu", "pan_tool", "my_location", "close", "tune", "code", "chevron_left", "chevron_right",
+                                    "play_arrow", "save", "folder_open", "help_outline", "vertical_split",
+                                    "picture_in_picture_alt", "fullscreen", "refresh", "timeline" };
+    static const float sizes[] = { 16, 20, 24, 32, 48 };
+    RasterImage im = { 0 };
+    for (int frame = 0; frame < 4; frame++) {
+        if (frame == 2) tu_move((16 + 2 * 54 + 20) * s, (36 + 20) * s); /* hover the third button */
+        tu_begin();
+        tu_atlas();
+        ui_rect(0, 0, (float)T.fb_w, (float)T.fb_h, UI_COL_BG);
+        ui_panel(6 * s, 6 * s, 588 * s, 220 * s);
+        ui_label(16 * s, 10 * s, 570 * s, 22 * s, "normal, selected, hovered, normal, disabled, flat, flat, accent, 2 letters", UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+        for (int i = 0; i < 10; i++) {
+            ui_push_id_int(i);
+            ui_icon_button_ex("btn", btn[i].name, btn[i].fallback, (16.0f + 54.0f * (float)i) * s, 36 * s, 40 * s, btn[i].flags);
+            ui_pop_id();
+        }
+        ui_label(16 * s, 84 * s, 570 * s, 22 * s, "The icons of the app's chrome, 24 px", UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+        for (int i = 0; i < ARRAY_COUNT(chrome); i++) ui_icon(chrome[i], NULL, (16.0f + 33.0f * (float)i) * s, 110 * s, 24 * s, UI_COL_TEXT);
+        ui_label(16 * s, 144 * s, 570 * s, 22 * s, "Sizes 16, 20, 24, 32, 48 px, in text, dim and accent colors", UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+        float x = 16 * s;
+        for (int c = 0; c < 3; c++) {
+            for (int i = 0; i < 5; i++) {
+                ui_icon("timeline", NULL, x, (172.0f + (48.0f - sizes[i]) * 0.5f) * s, sizes[i] * s, c == 0 ? UI_COL_TEXT : c == 1 ? UI_COL_TEXT_DIM : UI_COL_ACCENT);
+                x += (sizes[i] + 6) * s;
+            }
+            x += 12 * s;
+        }
+        const GfxDrawList *dl = tu_end();
+        if (frame == 3) im = tu_render(dl, UI_COL_BG);
+    }
+    CHECK(im.px != NULL);
+    if (im.px) {
+        raster_save(&im, 0, 0, im.w, im.h, zoom, png_path);
+        for (int i = 0; i < ARRAY_COUNT(chrome); i++) /* every icon of the row left ink in its cell */
+            CHECK_MSG(tu_count_diff(&im, (int)((16.0f + 33.0f * (float)i) * s), (int)(110 * s), (int)((16.0f + 33.0f * (float)i + 24) * s), (int)(134 * s), UI_COL_PANEL) > 20,
+                      "icon %s", chrome[i]);
+        raster_free(&im);
+    }
+    tu_reset(1.0f);
+    tu_forget_icons();
+    tu_settle_atlas();
+}
+
+TEST(ui_icons_preview) {
+    icons_preview_scene(1.0f, "build/ui_icons_preview.png", 2);
+    icons_preview_scene(2.0f, "build/ui_icons_preview_2x.png", 1);
+}
+
+
 static const TestCase tests_ui[] = {
     TESTCASE(ui_atlas),
     TESTCASE(ui_font_metrics),
@@ -1279,6 +1845,16 @@ static const TestCase tests_ui[] = {
     TESTCASE(ui_ids_and_labels),
     TESTCASE(ui_word_helpers),
     TESTCASE(ui_scroll_area_wheel),
+    TESTCASE(ui_icon_lookup),
+    TESTCASE(ui_icon_table_matches_font),
+    TESTCASE(ui_icon_bake_on_demand),
+    TESTCASE(ui_icon_edge_cases),
+    TESTCASE(ui_icon_fallback_text),
+    TESTCASE(ui_icon_keeps_text_pixels),
+    TESTCASE(ui_icon_rebuild_once_and_kept),
+    TESTCASE(ui_icon_budget),
+    TESTCASE(ui_icon_button_click),
+    TESTCASE(ui_icon_button_look),
     TESTCASE(platform_key_mapping),
     TESTCASE(platform_input_accumulation),
     TESTCASE(platform_mouse_and_clicks),
@@ -1290,4 +1866,5 @@ static const TestCase tests_ui[] = {
     TESTCASE(platform_window),
     TESTCASE(platform_window_click),
     TESTCASE(ui_preview),
+    TESTCASE(ui_icons_preview),
 };

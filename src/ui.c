@@ -2,14 +2,15 @@
  *
  * Layout of this file:
  *   1. context and small helpers
- *   2. fonts: baking the glyph atlas, measuring and drawing text
- *   3. draw lists: layers, clip stack, primitives (anti-aliased by a 1 px feathered fringe)
+ *   2. fonts: baking the glyph atlas (text, plus Material Icons glyphs requested on demand), measuring text
+ *   3. draw lists: layers, clip stack, primitives (anti-aliased by a 1 px feathered fringe), text, images, icons
  *   4. frame begin/end, ids, hit-testing, generic interaction
  *   5. widgets
  * Private helpers are prefixed uip_ because the whole program is one translation unit. */
 #include "ui.h"
 #include "stb_truetype.h"
 #include "../third_party/fonts/fonts_embedded.c"
+#include "../third_party/fonts/material_icons_codepoints.c"
 
 /* ======================================================================================================
  * 1. context
@@ -40,6 +41,17 @@ typedef struct UipFont {
     short ascii[256];     /* glyph index for codepoints < 256, or -1 */
     int fffd;             /* glyph index of U+FFFD, or -1 */
 } UipFont;
+
+/* One Material Icons glyph at one whole-pixel size, baked on demand.  The icon font draws every icon inside its em
+ * box (1 em wide and tall, the 24 dp grid of the design), so icons are placed by centring that box, not the ink.
+ * g.x0..y1 are the bitmap corners relative to the TOP-LEFT of the box (not the baseline); g.adv is the box width. */
+typedef struct UipIcon {
+    UipGlyph g;           /* g.cp is the Material Icons codepoint */
+    int px;               /* em size in whole pixels */
+    float box_h;          /* height of the em box in pixels */
+    bool ready;           /* baked into the current atlas (else it was requested after the last bake) */
+    u64 last_used;        /* ui.icon_clock at the last draw, to evict the least recently used when there are too many */
+} UipIcon;
 
 typedef struct UipLayer {
     VEC(u32) idx;
@@ -74,6 +86,12 @@ typedef struct UiCtx {
     bool atlas_fresh;     /* rebuilt since ui_take_atlas_update */
     bool bake_needed;
     float white_u, white_v;
+
+    /* icons: the Material Icons font and the icon/size pairs requested so far (see ui_icon) */
+    stbtt_fontinfo icon_info;
+    bool icon_font_tried, icon_font_ok;
+    VEC(UipIcon) icons;
+    u64 icon_clock;                   /* counts icon draws, orders them by recency */
 
     /* draw buffers */
     VEC(GfxVertex) verts;
@@ -212,6 +230,36 @@ static const UipGlyph *uip_find_glyph(const UipFont *f, u32 cp) {
     return f->fffd >= 0 ? &f->glyphs[f->fffd] : NULL;
 }
 
+/* ---- icon glyph bookkeeping (the drawing side is in "icons" further down) ---- */
+
+#define UIP_ICON_MIN_PX 4
+#define UIP_ICON_MAX_PX 256
+#define UIP_ICON_MAX_COUNT 512      /* icon/size pairs kept in the atlas ... */
+#define UIP_ICON_MAX_AREA (1 << 20) /* ... and the atlas pixels (padded cells) they may use */
+
+static bool uip_icon_font(void) {
+    if (!ui.icon_font_tried) {
+        ui.icon_font_tried = true;
+        ui.icon_font_ok = stbtt_InitFont(&ui.icon_info, font_icons_ttf, stbtt_GetFontOffsetForIndex(font_icons_ttf, 0)) != 0;
+    }
+    return ui.icon_font_ok;
+}
+
+/* Every icon/size pair ever requested stays in the atlas, so a rebuild never makes an icon disappear.  The only
+ * exception is a pathological program (icons animated through hundreds of sizes): past a budget the pairs that
+ * were drawn least recently are dropped, and drawn again (one more rebuild) if they are still wanted. */
+static void uip_icons_trim(void) {
+    long area = 0;
+    for (int i = 0; i < ui.icons.len; i++) area += (long)(ui.icons.data[i].px + 2) * (long)(ui.icons.data[i].px + 2);
+    while (ui.icons.len > UIP_ICON_MAX_COUNT || area > UIP_ICON_MAX_AREA) {
+        int victim = 0;
+        for (int i = 1; i < ui.icons.len; i++)
+            if (ui.icons.data[i].last_used < ui.icons.data[victim].last_used) victim = i;
+        area -= (long)(ui.icons.data[victim].px + 2) * (long)(ui.icons.data[victim].px + 2);
+        ui.icons.data[victim] = ui.icons.data[--ui.icons.len];
+    }
+}
+
 const u8 *ui_fonts_init(float scale, int *out_w, int *out_h) {
     if (scale < 0.5f) scale = 0.5f;
     static const unsigned char *ttfs[UI_FONT_COUNT] = { font_sans_ttf, font_mono_ttf };
@@ -232,10 +280,11 @@ const u8 *ui_fonts_init(float scale, int *out_w, int *out_h) {
         f->nglyphs = 0;
     }
 
-    /* 1. collect every glyph of both fonts */
+    /* 1. collect every glyph of both fonts, then every icon/size pair requested so far */
     int cap = 0;
     for (size_t r = 0; r < ARRAY_COUNT(uip_ranges); r++) cap += (int)(uip_ranges[r][1] - uip_ranges[r][0] + 1);
-    UipBakeJob *jobs = xcalloc((size_t)cap * UI_FONT_COUNT, sizeof(UipBakeJob));
+    uip_icons_trim();
+    UipBakeJob *jobs = xcalloc((size_t)cap * UI_FONT_COUNT + (size_t)ui.icons.len, sizeof(UipBakeJob));
     int njobs = 0;
     for (int fi = 0; fi < UI_FONT_COUNT; fi++) {
         UipFont *f = &ui.fonts[fi];
@@ -272,6 +321,32 @@ const u8 *ui_fonts_init(float scale, int *out_w, int *out_h) {
                 j->h = y1 - y0;
             }
         }
+    }
+    for (int i = 0; i < ui.icons.len && uip_icon_font(); i++) {
+        UipIcon *ic = &ui.icons.data[i];
+        const stbtt_fontinfo *info = &ui.icon_info;
+        float s = stbtt_ScaleForMappingEmToPixels(info, (float)ic->px);
+        int gi = stbtt_FindGlyphIndex(info, (int)ic->g.cp);
+        int asc, desc, gap, adv = 0, lsb, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        stbtt_GetFontVMetrics(info, &asc, &desc, &gap);
+        if (gi) { /* (a codepoint the font lacks stays an empty glyph) */
+            stbtt_GetGlyphHMetrics(info, gi, &adv, &lsb);
+            stbtt_GetGlyphBitmapBox(info, gi, s, s, &x0, &y0, &x1, &y1);
+        }
+        float top = uip_roundf((float)asc * s); /* from the top of the em box down to the baseline (whole pixels) */
+        ic->g.adv = gi ? (float)adv * s : (float)ic->px;
+        ic->box_h = (float)(asc - desc) * s;
+        ic->g.x0 = (float)x0;
+        ic->g.y0 = (float)y0 + top;
+        ic->g.x1 = (float)x1;
+        ic->g.y1 = (float)y1 + top;
+        UipBakeJob *j = &jobs[njobs++];
+        j->dst = &ic->g;
+        j->info = info;
+        j->scale = s;
+        j->glyph = gi;
+        j->w = x1 - x0;
+        j->h = y1 - y0;
     }
 
     /* 2. pack: the narrowest power-of-two width whose height is not larger than the width */
@@ -334,6 +409,7 @@ const u8 *ui_fonts_init(float scale, int *out_w, int *out_h) {
     }
     free(order);
     free(jobs);
+    for (int i = 0; i < ui.icons.len; i++) ui.icons.data[i].ready = true;
     ui.atlas_fresh = true;
     ui.bake_needed = false;
     if (out_w) *out_w = W;
@@ -756,6 +832,68 @@ void ui_image(int texture, float x, float y, float w, float h) {
     ui_image_ex(texture, x, y, w, h, 0, 0, 1, 1, 0xFFFFFFFFu);
 }
 
+/* ---- icons ------------------------------------------------------------------------------------------------- */
+
+u32 ui_icon_lookup(const char *name) {
+    if (!name || !name[0]) return 0;
+    int lo = 0, hi = ARRAY_COUNT(material_icon_names) - 1;
+    while (lo <= hi) { /* the table is sorted in strcmp order (tools/gen_icon_codepoints.py) */
+        int mid = (lo + hi) / 2;
+        int c = strcmp(name, material_icon_names[mid].name);
+        if (c == 0) return material_icon_names[mid].cp;
+        if (c < 0) hi = mid - 1; else lo = mid + 1;
+    }
+    return 0;
+}
+
+/* The baked glyph for a codepoint at a whole-pixel size, or NULL if it is not in the atlas yet.  The first request
+ * of a pair adds it to the table and asks for a rebuild: ui_begin_frame does it before the next frame is built, so
+ * the atlas is rebuilt once per frame however many icons were new, and a frame is requested right away. */
+static const UipIcon *uip_icon_get(u32 cp, int px) {
+    for (int i = 0; i < ui.icons.len; i++) {
+        UipIcon *ic = &ui.icons.data[i];
+        if (ic->g.cp == cp && ic->px == px) {
+            ic->last_used = ++ui.icon_clock;
+            return ic->ready ? ic : NULL;
+        }
+    }
+    UipIcon n;
+    memset(&n, 0, sizeof n);
+    n.g.cp = cp;
+    n.px = px;
+    n.last_used = ++ui.icon_clock;
+    vec_push(ui.icons, n);
+    ui.bake_needed = true;
+    ui.redraw_now = true;
+    return NULL;
+}
+
+/* Stand-in for an icon: text in the sans font (at its normal size), its advance centred horizontally and its cap
+ * height centred vertically in the square, so single letters sit on a common baseline across a row of buttons. */
+static void uip_icon_fallback(const char *text, float x, float y, float size, u32 rgba) {
+    if (!text || !text[0]) return;
+    const UipFont *f = &ui.fonts[UI_FONT_SANS];
+    const UipGlyph *cap_h = uip_find_glyph(f, 'H');
+    float cap = cap_h ? -cap_h->y0 : f->ascent * 0.7f;
+    float tx = x + (size - ui_text_width(UI_FONT_SANS, text, -1)) * 0.5f;
+    float baseline = uip_roundf(y + (size + cap) * 0.5f);
+    ui_text(UI_FONT_SANS, tx, baseline - f->ascent, text, -1, rgba);
+}
+
+void ui_icon(const char *name, const char *fallback, float x, float y, float size, u32 rgba) {
+    uip_ensure_baked();
+    if ((rgba >> 24) == 0 || !(size >= 1.0f) || uip_culled(x, y, x + size, y + size)) return; /* (no baking for icons nobody sees) */
+    u32 cp = uip_icon_font() ? ui_icon_lookup(name) : 0;
+    if (!cp) { uip_icon_fallback(fallback, x, y, size, rgba); return; }
+    int px = (int)FS_CLAMP(size + 0.5f, (float)UIP_ICON_MIN_PX, (float)UIP_ICON_MAX_PX); /* whole pixels keep the atlas small */
+    const UipIcon *ic = uip_icon_get(cp, px);
+    if (!ic || ic->g.x1 <= ic->g.x0) return; /* baked in time for the next frame, or blank */
+    float bx = uip_roundf(x + (size - ic->g.adv) * 0.5f), by = uip_roundf(y + (size - ic->box_h) * 0.5f); /* em box */
+    float x0 = bx + ic->g.x0, y0 = by + ic->g.y0, x1 = bx + ic->g.x1, y1 = by + ic->g.y1;
+    if (uip_culled(x0, y0, x1, y1)) return;
+    uip_quad_uv(0, x0, y0, x1, y1, ic->g.u0, ic->g.v0, ic->g.u1, ic->g.v1, rgba);
+}
+
 /* ======================================================================================================
  * 4. frame, ids, hit-testing, interaction
  * ==================================================================================================== */
@@ -763,6 +901,8 @@ void ui_image(int texture, float x, float y, float w, float h) {
 void ui_begin_frame(const UiInput *in) {
     ui.in = *in;
     if (ui.in.content_scale <= 0) ui.in.content_scale = 1.0f;
+    /* the one place where the atlas is rebuilt during normal operation: scale or font size changed, or icons were
+     * requested last frame; so at most once per frame, before anything is drawn with the new texture coordinates */
     if (ui.bake_needed || !ui.atlas || fabsf(ui.in.content_scale - ui.scale) > 0.001f)
         ui_fonts_init(ui.in.content_scale, NULL, NULL);
     ui.fb_w = (float)ui.in.fb_w;
@@ -1162,9 +1302,10 @@ float ui_scroll_area(float x, float y, float w, float h) {
 
 /* ---- buttons ----------------------------------------------------------------------------------------------- */
 
-bool ui_button_ex(const char *label, float x, float y, float w, float h, int flags) {
+/* Interaction and frame shared by text buttons and icon buttons: handles the mouse, draws the fill and border for the
+ * state, and returns the color the content (label or icon) should be drawn in.  *clicked receives the result. */
+static u32 uip_button_frame(u32 id, float x, float y, float w, float h, int flags, bool *clicked) {
     bool disabled = (flags & UI_DISABLED) != 0;
-    u32 id = ui_id(label);
     UiInteract r;
     memset(&r, 0, sizeof r);
     if (disabled) uip_add_occ(x, y, w, h);
@@ -1189,11 +1330,33 @@ bool ui_button_ex(const char *label, float x, float y, float w, float h, int fla
     float rad = ui_px(UIP_RADIUS);
     if (fill) ui_rrect(x, y, w, h, rad, fill);
     if (border) ui_rrect_outline(x, y, w, h, rad, 1, border);
+    *clicked = r.clicked;
+    return text;
+}
+
+bool ui_button_ex(const char *label, float x, float y, float w, float h, int flags) {
+    bool clicked;
+    u32 text = uip_button_frame(ui_id(label), x, y, w, h, flags, &clicked);
     ui_label(x + ui_px(4), y, w - ui_px(8), h, label, UI_ALIGN_CENTER, text);
-    return r.clicked;
+    return clicked;
 }
 
 bool ui_button(const char *label, float x, float y, float w, float h) { return ui_button_ex(label, x, y, w, h, 0); }
+
+bool ui_icon_button_ex(const char *id, const char *name, const char *fallback, float x, float y, float size, int flags) {
+    bool clicked;
+    u32 col = uip_button_frame(ui_id(id ? id : ""), x, y, size, size, flags, &clicked);
+    /* The icon takes about 60% of the button (24 px in a 40 px button), and has the button's parity (even in even,
+     * odd in odd) so that its em box is centred on whole pixels. */
+    float ipx = uip_roundf(size * 0.6f);
+    if (fmodf(ipx + uip_roundf(size), 2.0f) != 0.0f) ipx += 1.0f;
+    ui_icon(name, fallback, x + (size - ipx) * 0.5f, y + (size - ipx) * 0.5f, ipx, col);
+    return clicked;
+}
+
+bool ui_icon_button(const char *id, const char *name, const char *fallback, float x, float y, float size, bool selected) {
+    return ui_icon_button_ex(id, name, fallback, x, y, size, selected ? UI_SELECTED : 0);
+}
 
 bool ui_toggle(const char *label, float x, float y, float w, float h, bool *value) {
     u32 id = ui_id(label);

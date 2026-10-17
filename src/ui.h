@@ -4,7 +4,7 @@
  *   platform_poll(&in)  ->  ui_begin_frame(&in)  ->  [widgets / primitives]  ->  ui_end_frame()
  *   ui_end_frame() returns the GfxDrawList that gfx_frame_draw() renders.  The font atlas is uploaded with
  *   gfx_set_font_atlas() whenever ui_take_atlas_update() returns pixels (first frame, content-scale change,
- *   font-size change):
+ *   font-size change, icons drawn for the first time):
  *
  *       ui_begin_frame(&in);
  *       int aw, ah; const u8 *px = ui_take_atlas_update(&aw, &ah);
@@ -78,12 +78,13 @@ u32 ui_mix(u32 a, u32 b, float t);            /* linear blend, t = 0 gives a */
 /* ---- fonts and text ----------------------------------------------------------------------------------- */
 typedef enum UiFont { UI_FONT_SANS, UI_FONT_MONO, UI_FONT_COUNT } UiFont;
 
-/* Bake both fonts for the given content scale and return the RGBA8 atlas (white RGB, glyph coverage in alpha,
- * texel (0,0) opaque white).  Owned by ui.c, valid until the next bake.  Called implicitly by ui_begin_frame
- * when the scale or a font size changes; calling it first (e.g. in tests) is optional. */
+/* Bake both fonts (and the icons requested so far, see ui_icon) for the given content scale and return the RGBA8
+ * atlas (white RGB, glyph coverage in alpha, texel (0,0) opaque white).  Owned by ui.c, valid until the next bake.
+ * Called implicitly by ui_begin_frame when the scale or a font size changes or new icons were requested;
+ * calling it first (e.g. in tests) is optional. */
 const u8 *ui_fonts_init(float scale, int *w, int *h);
 /* Returns the atlas pixels if they were (re)built since the last call, else NULL.  Call after ui_begin_frame
- * every frame and upload with gfx_set_font_atlas() when non-NULL. */
+ * every frame and upload with gfx_set_font_atlas() when non-NULL (the size can change between rebuilds). */
 const u8 *ui_take_atlas_update(int *w, int *h);
 /* Logical (unscaled) em size in pixels; defaults: sans 15, mono 15.  Takes effect at the next ui_begin_frame. */
 void ui_set_font_size(UiFont f, float logical_px);
@@ -104,6 +105,22 @@ float ui_text_wrapped(UiFont f, float x, float y, float max_w, const char *utf8,
 enum { UI_ALIGN_LEFT = 0, UI_ALIGN_CENTER = 1, UI_ALIGN_RIGHT = 2 };
 /* A one-line label centered vertically in the box and clipped to it. */
 void ui_label(float x, float y, float w, float h, const char *utf8, int align, u32 rgba);
+
+/* ---- icons: Google's Material Icons (Apache License 2.0), named as on https://fonts.google.com/icons ------------
+ * Names are the lowercase snake_case ones ("menu", "pan_tool", "my_location", "timeline", ...).  Glyphs are baked on
+ * demand into the same atlas as the text: the first time an icon is drawn at a size (rounded to whole pixels, so
+ * pass sizes like ui_px(24)) it is only scheduled, and ui_begin_frame rebuilds the atlas before the next frame
+ * (once per frame, however many icons are new; ui_take_atlas_update() then returns it as usual).  That first
+ * frame shows nothing in the icon's place and calls ui_request_redraw(), so an event-driven main loop runs the
+ * next frame immediately.  A program that renders a single frame (a screenshot) must run its UI twice.
+ * Icons and sizes requested earlier are kept across rebuilds and content-scale changes (the oldest are dropped
+ * only past a generous budget: 512 icon/size pairs or 1M atlas pixels). */
+u32 ui_icon_lookup(const char *name);         /* codepoint of a Material Icons name, 0 if unknown (exact match) */
+/* Draw an icon centered in the square (x, y, size, size); size is its em, e.g. 24 px for a standard icon (the
+ * glyph's ink is a bit smaller, as designed).  If `name` is NULL, empty or unknown, `fallback` (UTF-8, e.g. the
+ * first letter of a tool's name) is drawn in the sans font instead (immediately, at the normal font size), with
+ * its width and cap height centered in the square.  A NULL/empty fallback then draws nothing. */
+void ui_icon(const char *name, const char *fallback, float x, float y, float size, u32 rgba);
 
 /* UTF-8 and word helpers on NUL-terminated strings (byte offsets).  Words are runs of letters/digits/_ (including
  * Greek and accented letters), or runs of other symbols; '\n' always stops a movement. */
@@ -211,6 +228,12 @@ void ui_separator(float x, float y, float w);                            /* hori
 
 bool ui_button(const char *label, float x, float y, float w, float h);   /* true when clicked */
 bool ui_button_ex(const char *label, float x, float y, float w, float h, int flags);
+/* Square icon button (x, y, size, size) that looks and behaves like ui_button (hover, pressed, UI_SELECTED when
+ * `selected`); true when clicked.  `id` is its identity (see "Conventions"; it is not shown), `name` and `fallback`
+ * are as in ui_icon, drawn at about 60% of `size`.  Follow it with ui_tooltip() to label it.  The _ex form takes
+ * the UI_DISABLED / UI_ACCENT / UI_SELECTED / UI_FLAT flags of ui_button_ex. */
+bool ui_icon_button(const char *id, const char *name, const char *fallback, float x, float y, float size, bool selected);
+bool ui_icon_button_ex(const char *id, const char *name, const char *fallback, float x, float y, float size, int flags);
 /* Checkbox with the label to its right.  Returns true when toggled. */
 bool ui_toggle(const char *label, float x, float y, float w, float h, bool *value);
 
