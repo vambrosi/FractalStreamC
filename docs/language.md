@@ -374,7 +374,7 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 - The views' centre and radius, and `.maxIterations`, `.escapeRadius` and `.epsilon`, are listed at
   the end unless the script places them itself.
 - A dot marks a value that is no longer the script's (changed in the panel or by a tool); its
-  label's tooltip says what the script has. Values changed this way stay when the script runs
+  label's tooltip says what the script has, and a click on the dot goes back to it. Values changed this way stay when the script runs
   again, unless the script itself now gives them another value. The two buttons at the top of
   the panel set them back as the script has them, or write them into the script (with the places
   of the views), so that it opens like this: numbers in the script are replaced, formulas are left

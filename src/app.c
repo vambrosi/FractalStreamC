@@ -2941,23 +2941,41 @@ static bool config_auto(Program *p, Sym *s, int group) {
 /* A dot before the label of a value that isn't the script's any more (a view's centre: with its low part); the
    label's tooltip says what the script has. */
 static void config_changed_mark(Program *p, Sym *s, float x0, float y, float w) {
-    char id[160];
-    snprintf(id, sizeof id, "##label_%s", s->name);
-    bool hovered = ui_interact(id, x0, y, w, config_row_h() - px(4)).hovered; /* (for the tooltip) */
+    float h = config_row_h() - px(4);
     bool changed = value_changed(p, s);
     if (s->viewer_index >= 0 && s == p->viewers[s->viewer_index]->center && p->viewers[s->viewer_index]->center_lo)
         changed = changed || value_changed(p, p->viewers[s->viewer_index]->center_lo);
+    char id[170];
+    snprintf(id, sizeof id, "##label_%s", s->name);
     if (!changed || !(script_setting(p, s) || view_geometry(p, s))) {
-        if (hovered && s->label) ui_tooltip(s->name);
+        if (ui_interact(id, x0, y, w, h).hovered && s->label) ui_tooltip(s->name); /* (the name behind the label) */
         return;
     }
-    ui_disk(x0 - px(5), y + (config_row_h() - px(4)) / 2, px(2.5f), UI_COL_ACCENT);
-    if (!hovered) return;
     StrBuf sb = {0};
     sb_printf(&sb, "%s%s: changed; the script has ", s->is_internal ? "." : "", s->name);
     if (!value_literal(&sb, s->type, p->initial_state + s->slot)) sb_puts(&sb, "another value");
-    ui_tooltip(sb_cstr(&sb));
+    /* the dot: a click sets the value back as the script has it */
+    char did[180];
+    snprintf(did, sizeof did, "##dot_%s", s->name);
+    UiInteract dot = ui_interact(did, x0 - px(10), y, px(10), h);
+    ui_disk(x0 - px(5), y + h / 2, dot.hovered ? px(3.5f) : px(2.5f), UI_COL_ACCENT);
+    if (dot.hovered) {
+        StrBuf tip = {0};
+        sb_printf(&tip, "%s (a click goes back to it)", sb_cstr(&sb));
+        ui_tooltip(sb_cstr(&tip));
+        sb_free(&tip);
+    }
+    if (ui_interact(id, x0, y, w, h).hovered) ui_tooltip(sb_cstr(&sb));
     sb_free(&sb);
+    if (dot.clicked) {
+        Section *v = s->viewer_index >= 0 ? p->viewers[s->viewer_index] : NULL;
+        if (v && view_geometry(p, s)) nav_begin(s->viewer_index, nav_new_gesture());
+        Sym *both[2] = {s, v && s == v->center ? v->center_lo : NULL};
+        for (int k = 0; k < 2; k++)
+            if (both[k]) memcpy(A.state + both[k]->slot, p->initial_state + both[k]->slot, sizeof(u32) * (size_t)both[k]->type->size);
+        for (int k = 0; k < p->nviewers; k++) /* (a picked point back where the script has it: no marker) */
+            if (p->viewers[k]->picked == s) A.vrt[k].picked = false;
+    }
 }
 
 /* The centre of a flat view, with its low part, showing as many digits as the radius asks for and dragged by a
