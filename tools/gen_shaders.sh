@@ -6,7 +6,7 @@
 #
 # The generated headers are checked in, so glslangValidator (and spirv-val, used
 # to double-check the output) are only needed when a shader is edited.
-# File names are <name>.<stage>.glsl with stage = vert|frag; the array for
+# File names are <name>.<stage>.glsl with stage = vert|frag|comp; the array for
 # src/shaders/ui.frag.glsl is called gfx_spv_ui_frag (tests: gfx_test_spv_...).
 # Output is SPIR-V 1.0 for Vulkan 1.0 (glslangValidator's default with -V).
 set -e

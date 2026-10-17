@@ -355,6 +355,436 @@ TEST(viewer_errors) {
     GT_NO_VALIDATION_ERRORS();
 }
 
+/* ---- compute (storage buffers, compute pipelines, batches) ----------------
+ * Shaders: tests/shaders/compute_*.comp.glsl (see their headers). */
+
+static int gt_compute(const u32 *spv, u32 nwords, int nbuffers, u32 push_bytes) {
+    GfxComputeDesc d;
+    memset(&d, 0, sizeof d);
+    d.spirv = spv;
+    d.nwords = nwords;
+    d.nbuffers = nbuffers;
+    d.push_bytes = push_bytes;
+    char err[256] = "";
+    int p = gfx_compute_create(&d, err, sizeof err);
+    CHECK_MSG(p > 0, "gfx_compute_create: %s", err);
+    return p;
+}
+#define GT_COMPUTE(name, nbuffers, push_bytes) \
+    gt_compute(gfx_test_spv_##name##_comp, (u32)ARRAY_COUNT(gfx_test_spv_##name##_comp), nbuffers, push_bytes)
+
+/* Downloads n u32 words at word `first` of buf into a new array (NULL on failure). */
+static u32 *gt_download(int buf, u32 first, u32 n) {
+    u32 *out = (u32 *)xcalloc(n ? n : 1, 4);
+    char err[256] = "";
+    bool ok = gfx_buffer_download(buf, (u64)first * 4, out, (u64)n * 4, err, sizeof err);
+    CHECK_MSG(ok, "gfx_buffer_download: %s", err);
+    if (!ok) { free(out); return NULL; }
+    return out;
+}
+
+/* Mismatches of v[0..n) against want(i) = mul * (i + first) + add; prints the first. */
+static int gt_bad_words(const u32 *v, u32 n, u32 first, u32 mul, u32 add) {
+    int bad = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 want = mul * (i + first) + add;
+        if (v[i] != want && bad++ == 0) printf("    word %u = %u, expected %u\n", i + first, v[i], want);
+    }
+    return bad;
+}
+
+/* The ring test's table, computed on the CPU (see compute_chain.comp.glsl). */
+static void gt_chain_cpu(u32 *v, u32 w, u32 rows) {
+    for (u32 k = 1; k < rows; k++)
+        for (u32 i = 0; i < w; i++)
+            v[k * w + i] = v[(k - 1) * w + i] * 1664525u + v[(k - 1) * w + (i + 1) % w] + 1013904223u;
+}
+
+TEST(compute_dispatch) {
+    GT_REQUIRE();
+    printf("    max storage buffer: %llu bytes\n", (unsigned long long)gfx_max_buffer_size());
+    CHECK(gfx_max_buffer_size() >= (u64)64 << 20);
+    int pipe = GT_COMPUTE(compute_index, 1, 8);
+    enum { N = 1000, CAP = 1100 };
+    int buf = gfx_buffer_create(CAP * 4 - 2);   /* rounded up to a multiple of 4 */
+    CHECK(buf > 0);
+    CHECK_INT(gfx_buffer_size(buf), CAP * 4);
+    if (!pipe || !buf) return;
+    u32 *v = gt_download(buf, 0, CAP);         /* zero-filled */
+    CHECK(v && gt_bad_words(v, CAP, 0, 0, 0) == 0);
+    free(v);
+
+    u32 push[2] = { 7, N };
+    char err[256] = "";
+    CHECK(gfx_batch_begin());
+    gfx_frame_dispatch(pipe, &buf, push, (N + 63) / 64, 1, 1);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    v = gt_download(buf, 0, CAP);
+    CHECK(v && gt_bad_words(v, N, 0, 3, 7) == 0);           /* written */
+    CHECK(v && gt_bad_words(v + N, CAP - N, N, 0, 0) == 0); /* beyond n: untouched */
+    free(v);
+    v = gt_download(buf, 100, 10);                          /* a piece at an offset */
+    CHECK(v && gt_bad_words(v, 10, 100, 3, 7) == 0);
+    free(v);
+
+    /* Upload at an unaligned byte offset, then read back around it. */
+    u8 bytes[7] = { 1, 2, 3, 4, 5, 6, 7 };
+    CHECK_MSG(gfx_buffer_upload(buf, 4 * N + 1, bytes, sizeof bytes, err, sizeof err), "%s", err);
+    u8 back[12];
+    CHECK_MSG(gfx_buffer_download(buf, 4 * N, back, sizeof back, err, sizeof err), "%s", err);
+    CHECK(back[0] == 0 && memcmp(back + 1, bytes, 7) == 0 && back[8] == 0);
+    CHECK(gfx_buffer_upload(buf, 0, NULL, 0, err, sizeof err));     /* nothing to do */
+
+    /* Uploads and downloads larger than one staging chunk. */
+    u32 big_n = (u32)(GFX_TRANSFER_CHUNK / 4) * 2 + 5;
+    int big = gfx_buffer_create((u64)big_n * 4);
+    u32 *src = (u32 *)xmalloc((size_t)big_n * 4);
+    for (u32 i = 0; i < big_n; i++) src[i] = i * 2654435761u;
+    CHECK_MSG(big && gfx_buffer_upload(big, 0, src, (u64)big_n * 4, err, sizeof err), "%s", err);
+    v = big ? gt_download(big, 0, big_n) : NULL;
+    CHECK(v && gt_bad_words(v, big_n, 0, 2654435761u, 0) == 0);
+    free(v);
+    free(src);
+    gfx_buffer_destroy(big);
+    gfx_buffer_destroy(buf);
+    gfx_compute_destroy(pipe);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_chain) {
+    GT_REQUIRE();
+    /* Ring-style dependencies: ROWS-1 dispatches in one batch, each reading the
+       row the previous one wrote. Correct only if every dispatch sees the last. */
+    enum { W = 100, ROWS = 1500 };
+    int pipe = GT_COMPUTE(compute_chain, 2, 8);
+    int buf = gfx_buffer_create((u64)W * ROWS * 4);
+    int bufs[2] = { buf, buf };
+    if (!pipe || !buf) return;
+    u32 *want = (u32 *)xcalloc((size_t)W * ROWS, 4);
+    for (u32 i = 0; i < W; i++) want[i] = i * 7u + 1u;
+    char err[256] = "";
+    CHECK_MSG(gfx_buffer_upload(buf, 0, want, W * 4, err, sizeof err), "%s", err);
+    for (u32 i = 0; i < W / 2; i++) want[i] = 0xFFFF0000u;   /* the fill below */
+    gt_chain_cpu(want, W, ROWS);
+
+    double t0 = fs_time_seconds();
+    CHECK(gfx_batch_begin());
+    gfx_frame_fill_buffer(buf, W * 4, (u64)W * (ROWS - 1) * 4, 0xDEADBEEFu);   /* garbage to overwrite */
+    gfx_frame_fill_buffer(buf, 0, (W / 2) * 4, 0xFFFF0000u);
+    for (u32 k = 1; k < ROWS; k++) {
+        u32 push[2] = { k, W };
+        gfx_frame_dispatch(pipe, bufs, push, (W + 31) / 32, 1, 1);
+    }
+    double t1 = fs_time_seconds();
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    printf("    %d dispatches: recorded in %.2f ms, ran in %.1f ms\n", ROWS - 1, (t1 - t0) * 1e3,
+           (fs_time_seconds() - t1) * 1e3);
+    /* One descriptor set for all those dispatches (white box: the batch's cache). */
+    CHECK_INT(gx.batch.csets.len, 1);
+    u32 *v = gt_download(buf, 0, W * ROWS);
+    int bad = 0;
+    for (u32 i = 0; v && i < W * ROWS; i++)
+        if (v[i] != want[i] && bad++ == 0) printf("    row %u col %u = %u, expected %u\n", i / W, i % W, v[i], want[i]);
+    CHECK_INT(bad, 0);
+    free(v);
+    free(want);
+    gfx_buffer_destroy(buf);
+    gfx_compute_destroy(pipe);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_buffers) {
+    GT_REQUIRE();
+    /* Two buffers, ping-pong: a -> b, b -> a, ... with the globals changing size
+       every time, so each dispatch needs a new descriptor set (globals range) and
+       the batch's descriptor pools and globals buffer grow on the way. */
+    enum { N = 300, STEPS = 150 };
+    int pipe = GT_COMPUTE(compute_add, 2, 8);
+    int a = gfx_buffer_create(N * 4), b = gfx_buffer_create(N * 4);
+    if (!pipe || !a || !b) return;
+    u32 init[N];
+    for (u32 i = 0; i < N; i++) init[i] = i * 10u;
+    char err[256] = "";
+    CHECK(gfx_buffer_upload(a, 0, init, sizeof init, err, sizeof err));
+    u8 *globals = (u8 *)xcalloc(1, 64 * STEPS);
+    CHECK(gfx_batch_begin());
+    for (u32 s = 0; s < STEPS; s++) {
+        gfx_set_globals(globals, 64 * (s + 1));
+        int ab[2] = { a, b }, ba[2] = { b, a };
+        u32 push[2] = { s + 1, N };
+        gfx_frame_dispatch(pipe, s % 2 ? ba : ab, push, (N + 63) / 64, 1, 1);
+    }
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK(gx.batch.cpools.len >= 2);   /* more sets than one pool holds */
+    /* a ends with init + 1 + 2 + ... + STEPS (STEPS even: the last step wrote a). */
+    u32 *v = gt_download(a, 0, N);
+    CHECK(v && gt_bad_words(v, N, 0, 10, STEPS * (STEPS + 1) / 2) == 0);
+    free(v);
+    v = gt_download(b, 0, N);
+    CHECK(v && gt_bad_words(v, N, 0, 10, (STEPS - 1) * STEPS / 2) == 0);
+    free(v);
+
+    /* The same buffer twice (in-place add) and the next batch reusing the pools. */
+    CHECK(gfx_batch_begin());
+    int aa[2] = { a, a };
+    u32 push[2] = { 1000, N };
+    for (int i = 0; i < 3; i++) gfx_frame_dispatch(pipe, aa, push, (N + 63) / 64, 1, 1);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK_INT(gx.batch.csets.len, 1);
+    v = gt_download(a, 0, N);
+    CHECK(v && gt_bad_words(v, N, 0, 10, STEPS * (STEPS + 1) / 2 + 3000) == 0);
+    free(v);
+    free(globals);
+    gt_set_k(0.0f);
+    gfx_buffer_destroy(a);
+    gfx_buffer_destroy(b);
+    gfx_compute_destroy(pipe);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_target_copies) {
+    GT_REQUIRE();
+    enum { W = 13, H = 7, OFF = 64 };
+    int t = gfx_target_create(W, H), t2 = gfx_target_create(W, H);
+    int p = gfx_buffer_create(OFF + W * H * 4), q = gfx_buffer_create(16 + W * H * 4);
+    int v = gt_viewer();
+    if (!t || !t2 || !p || !q || !v) return;
+    char err[256] = "";
+    /* buffer -> target: a pattern uploaded at an offset. */
+    u8 pat[W * H * 4], img[W * H * 4], img2[W * H * 4];
+    for (int i = 0; i < W * H * 4; i++) pat[i] = (u8)(i * 37 + 11);
+    CHECK(gfx_buffer_upload(p, OFF, pat, sizeof pat, err, sizeof err));
+    CHECK(gfx_batch_begin());
+    gfx_frame_buffer_to_target(p, OFF, t);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK_MSG(gfx_target_read(t, img, err, sizeof err), "%s", err);
+    CHECK(memcmp(img, pat, sizeof pat) == 0);
+
+    /* target -> buffer: a viewer picture. */
+    gt_set_k(0.5f);
+    GfxViewerParams vp = gt_params(W, H);
+    CHECK_MSG(gfx_target_render(t2, v, &vp, err, sizeof err), "%s", err);
+    CHECK(gfx_target_read(t2, img2, err, sizeof err));
+    CHECK_INT(gt_bad_viewer(img2, W, 0, 0, W, H, W, H, 0, 0, 0.5f), 0);
+    CHECK(gfx_batch_begin());
+    gfx_frame_target_to_buffer(t2, q, 16);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK(gfx_buffer_download(q, 16, img, sizeof img, err, sizeof err));
+    CHECK(memcmp(img, img2, sizeof img) == 0);
+
+    /* Round trip in one batch, then a viewer render on top of the copied picture
+       (render pass after a copy) and a draw of the target (sampling after a copy). */
+    CHECK(gfx_batch_begin());
+    gfx_frame_target_to_buffer(t2, p, 0);
+    gfx_frame_fill_buffer(p, 0, 4, 0xFF0000FFu);   /* pixel (0,0): opaque red */
+    gfx_frame_buffer_to_target(p, 0, t);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK(gfx_target_read(t, img, err, sizeof err));
+    CHECK_INT(gt_bad_color(img, W, 0, 0, 1, 1, 255, 0, 0, 255), 0);
+    CHECK(memcmp(img + 4, img2 + 4, sizeof img - 4) == 0);
+    vp.x0 = 0; vp.y0 = 0; vp.x1 = 4; vp.y1 = H;   /* left 4 columns: k = 1 */
+    gt_set_k(1.0f);
+    CHECK(gfx_target_render(t, v, &vp, err, sizeof err));
+    CHECK(gfx_target_read(t, img, err, sizeof err));
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, 4, H, W, H, 0, 0, 1.0f), 0);
+    CHECK_INT(gt_bad_viewer(img, W, 4, 0, W, H, W, H, 0, 0, 0.5f), 0);
+
+    /* A compute-made picture: compute_color -> buffer -> target. */
+    int pipe = GT_COMPUTE(compute_color, 1, 12);
+    gt_set_k(0.25f);
+    u32 push[3] = { W, H, OFF / 4 };
+    CHECK(gfx_batch_begin());
+    gfx_frame_dispatch(pipe, &p, push, (W + 7) / 8, (H + 7) / 8, 1);
+    gfx_frame_buffer_to_target(p, OFF, t);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK(gfx_target_read(t, img, err, sizeof err));
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0, 0, 0.25f), 0);
+    gfx_compute_destroy(pipe);
+    gfx_viewer_destroy(v);
+    gfx_target_destroy(t);
+    gfx_target_destroy(t2);
+    gfx_buffer_destroy(p);
+    gfx_buffer_destroy(q);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_globals) {
+    GT_REQUIRE();
+    /* Two globals versions in one batch: each dispatch sees the globals current at its call. */
+    enum { W = 40, H = 3 };
+    int pipe = GT_COMPUTE(compute_color, 1, 12);
+    int p = gfx_buffer_create(2 * W * H * 4), t = gfx_target_create(W, H);
+    if (!pipe || !p || !t) return;
+    GtGlobals g;
+    memset(&g, 0, sizeof g);
+    char err[256] = "";
+    CHECK(gfx_batch_begin());
+    g.k = 0.25f;
+    gfx_set_globals(&g, 8);
+    u32 push[3] = { W, H, 0 };
+    gfx_frame_dispatch(pipe, &p, push, (W + 7) / 8, 1, 1);
+    g.k = 0.75f;
+    g.n = W;
+    for (int x = 0; x < W; x++) g.data[x] = (float)(x * 5) / 255.0f;
+    gfx_set_globals(&g, sizeof g);
+    push[2] = W * H;
+    gfx_frame_dispatch(pipe, &p, push, (W + 7) / 8, 1, 1);
+    gfx_frame_buffer_to_target(p, W * H * 4, t);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    u8 img[2 * W * H * 4];
+    CHECK(gfx_buffer_download(p, 0, img, sizeof img, err, sizeof err));
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0, 0, 0.25f), 0);
+    int bad = 0;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            int want[4] = { gt_unorm((x + 0.5f) / W), gt_unorm((y + 0.5f) / H), gt_unorm(0.75f), x * 5 };
+            gt_pixel(img + W * H * 4, W, x, y, want, &bad);
+        }
+    CHECK_INT(bad, 0);
+    u8 timg[W * H * 4];
+    CHECK(gfx_target_read(t, timg, err, sizeof err));
+    CHECK(memcmp(timg, img + W * H * 4, sizeof timg) == 0);
+    gt_set_k(0.0f);
+    gfx_compute_destroy(pipe);
+    gfx_buffer_destroy(p);
+    gfx_target_destroy(t);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_lifetime) {
+    GT_REQUIRE();
+    /* Destroy a buffer and a pipeline right after recording a dispatch that uses
+       them (deferred until the batch ran), and create new ones that get the same
+       handles within the same batch: the new ones must be used. */
+    enum { N = 64 };
+    int pipe = GT_COMPUTE(compute_index, 1, 8);
+    int x = gfx_buffer_create(N * 4);
+    if (!pipe || !x) return;
+    char err[256] = "";
+    u32 push[2] = { 1, N };
+    CHECK(gfx_batch_begin());
+    gfx_frame_dispatch(pipe, &x, push, 1, 1, 1);
+    gfx_buffer_destroy(x);
+    gfx_compute_destroy(pipe);
+    int y = gfx_buffer_create(N * 4);
+    int pipe2 = GT_COMPUTE(compute_index, 1, 8);
+    CHECK_INT(y, x);           /* handle reused */
+    CHECK_INT(pipe2, pipe);
+    push[0] = 5;
+    gfx_frame_dispatch(pipe2, &y, push, 1, 1, 1);
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK_INT(gx.batch.csets.len, 2);
+    u32 *v = gt_download(y, 0, N);
+    CHECK(v && gt_bad_words(v, N, 0, 3, 5) == 0);
+    free(v);
+    gfx_buffer_destroy(y);
+    gfx_compute_destroy(pipe2);
+    CHECK_INT(gx.garbage.len, 0);   /* nothing in flight: all destroyed */
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_errors) {
+    GT_REQUIRE();
+    char err[256] = "";
+    /* Buffers. */
+    CHECK(gfx_buffer_create(0) == 0);
+    CHECK(gfx_buffer_create(gfx_max_buffer_size() + 1) == 0);
+    CHECK(strstr(gx.err, "maxStorageBufferRange") != NULL);
+    CHECK(gfx_buffer_size(0) == 0 && gfx_buffer_size(-3) == 0 && gfx_buffer_size(999) == 0);
+    gfx_buffer_destroy(0);
+    gfx_buffer_destroy(-1);
+    gfx_buffer_destroy(999);
+    int buf = gfx_buffer_create(64);
+    u8 data[64] = { 0 };
+    CHECK(!gfx_buffer_upload(buf, 60, data, 8, err, sizeof err));
+    CHECK(strstr(err, "outside") != NULL);
+    CHECK(!gfx_buffer_download(buf, 65, data, 0, err, sizeof err));
+    CHECK(!gfx_buffer_download(buf, 0, NULL, 4, err, sizeof err));
+    CHECK(!gfx_buffer_download(999, 0, data, 4, err, sizeof err));
+    CHECK(strstr(err, "invalid storage buffer") != NULL);
+
+    /* Pipelines. */
+    CHECK(gfx_compute_create(NULL, err, sizeof err) == 0);
+    GfxComputeDesc d;
+    memset(&d, 0, sizeof d);
+    d.spirv = gfx_test_spv_test_viewer_frag;       /* a fragment shader */
+    d.nwords = (u32)ARRAY_COUNT(gfx_test_spv_test_viewer_frag);
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    CHECK(strstr(err, "compute") != NULL);
+    static const u32 junk[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    d.spirv = junk;
+    d.nwords = 8;
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    CHECK(strstr(err, "SPIR-V") != NULL);
+    d.spirv = gfx_test_spv_compute_index_comp;
+    d.nwords = (u32)ARRAY_COUNT(gfx_test_spv_compute_index_comp);
+    d.nbuffers = 9;
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    CHECK(strstr(err, "nbuffers") != NULL);
+    d.nbuffers = 1;
+    d.push_bytes = 132;
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    CHECK(strstr(err, "push") != NULL);
+    d.push_bytes = 6;
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    /* No workgroup size: the module without its OpExecutionMode (LocalSize) and
+       its OpDecorate ... BuiltIn WorkgroupSize (glslang emits both). */
+    const u32 *in = gfx_test_spv_compute_index_comp;
+    u32 nw = (u32)ARRAY_COUNT(gfx_test_spv_compute_index_comp), out = 5;
+    u32 *mod = (u32 *)xmalloc(nw * 4);
+    memcpy(mod, in, 5 * 4);
+    for (u32 i = 5, len; i < nw; i += len) {
+        u32 op = in[i] & 0xFFFF;
+        len = in[i] >> 16;
+        if (op == 16 || (op == 71 && in[i + 2] == 11 && in[i + 3] == 25)) continue;
+        memcpy(mod + out, in + i, len * 4);
+        out += len;
+    }
+    CHECK(out < nw - 4);
+    d.spirv = mod;
+    d.nwords = out;
+    d.push_bytes = 8;
+    CHECK(gfx_compute_create(&d, err, sizeof err) == 0);
+    CHECK(strstr(err, "LocalSize") != NULL);
+    free(mod);
+    gfx_compute_destroy(0);
+    gfx_compute_destroy(-1);
+    gfx_compute_destroy(999);
+
+    /* Recording outside a frame or batch: ignored with a message. */
+    int pipe = GT_COMPUTE(compute_index, 1, 8);
+    gfx_frame_dispatch(pipe, &buf, NULL, 1, 1, 1);
+    gfx_frame_fill_buffer(buf, 0, 4, 1);
+    gfx_frame_buffer_to_target(buf, 0, 1);
+    CHECK(!gfx_batch_end(err, sizeof err));          /* no batch */
+
+    /* Errors inside a batch: the valid commands run, gfx_batch_end reports the first error. */
+    int t = gfx_target_create(8, 8);                 /* needs 256 bytes, buf has 64 */
+    CHECK(gfx_batch_begin());
+    CHECK(!gfx_batch_begin());                       /* already open */
+    gfx_frame_dispatch(12345, &buf, NULL, 1, 1, 1);
+    gfx_frame_fill_buffer(buf, 2, 4, 1);             /* unaligned */
+    gfx_frame_buffer_to_target(buf, 0, t);           /* too small */
+    gfx_frame_target_to_buffer(t, 777, 0);           /* invalid buffer */
+    u32 push[2] = { 9, 16 };
+    gfx_frame_dispatch(pipe, &buf, push, 1, 0, 1);   /* no workgroups: nothing */
+    gfx_frame_dispatch(pipe, &buf, push, 1, 1, 0xFFFFFFFFu);  /* over the limit */
+    gfx_frame_dispatch(pipe, NULL, push, 1, 1, 1);   /* no buffers */
+    gfx_frame_dispatch(pipe, &buf, push, 1, 1, 1);   /* valid */
+    CHECK(!gfx_batch_end(err, sizeof err));
+    CHECK(strstr(err, "12345") != NULL && strstr(err, "5 more") != NULL);
+    u32 *v = gt_download(buf, 0, 16);
+    CHECK(v && gt_bad_words(v, 16, 0, 3, 9) == 0);
+    free(v);
+    CHECK(gfx_batch_begin());                        /* an empty batch is fine */
+    CHECK_MSG(gfx_batch_end(err, sizeof err), "%s", err);
+    CHECK(!gfx_frame_begin());                       /* headless */
+    gfx_target_destroy(t);
+    gfx_buffer_destroy(buf);
+    gfx_compute_destroy(pipe);
+    GT_NO_VALIDATION_ERRORS();
+}
+
 TEST(window_smoke) {
     /* Needs its own windowed instance: close the headless one. */
     gt_shutdown();
@@ -362,6 +792,101 @@ TEST(window_smoke) {
     int n = gfx_demo_run(40, 0, true, err, sizeof err);
     if (n == -2) SKIP("no display (run under xvfb-run -a)");
     CHECK_MSG(n >= 30, "%d of 40 frames drawn: %s", n, err);
+    GT_NO_VALIDATION_ERRORS();
+}
+
+TEST(compute_window) {
+    /* Compute in windowed frames: every frame recomputes the ring table and the
+       compute picture, copies it into a target and draws that; a buffer and a
+       pipeline are destroyed mid-frame (and recreated with the same handles), and
+       another buffer between frames, while frames are in flight. The test viewer,
+       rendered in the same frames, draws the same picture as compute_color.
+       Needs a display. */
+    gt_shutdown();
+    gfx_preinit_loader();
+    if (!glfwInit()) SKIP("no display (run under xvfb-run -a)");
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow *win = glfwCreateWindow(320, 200, "gfx compute test", NULL, NULL);
+    if (!win) { glfwTerminate(); SKIP("no display (run under xvfb-run -a)"); }
+    GfxInitDesc desc;
+    memset(&desc, 0, sizeof desc);
+    desc.glfw_window = win;
+    desc.vsync = true;
+    desc.validation = true;
+    char err[256] = "";
+    enum { W = 37, H = 21, CW = 50, ROWS = 40, FRAMES = 24 };
+    u32 *want = (u32 *)xcalloc(CW * ROWS, 4);
+    int drawn = 0;
+    if (!gfx_init(&desc, err, sizeof err)) { CHECK_MSG(false, "gfx_init: %s", err); goto done; }
+    int color = GT_COMPUTE(compute_color, 1, 12), chain = GT_COMPUTE(compute_chain, 2, 8);
+    int t = gfx_target_create(W, H), px = gfx_buffer_create(W * H * 4), tab = gfx_buffer_create(CW * ROWS * 4);
+    int viewer = gt_viewer(), vt = gfx_target_create(W, H);
+    GfxViewerParams vp = gt_params(W, H);
+    if (!color || !chain || !t || !px || !tab || !viewer || !vt) goto done;
+    for (u32 i = 0; i < CW; i++) want[i] = i * 3u + 2u;
+    CHECK(gfx_buffer_upload(tab, 0, want, CW * 4, err, sizeof err));
+    gt_chain_cpu(want, CW, ROWS);
+    float last_k = -1.0f;
+    for (int i = 0; i < FRAMES; i++) {
+        glfwPollEvents();
+        if (!gfx_frame_begin()) continue;
+        float k = (float)(i % 5) / 4.0f;
+        gt_set_k(k);
+        gfx_frame_fill_buffer(tab, CW * 4, CW * (ROWS - 1) * 4, 0);
+        for (u32 r = 1; r < ROWS; r++) {
+            u32 push[2] = { r, CW };
+            int tabs[2] = { tab, tab };
+            gfx_frame_dispatch(chain, tabs, push, (CW + 31) / 32, 1, 1);
+        }
+        u32 push[3] = { W, H, 0 };
+        gfx_frame_dispatch(color, &px, push, (W + 7) / 8, (H + 7) / 8, 1);
+        gfx_frame_render_viewer(vt, viewer, &vp);
+        gfx_frame_buffer_to_target(px, 0, t);
+        if (i == 8) {
+            int old_px = px, old_color = color;
+            gfx_buffer_destroy(px);
+            gfx_compute_destroy(color);
+            px = gfx_buffer_create(W * H * 4);
+            color = GT_COMPUTE(compute_color, 1, 12);
+            CHECK(px == old_px && color == old_color);
+            gfx_frame_dispatch(color, &px, push, (W + 7) / 8, (H + 7) / 8, 1);
+            gfx_frame_buffer_to_target(px, 0, t);
+        }
+        int fw, fh;
+        gfx_framebuffer_size(&fw, &fh);
+        static DemoList L;
+        memset(&L, 0, sizeof L);
+        L.dl.verts = L.verts; L.dl.indices = L.indices; L.dl.cmds = L.cmds;
+        demo_cmd(&L, t, 0, 0, (float)fw, (float)fh);
+        demo_quad(&L, 0, 0, (float)fw, (float)fh, 0, 0, 1, 1, 0xFFFFFFFFu);
+        static const float clear[3] = { 0.1f, 0.1f, 0.12f };
+        gfx_frame_draw(&L.dl, clear);
+        gfx_frame_end();
+        last_k = k;
+        drawn++;
+        if (i == 16) {   /* between frames, with frames in flight */
+            gfx_buffer_destroy(tab);
+            tab = gfx_buffer_create(CW * ROWS * 4);
+            u32 row0[CW];
+            for (u32 x = 0; x < CW; x++) row0[x] = x * 3u + 2u;
+            CHECK(tab && gfx_buffer_upload(tab, 0, row0, sizeof row0, err, sizeof err));
+        }
+    }
+    CHECK_MSG(drawn >= FRAMES - 4, "only %d of %d frames drawn", drawn, FRAMES);
+    u8 img[W * H * 4];
+    CHECK_MSG(gfx_target_read(t, img, err, sizeof err), "%s", err);
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0, 0, last_k), 0);
+    CHECK_MSG(gfx_target_read(vt, img, err, sizeof err), "%s", err);
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0, 0, last_k), 0);
+    u32 *v = gt_download(tab, 0, CW * ROWS);
+    CHECK(v && memcmp(v, want, CW * ROWS * 4) == 0);
+    free(v);
+done:
+    free(want);
+    gfx_shutdown();
+    glfwDestroyWindow(win);
+    glfwTerminate();
+    gt_set_k(0.0f);
     GT_NO_VALIDATION_ERRORS();
 }
 
@@ -393,6 +918,14 @@ static const TestCase tests_gfx[] = {
     TESTCASE(draw_list),
     TESTCASE(globals_large),
     TESTCASE(viewer_errors),
+    TESTCASE(compute_dispatch),
+    TESTCASE(compute_chain),
+    TESTCASE(compute_buffers),
+    TESTCASE(compute_target_copies),
+    TESTCASE(compute_globals),
+    TESTCASE(compute_lifetime),
+    TESTCASE(compute_errors),
     TESTCASE(window_smoke),
+    TESTCASE(compute_window),
     TESTCASE(shutdown_reinit),
 };

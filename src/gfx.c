@@ -11,6 +11,7 @@
  *    8. command recording (viewer renders, draw lists, readback)
  *    9. windowed frames
  *   10. synchronous API (target render/draw/read, render to memory)
+ *   11. compute: storage buffers, compute pipelines, recording, batches
  *
  * Synchronization model (read this before changing anything):
  *   - One queue. Submissions are numbered (gx.submitted counts them). A fence signal
@@ -31,6 +32,16 @@
  *     that its present waits on.
  *   - Synchronous work (uploads, target init, gfx_target_*, gfx_render_to_memory) uses
  *     its own command buffer, fence and buffers and waits before returning.
+ *   - A batch (gfx_batch_begin/end) is a third recording context, like a frame slot
+ *     without a swapchain: own command buffer, fence, globals buffer and descriptor
+ *     pools; it is submitted and waited for at gfx_batch_end. At most one of "a frame"
+ *     and "a batch" is being recorded at a time; objects released meanwhile get
+ *     GFX_SERIAL_PENDING until that recording is submitted.
+ *   - Storage buffers are only accessed by compute shaders and transfers. Every
+ *     recorded compute/transfer command ends with a barrier that makes its writes
+ *     visible to (and orders it before) all later compute and transfer commands, in
+ *     this and later submissions. Synchronous uploads/downloads start with a barrier
+ *     against earlier work and end with the same kind of barrier.
  */
 #include "gfx.h"
 #include "shaders_spv.h"
@@ -56,6 +67,11 @@
 #define GFX_FRAMES 2                 /* frames in flight */
 #define GFX_MAX_TARGETS 64
 #define GFX_MAX_VIEWERS 64
+#define GFX_MAX_BUFFERS 128          /* storage buffers (gfx_buffer_create) */
+#define GFX_MAX_COMPUTES 64          /* compute pipelines (gfx_compute_create) */
+#define GFX_COMPUTE_MAX_BUFFERS 8    /* storage buffers per compute pipeline (bindings 1..8) */
+#define GFX_COMPUTE_POOL_SETS 64     /* descriptor sets per compute descriptor pool */
+#define GFX_TRANSFER_CHUNK ((VkDeviceSize)16 << 20) /* staging bytes per upload/download submission */
 #define GFX_MAX_SWAPCHAIN_IMAGES 16
 #define GFX_FRAME_GLOBAL_SETS 128    /* gfx_set_globals + render pairs per frame */
 #define GFX_TEXTURE_SETS (4 * GFX_MAX_TARGETS + 8) /* live + not yet collected */
@@ -108,7 +124,8 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
     X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdBindPipeline) \
     X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdPushConstants) X(vkCmdBindDescriptorSets) \
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) \
-    X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer)
+    X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
+    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdFillBuffer) X(vkCmdCopyBuffer)
 #define GFX_SWAPCHAIN_FUNCS(X) \
     X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) \
     X(vkAcquireNextImageKHR) X(vkQueuePresentKHR)
@@ -247,12 +264,12 @@ bool gfx_preinit_loader(void) {
  * 2. State, errors, memory / buffer / texture helpers
  * ====================================================================== */
 
-typedef struct GfxBuffer {     /* host-visible, host-coherent, persistently mapped */
+typedef struct GfxHostBuffer {     /* host-visible, host-coherent, persistently mapped */
     VkBuffer buf;
     VkDeviceMemory mem;
     u8 *map;
     VkDeviceSize size;
-} GfxBuffer;
+} GfxHostBuffer;
 
 typedef struct GfxTexture {    /* an RGBA8 image sampled by the 2D pipeline: font atlas or target */
     bool used;
@@ -269,21 +286,64 @@ typedef struct GfxViewer {
     VkPipeline pipeline;
 } GfxViewer;
 
+typedef struct GfxStorage {    /* a storage buffer (gfx_buffer_create): device-local */
+    bool used;
+    u64 uid;                   /* unique per creation; descriptor set cache key */
+    VkDeviceSize size;         /* multiple of 4 */
+    VkBuffer buf;
+    VkDeviceMemory mem;
+} GfxStorage;
+
+typedef struct GfxCompute {    /* a compute pipeline (gfx_compute_create) */
+    bool used;
+    u64 uid;                   /* unique per creation; descriptor set cache key */
+    int nbuffers;              /* storage buffers at bindings 1..nbuffers */
+    u32 push_bytes;
+    VkDescriptorSetLayout dsl; /* binding 0: globals (dynamic offset), 1..n: storage buffers */
+    VkPipelineLayout layout;
+    VkPipeline pipeline;
+} GfxCompute;
+
+typedef struct GfxComputeSet { /* a descriptor set cached for one recording (frame or batch) */
+    u64 pipe_uid;
+    u64 buf_uid[GFX_COMPUTE_MAX_BUFFERS];
+    VkBuffer globals;          /* globals buffer and range at binding 0 (chunks selected */
+    VkDeviceSize globals_range;/* by the dynamic offset) */
+    VkDescriptorSet set;
+} GfxComputeSet;
+typedef VEC(GfxComputeSet) GfxComputeSetVec;
+typedef VEC(VkDescriptorPool) GfxPoolVec;
+
+/* A recording context: a frame slot, or the batch (which uses only cmd, fence,
+   serial, globals and the compute fields). */
 typedef struct GfxFrame {
     VkCommandBuffer cmd;
     VkFence fence;             /* signaled when this slot's last submission completed */
     VkSemaphore acquired;      /* swapchain image acquired */
     u64 serial;                /* number of this slot's last submission */
     VkDescriptorPool dpool;    /* globals descriptor sets; reset at frame begin */
-    GfxBuffer globals, verts, indices;
+    GfxHostBuffer globals, verts, indices;
     VkDeviceSize globals_used; /* bytes of `globals` used by this frame */
     VkDescriptorSet gset;      /* descriptor set of the latest globals chunk ... */
     u64 gset_version;          /* ... and the gfx_globals_version it holds */
+    bool gchunk;               /* `globals` holds a chunk for this recording: */
+    u64 gchunk_version;        /*   the gfx_globals_version it holds, */
+    VkDeviceSize gchunk_off, gchunk_size; /* its place in `globals` */
+    /* compute: descriptor sets cached for this recording, allocated from `cpools`
+       (all reset when the recording begins; more pools are added as needed) */
+    GfxPoolVec cpools;
+    int cpool, cpool_sets;     /* pool allocated from now, sets taken from it */
+    GfxComputeSetVec csets;
+    VkPipeline bound_pipe;     /* compute state bound in `cmd` (to skip rebinding) */
+    VkDescriptorSet bound_set;
+    u32 bound_offset;
 } GfxFrame;
 
 typedef struct GfxGarbage {    /* objects waiting for the GPU to finish with them */
     u64 serial;
     VkPipeline pipeline;
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout dsl;
     VkFramebuffer framebuffer;
     VkImageView view;
     VkImage image;
@@ -345,7 +405,13 @@ typedef struct GfxState {
     VkCommandBuffer sync_cmd;
     VkFence sync_fence;
     VkDescriptorPool sync_dpool;
-    GfxBuffer sync_globals, sync_verts, sync_indices, staging;
+    GfxHostBuffer sync_globals, sync_verts, sync_indices, staging;
+
+    /* batch (gfx_batch_begin/end) */
+    GfxFrame batch;
+    bool batching;              /* between gfx_batch_begin and gfx_batch_end */
+    int batch_errors;           /* recording errors in this batch ... */
+    char batch_err[512];        /* ... and the first one's message */
 
     /* deferred destruction */
     u64 submitted, completed;
@@ -355,6 +421,9 @@ typedef struct GfxState {
     GfxTexture atlas;
     GfxTexture targets[GFX_MAX_TARGETS];
     GfxViewer viewers[GFX_MAX_VIEWERS];
+    GfxStorage buffers[GFX_MAX_BUFFERS];
+    GfxCompute computes[GFX_MAX_COMPUTES];
+    u64 next_uid;               /* for GfxStorage.uid / GfxCompute.uid */
 
     char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
     char err[512];              /* message of the last failure */
@@ -457,7 +526,7 @@ static bool gfx_alloc(VkMemoryRequirements req, VkMemoryPropertyFlags want,
 }
 
 /* Frees a buffer immediately: the caller guarantees the GPU no longer uses it. */
-static void gfx_buffer_free(GfxBuffer *b) {
+static void gfx_hostbuf_free(GfxHostBuffer *b) {
     if (gx.device) {
         vkDestroyBuffer(gx.device, b->buf, NULL);
         vkFreeMemory(gx.device, b->mem, NULL); /* also unmaps */
@@ -465,7 +534,7 @@ static void gfx_buffer_free(GfxBuffer *b) {
     memset(b, 0, sizeof *b);
 }
 
-static bool gfx_buffer_create(GfxBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage) {
+static bool gfx_hostbuf_create(GfxHostBuffer *b, VkDeviceSize size, VkBufferUsageFlags usage) {
     memset(b, 0, sizeof *b);
     VkBufferCreateInfo ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     ci.size = size;
@@ -479,7 +548,7 @@ static bool gfx_buffer_create(GfxBuffer *b, VkDeviceSize size, VkBufferUsageFlag
     bool ok = gfx_alloc(req, host | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, host, &b->mem) &&
               gfx_vk(vkBindBufferMemory(gx.device, b->buf, b->mem, 0), "vkBindBufferMemory") &&
               gfx_vk(vkMapMemory(gx.device, b->mem, 0, VK_WHOLE_SIZE, 0, &map), "vkMapMemory");
-    if (!ok) { gfx_buffer_free(b); return false; }
+    if (!ok) { gfx_hostbuf_free(b); return false; }
     b->map = (u8 *)map;
     b->size = size;
     return true;
@@ -490,7 +559,7 @@ static void gfx_defer(GfxGarbage g);
 /* Make sure `b` holds at least `need` bytes (contents are not kept). The old
    buffer is freed right away, or deferred when recorded commands that have not
    completed yet may use it. */
-static bool gfx_buffer_reserve(GfxBuffer *b, VkDeviceSize need, VkBufferUsageFlags usage, bool defer) {
+static bool gfx_hostbuf_reserve(GfxHostBuffer *b, VkDeviceSize need, VkBufferUsageFlags usage, bool defer) {
     if (b->buf && b->size >= need) return true;
     VkDeviceSize size = FS_MAX(need, FS_MAX(b->size * 2, (VkDeviceSize)64 * 1024));
     if (b->buf && defer) {
@@ -500,13 +569,15 @@ static bool gfx_buffer_reserve(GfxBuffer *b, VkDeviceSize need, VkBufferUsageFla
         gfx_defer(g);
         memset(b, 0, sizeof *b);
     } else {
-        gfx_buffer_free(b);
+        gfx_hostbuf_free(b);
     }
-    return gfx_buffer_create(b, size, usage);
+    return gfx_hostbuf_create(b, size, usage);
 }
 
 static void gfx_destroy_garbage(GfxGarbage *g) {
     vkDestroyPipeline(gx.device, g->pipeline, NULL);
+    vkDestroyPipelineLayout(gx.device, g->layout, NULL);
+    vkDestroyDescriptorSetLayout(gx.device, g->dsl, NULL);
     vkDestroyFramebuffer(gx.device, g->framebuffer, NULL);
     vkDestroyImageView(gx.device, g->view, NULL);
     vkDestroyImage(gx.device, g->image, NULL);
@@ -638,8 +709,15 @@ static void gfx_image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout 
  * ====================================================================== */
 
 static void gfx_defer(GfxGarbage g) {
-    g.serial = gx.recording ? GFX_SERIAL_PENDING : gx.submitted;
+    g.serial = gx.recording || gx.batching ? GFX_SERIAL_PENDING : gx.submitted;
     vec_push(gx.garbage, g);
+}
+
+/* Called right after a frame or batch was submitted (or failed to be): objects
+   released while it was recorded were possibly used by that submission. */
+static void gfx_resolve_pending(void) {
+    for (int i = 0; i < gx.garbage.len; i++)
+        if (gx.garbage.data[i].serial == GFX_SERIAL_PENDING) gx.garbage.data[i].serial = gx.submitted;
 }
 
 static void gfx_collect_garbage(void) {
@@ -898,7 +976,14 @@ static bool gfx_create_frames(void) {
             !gfx_descriptor_pool(GFX_FRAME_GLOBAL_SETS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, false, &f->dpool))
             return false;
     }
-    return true;
+    /* The batch: a command buffer and a fence (no swapchain objects, no viewer sets). */
+    VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cai.commandPool = gx.cmdpool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    return gfx_vk(vkAllocateCommandBuffers(gx.device, &cai, &gx.batch.cmd), "vkAllocateCommandBuffers") &&
+           gfx_vk(vkCreateFence(gx.device, &fci, NULL, &gx.batch.fence), "vkCreateFence");
 }
 
 /* ======================================================================
@@ -1198,25 +1283,38 @@ void gfx_shutdown(void) {
     if (gx.device) {
         vkDeviceWaitIdle(gx.device);
         gx.recording = false;
+        gx.batching = false;    /* an open batch is dropped (destroying the pool frees its commands) */
         gx.completed = gx.submitted;
         for (int i = 0; i < gx.garbage.len; i++) gfx_destroy_garbage(&gx.garbage.data[i]);
         gx.garbage.len = 0;
         for (int i = 0; i < GFX_MAX_TARGETS; i++) gfx_texture_destroy_now(&gx.targets[i]);
         for (int i = 0; i < GFX_MAX_VIEWERS; i++) vkDestroyPipeline(gx.device, gx.viewers[i].pipeline, NULL);
+        for (int i = 0; i < GFX_MAX_BUFFERS; i++) {
+            vkDestroyBuffer(gx.device, gx.buffers[i].buf, NULL);
+            vkFreeMemory(gx.device, gx.buffers[i].mem, NULL);
+        }
+        for (int i = 0; i < GFX_MAX_COMPUTES; i++) {
+            vkDestroyPipeline(gx.device, gx.computes[i].pipeline, NULL);
+            vkDestroyPipelineLayout(gx.device, gx.computes[i].layout, NULL);
+            vkDestroyDescriptorSetLayout(gx.device, gx.computes[i].dsl, NULL);
+        }
         gfx_texture_destroy_now(&gx.atlas);
-        for (int i = 0; i < GFX_FRAMES; i++) {
-            GfxFrame *f = &gx.frames[i];
-            gfx_buffer_free(&f->globals);
-            gfx_buffer_free(&f->verts);
-            gfx_buffer_free(&f->indices);
+        for (int i = 0; i <= GFX_FRAMES; i++) {   /* the frame slots and the batch */
+            GfxFrame *f = i < GFX_FRAMES ? &gx.frames[i] : &gx.batch;
+            gfx_hostbuf_free(&f->globals);
+            gfx_hostbuf_free(&f->verts);
+            gfx_hostbuf_free(&f->indices);
             vkDestroyDescriptorPool(gx.device, f->dpool, NULL);
+            for (int k = 0; k < f->cpools.len; k++) vkDestroyDescriptorPool(gx.device, f->cpools.data[k], NULL);
+            vec_free(f->cpools);
+            vec_free(f->csets);
             vkDestroyFence(gx.device, f->fence, NULL);
             vkDestroySemaphore(gx.device, f->acquired, NULL);
         }
-        gfx_buffer_free(&gx.sync_globals);
-        gfx_buffer_free(&gx.sync_verts);
-        gfx_buffer_free(&gx.sync_indices);
-        gfx_buffer_free(&gx.staging);
+        gfx_hostbuf_free(&gx.sync_globals);
+        gfx_hostbuf_free(&gx.sync_verts);
+        gfx_hostbuf_free(&gx.sync_indices);
+        gfx_hostbuf_free(&gx.staging);
         gfx_swapchain_destroy_images();
         if (gx.swapchain) vkDestroySwapchainKHR(gx.device, gx.swapchain, NULL);
         for (int i = 0; i < GFX_MAX_SWAPCHAIN_IMAGES; i++) vkDestroySemaphore(gx.device, gx.sc_present[i], NULL);
@@ -1428,7 +1526,7 @@ bool gfx_set_font_atlas(const u8 *rgba, int w, int h) {
     }
     VkDeviceSize size = (VkDeviceSize)w * (VkDeviceSize)h * 4;
     GfxTexture t;
-    if (!gfx_buffer_reserve(&gx.staging, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false) ||
+    if (!gfx_hostbuf_reserve(&gx.staging, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false) ||
         !gfx_texture_create(&t, w, h, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false)) {
         gfx_warn("gfx_set_font_atlas: %s", gx.err);
         return false;
@@ -1513,26 +1611,56 @@ static bool gfx_alloc_globals_set(VkDescriptorPool pool, VkDescriptorSet *out) {
     return gfx_vk(r, "vkAllocateDescriptorSets");
 }
 
-/* Descriptor set with the current globals for viewer renders recorded in frame `f`.
-   Every new gfx_set_globals version gets its own chunk of the frame's buffer. */
-static VkDescriptorSet gfx_frame_globals_set(GfxFrame *f) {
-    if (f->gset && f->gset_version == gfx_globals_version) return f->gset;
+/* Makes sure the globals buffer of recording `f` (frame or batch) holds the current
+   globals: every new gfx_set_globals version gets its own chunk of the buffer, at
+   f->gchunk_off (a multiple of gx.storage_align), f->gchunk_size bytes. */
+static bool gfx_frame_globals_chunk(GfxFrame *f) {
+    if (f->gchunk && f->gchunk_version == gfx_globals_version) return true;
     VkDeviceSize size = gfx_globals_upload_size();
     VkDeviceSize off = (f->globals_used + gx.storage_align - 1) / gx.storage_align * gx.storage_align;
     if (!f->globals.buf || off + size > f->globals.size) {
         /* Grow. Chunks recorded earlier in this frame keep the old buffer (deferred). */
-        if (!gfx_buffer_reserve(&f->globals, off + size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true))
-            return VK_NULL_HANDLE;
+        if (!gfx_hostbuf_reserve(&f->globals, off + size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true))
+            return false;
         off = 0;
     }
-    VkDescriptorSet set;
-    if (!gfx_alloc_globals_set(f->dpool, &set)) return VK_NULL_HANDLE;
     gfx_globals_copy(f->globals.map + off, size);
-    gfx_write_storage_set(set, f->globals.buf, off, size);
     f->globals_used = off + size;
+    f->gchunk = true;
+    f->gchunk_version = gfx_globals_version;
+    f->gchunk_off = off;
+    f->gchunk_size = size;
+    return true;
+}
+
+/* Descriptor set with the current globals for viewer renders recorded in frame `f`. */
+static VkDescriptorSet gfx_frame_globals_set(GfxFrame *f) {
+    if (f->gset && f->gset_version == gfx_globals_version) return f->gset;
+    VkDescriptorSet set;
+    if (!gfx_frame_globals_chunk(f) || !gfx_alloc_globals_set(f->dpool, &set)) return VK_NULL_HANDLE;
+    gfx_write_storage_set(set, f->globals.buf, f->gchunk_off, f->gchunk_size);
     f->gset = set;
     f->gset_version = gfx_globals_version;
     return set;
+}
+
+/* Forgets the per-recording state of frame slot or batch `f` before it records
+   again; the GPU is done with its previous submission. (The viewer descriptor
+   pool f->dpool is reset by gfx_frame_begin, which can fail on it.) */
+static void gfx_rec_reset(GfxFrame *f) {
+    f->globals_used = 0;
+    f->gset = VK_NULL_HANDLE;
+    f->gset_version = 0;
+    f->gchunk = false;
+    if (f->cpool > 0 || f->cpool_sets > 0)
+        for (int i = 0; i <= f->cpool && i < f->cpools.len; i++)
+            vkResetDescriptorPool(gx.device, f->cpools.data[i], 0);   /* cannot fail */
+    f->cpool = 0;
+    f->cpool_sets = 0;
+    f->csets.len = 0;
+    f->bound_pipe = VK_NULL_HANDLE;
+    f->bound_set = VK_NULL_HANDLE;
+    f->bound_offset = 0;
 }
 
 /* Descriptor set with the current globals for the synchronous command buffer
@@ -1540,7 +1668,7 @@ static VkDescriptorSet gfx_frame_globals_set(GfxFrame *f) {
 static VkDescriptorSet gfx_sync_globals_set(void) {
     VkDeviceSize size = gfx_globals_upload_size();
     VkDescriptorSet set;
-    if (!gfx_buffer_reserve(&gx.sync_globals, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false)) return VK_NULL_HANDLE;
+    if (!gfx_hostbuf_reserve(&gx.sync_globals, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false)) return VK_NULL_HANDLE;
     if (!gfx_vk(vkResetDescriptorPool(gx.device, gx.sync_dpool, 0), "vkResetDescriptorPool")) return VK_NULL_HANDLE;
     if (!gfx_alloc_globals_set(gx.sync_dpool, &set)) return VK_NULL_HANDLE;
     gfx_globals_copy(gx.sync_globals.map, size);
@@ -1548,17 +1676,32 @@ static VkDescriptorSet gfx_sync_globals_set(void) {
     return set;
 }
 
-/* Checks that `w` is SPIR-V with a fragment entry point named "main". */
-static bool gfx_check_viewer_spirv(const u32 *w, u32 n) {
+/* Checks that `w` is SPIR-V with an entry point named "main" of execution model
+   `model` (4 = Fragment, 5 = GLCompute). Compute shaders must also declare their
+   workgroup size (LocalSize execution mode or a WorkgroupSize built-in). */
+static bool gfx_check_spirv(const u32 *w, u32 n, u32 model) {
     if (!w || n < 5 || w[0] != 0x07230203u) return gfx_fail("not a SPIR-V module (bad magic number or too short)");
-    for (u32 i = 5; i < n;) {
-        u32 op = w[i] & 0xFFFFu, len = w[i] >> 16;
-        if (len == 0 || len > n - i) return gfx_fail("malformed SPIR-V (bad instruction length at word %u)", i);
-        /* OpEntryPoint (15): execution model, function id, name... ; Fragment = 4 */
-        if (op == 15 && len >= 5 && w[i + 1] == 4 && memcmp(&w[i + 3], "main", 5) == 0) return true;
-        i += len;
+    u32 entry = 0;    /* id of the entry point function */
+    bool local_size = false;
+    for (u32 pass = 0; pass < 2; pass++) {
+        for (u32 i = 5; i < n;) {
+            u32 op = w[i] & 0xFFFFu, len = w[i] >> 16;
+            if (len == 0 || len > n - i) return gfx_fail("malformed SPIR-V (bad instruction length at word %u)", i);
+            /* OpEntryPoint (15): execution model, function id, name... */
+            if (pass == 0 && op == 15 && len >= 5 && w[i + 1] == model && memcmp(&w[i + 3], "main", 5) == 0)
+                entry = w[i + 2];
+            /* OpExecutionMode (16): function id, LocalSize (17), x, y, z */
+            if (pass == 1 && op == 16 && len >= 6 && w[i + 1] == entry && w[i + 2] == 17) local_size = true;
+            /* OpDecorate (71): id, BuiltIn (11), WorkgroupSize (25) */
+            if (pass == 1 && op == 71 && len >= 4 && w[i + 2] == 11 && w[i + 3] == 25) local_size = true;
+            i += len;
+        }
+        if (!entry)
+            return gfx_fail("the SPIR-V module has no %s shader entry point named \"main\"",
+                            model == 5 ? "compute" : "fragment");
+        if (model != 5) return true;
     }
-    return gfx_fail("the SPIR-V module has no fragment shader entry point named \"main\"");
+    return local_size || gfx_fail("the compute shader does not declare its workgroup size (LocalSize)");
 }
 
 int gfx_viewer_create(const u32 *spirv, u32 nwords, char *err, int errcap) {
@@ -1567,7 +1710,7 @@ int gfx_viewer_create(const u32 *spirv, u32 nwords, char *err, int errcap) {
     for (int i = 0; i < GFX_MAX_VIEWERS && slot < 0; i++) if (!gx.viewers[i].used) slot = i;
     VkShaderModule module = VK_NULL_HANDLE;
     VkPipeline pipe = VK_NULL_HANDLE;
-    bool ok = gfx_check_viewer_spirv(spirv, nwords) &&
+    bool ok = gfx_check_spirv(spirv, nwords, 4) &&
               (slot >= 0 || gfx_fail("too many viewers (at most %d)", GFX_MAX_VIEWERS)) &&
               gfx_shader_module(spirv, (size_t)nwords * 4, &module) &&
               gfx_pipeline(gx.vs_fullscreen, module, false, gx.rp_clear, &pipe);
@@ -1622,7 +1765,7 @@ int gfx_target_create(int w, int h) {
     }
     GfxTexture *t = &gx.targets[slot];
     if (!gfx_texture_create(t, w, h, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true)) {
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true)) {
         gfx_warn("gfx_target_create: %s", gx.err);
         return 0;
     }
@@ -1716,7 +1859,7 @@ static void gfx_record_viewer(VkCommandBuffer cmd, const GfxTexture *t, const Gf
 
 /* Validates a draw list and copies it into the given buffers (which the GPU must not
    be using). False when there is nothing (valid) to draw. */
-static bool gfx_upload_drawlist(const GfxDrawList *dl, GfxBuffer *vb, GfxBuffer *ib) {
+static bool gfx_upload_drawlist(const GfxDrawList *dl, GfxHostBuffer *vb, GfxHostBuffer *ib) {
     if (!dl || dl->ncmds <= 0 || dl->nverts <= 0 || dl->nindices <= 0 || !dl->verts || !dl->indices || !dl->cmds)
         return false;
     for (int i = 0; i < dl->nindices; i++)
@@ -1726,8 +1869,8 @@ static bool gfx_upload_drawlist(const GfxDrawList *dl, GfxBuffer *vb, GfxBuffer 
         }
     VkDeviceSize vsize = (VkDeviceSize)dl->nverts * sizeof(GfxVertex);
     VkDeviceSize isize = (VkDeviceSize)dl->nindices * sizeof(u32);
-    if (!gfx_buffer_reserve(vb, vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, false) ||
-        !gfx_buffer_reserve(ib, isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, false)) {
+    if (!gfx_hostbuf_reserve(vb, vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, false) ||
+        !gfx_hostbuf_reserve(ib, isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, false)) {
         gfx_warn("draw list upload: %s", gx.err);
         return false;
     }
@@ -1744,7 +1887,7 @@ static float gfx_clampf(float v, float lo, float hi) {
 /* Records an uploaded draw list inside a render pass of size fbw x fbh.
    Commands sampling texture `skip` (the target being drawn into) are skipped. */
 static void gfx_record_drawlist(VkCommandBuffer cmd, const GfxDrawList *dl, int fbw, int fbh, VkPipeline pipe,
-                                const GfxBuffer *vb, const GfxBuffer *ib, int skip) {
+                                const GfxHostBuffer *vb, const GfxHostBuffer *ib, int skip) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     VkViewport vp = { 0.0f, 0.0f, (float)fbw, (float)fbh, 0.0f, 1.0f };
     vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -1785,7 +1928,7 @@ static void gfx_record_drawlist(VkCommandBuffer cmd, const GfxDrawList *dl, int 
 /* Copies rows [y0, y1) of a target into out (rows of t->w pixels, starting at row y0). */
 static bool gfx_read_rows(const GfxTexture *t, int y0, int y1, u8 *out) {
     VkDeviceSize size = (VkDeviceSize)t->w * (VkDeviceSize)(y1 - y0) * 4;
-    if (!gfx_buffer_reserve(&gx.staging, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false))
+    if (!gfx_hostbuf_reserve(&gx.staging, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false))
         return false;
     VkCommandBuffer cmd = gfx_sync_begin();
     if (!cmd) return false;
@@ -1825,6 +1968,7 @@ bool gfx_frame_begin(void) {
     if (!gx.device || gx.fatal[0]) return false;
     if (!gx.window) { gfx_warn("gfx_frame_begin: no window (initialized headless)"); return false; }
     if (gx.recording) { gfx_warn("gfx_frame_begin: the previous frame was not ended"); return false; }
+    if (gx.batching) { gfx_warn("gfx_frame_begin: a batch is open (call gfx_batch_end first)"); return false; }
     int fbw = 0, fbh = 0;
     glfwGetFramebufferSize(gx.window, &fbw, &fbh);
     if (fbw <= 0 || fbh <= 0) return false;   /* minimized */
@@ -1858,9 +2002,7 @@ bool gfx_frame_begin(void) {
         gx.sc_dirty = true;
         return false;
     }
-    f->globals_used = 0;
-    f->gset = VK_NULL_HANDLE;
-    f->gset_version = 0;
+    gfx_rec_reset(f);
     gx.recording = true;
     gx.drawn = false;
     return true;
@@ -1922,9 +2064,7 @@ void gfx_frame_end(void) {
         ok = gfx_vk(vkQueueSubmit(gx.queue, 1, &si, f->fence), "vkQueueSubmit");
     }
     if (ok) f->serial = ++gx.submitted;
-    /* Objects released while recording were possibly used by this submission. */
-    for (int i = 0; i < gx.garbage.len; i++)
-        if (gx.garbage.data[i].serial == GFX_SERIAL_PENDING) gx.garbage.data[i].serial = gx.submitted;
+    gfx_resolve_pending();
     if (!ok) {
         /* The fence may now never be signaled: stop rendering frames. */
         if (!gx.fatal[0]) snprintf(gx.fatal, sizeof gx.fatal, "%s", gx.err);
@@ -2032,6 +2172,527 @@ bool gfx_render_to_memory(int viewer, int w, int h, int band_rows, u8 *rgba_out,
         snprintf(keep, sizeof keep, "%s", gx.err);
         gfx_target_destroy(target);
         snprintf(gx.err, sizeof gx.err, "%s", keep);
+    }
+    if (!ok) gfx_copy_err(err, errcap);
+    return ok;
+}
+
+/* ======================================================================
+ * 11. Compute: storage buffers, compute pipelines, recording, batches
+ * ====================================================================== */
+
+static GfxStorage *gfx_storage_get(int buf) {
+    if (!gx.device || buf < 1 || buf > GFX_MAX_BUFFERS || !gx.buffers[buf - 1].used) return NULL;
+    return &gx.buffers[buf - 1];
+}
+
+static GfxCompute *gfx_compute_get(int pipe) {
+    if (!gx.device || pipe < 1 || pipe > GFX_MAX_COMPUTES || !gx.computes[pipe - 1].used) return NULL;
+    return &gx.computes[pipe - 1];
+}
+
+/* Ends a compute or transfer command: its writes (src_access in src_stage) become
+   visible to all later compute shaders and transfers, which also wait for it
+   (so later writes cannot overtake its reads). Covers later submissions too. */
+static void gfx_compute_barrier(VkCommandBuffer cmd, VkPipelineStageFlags src_stage, VkAccessFlags src_access) {
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = src_access;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, src_stage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+u64 gfx_max_buffer_size(void) {
+    return gx.device ? (u64)gx.props.limits.maxStorageBufferRange & ~(u64)3 : 0;
+}
+
+int gfx_buffer_create(u64 bytes) {
+    if (!gx.device) { gfx_warn("gfx_buffer_create: not initialized"); return 0; }
+    u64 limit = gfx_max_buffer_size();
+    if (bytes == 0 || bytes > limit) {
+        if (bytes == 0) gfx_fail("invalid storage buffer size 0");
+        else gfx_fail("a storage buffer of %llu bytes exceeds this GPU's limit of %llu bytes (maxStorageBufferRange)",
+                      (unsigned long long)bytes, (unsigned long long)limit);
+        gfx_warn("gfx_buffer_create: %s", gx.err);
+        return 0;
+    }
+    int slot = -1;
+    for (int i = 0; i < GFX_MAX_BUFFERS && slot < 0; i++) if (!gx.buffers[i].used) slot = i;
+    if (slot < 0) {
+        gfx_fail("too many storage buffers (at most %d)", GFX_MAX_BUFFERS);
+        gfx_warn("gfx_buffer_create: %s", gx.err);
+        return 0;
+    }
+    GfxStorage *b = &gx.buffers[slot];
+    memset(b, 0, sizeof *b);
+    b->size = (bytes + 3) & ~(VkDeviceSize)3;   /* vkCmdFillBuffer works in 4-byte words */
+    VkBufferCreateInfo ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    ci.size = b->size;
+    ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkMemoryRequirements req;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    bool ok = gfx_vk(vkCreateBuffer(gx.device, &ci, NULL, &b->buf), "vkCreateBuffer");
+    if (ok) {
+        vkGetBufferMemoryRequirements(gx.device, b->buf, &req);
+        ok = gfx_alloc(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &b->mem) &&
+             gfx_vk(vkBindBufferMemory(gx.device, b->buf, b->mem, 0), "vkBindBufferMemory") &&
+             (cmd = gfx_sync_begin()) != VK_NULL_HANDLE;
+    }
+    if (ok) {   /* zero-fill */
+        vkCmdFillBuffer(cmd, b->buf, 0, VK_WHOLE_SIZE, 0);
+        gfx_compute_barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        ok = gfx_sync_end();
+    }
+    if (!ok) {   /* never used by the GPU, or waited for (or the device is lost) */
+        gfx_warn("gfx_buffer_create: %s", gx.err);
+        vkDestroyBuffer(gx.device, b->buf, NULL);
+        vkFreeMemory(gx.device, b->mem, NULL);
+        memset(b, 0, sizeof *b);
+        return 0;
+    }
+    b->used = true;
+    b->uid = ++gx.next_uid;
+    return slot + 1;
+}
+
+void gfx_buffer_destroy(int buf) {
+    GfxStorage *b = gfx_storage_get(buf);
+    if (!b) return;
+    GfxGarbage g = { 0 };
+    g.buffer = b->buf;
+    g.memory = b->mem;
+    gfx_defer(g);
+    memset(b, 0, sizeof *b);
+    gfx_collect_garbage();
+}
+
+u64 gfx_buffer_size(int buf) {
+    GfxStorage *b = gfx_storage_get(buf);
+    return b ? b->size : 0;
+}
+
+/* Synchronous copy between storage buffer `b` and host memory: from `src` (upload)
+   or into `dst` (download), through the staging buffer in chunks of at most
+   GFX_TRANSFER_CHUNK bytes (one submission each). */
+static bool gfx_storage_transfer(GfxStorage *b, VkDeviceSize offset, const u8 *src, u8 *dst, VkDeviceSize bytes) {
+    bool upload = src != NULL;
+    VkDeviceSize chunk = FS_MIN(bytes, GFX_TRANSFER_CHUNK);
+    if (!gfx_hostbuf_reserve(&gx.staging, chunk, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false))
+        return false;
+    for (VkDeviceSize done = 0; done < bytes; done += chunk) {
+        VkDeviceSize n = FS_MIN(chunk, bytes - done);
+        if (upload) memcpy(gx.staging.map, src + done, (size_t)n);
+        VkCommandBuffer cmd = gfx_sync_begin();
+        if (!cmd) return false;
+        /* After all earlier work on the buffer (its writes, and reads that this upload must not overtake). */
+        gfx_compute_barrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        if (upload) {
+            VkBufferCopy region = { 0, offset + done, n };
+            vkCmdCopyBuffer(cmd, gx.staging.buf, b->buf, 1, &region);
+            gfx_compute_barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        } else {
+            VkBufferCopy region = { offset + done, 0, n };
+            vkCmdCopyBuffer(cmd, b->buf, gx.staging.buf, 1, &region);
+            VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+        }
+        if (!gfx_sync_end()) return false;
+        if (!upload) memcpy(dst + done, gx.staging.map, (size_t)n);
+    }
+    return true;
+}
+
+/* Shared argument checks of gfx_buffer_upload / gfx_buffer_download. */
+static bool gfx_buffer_io(int buf, u64 offset, const u8 *src, u8 *dst, u64 bytes, char *err, int errcap) {
+    GfxStorage *b = gfx_storage_get(buf);
+    bool ok = (gx.device || gfx_fail("gfx is not initialized")) &&
+              (b || gfx_fail("invalid storage buffer %d", buf)) &&
+              (src || dst || bytes == 0 || gfx_fail("no data")) &&
+              ((offset <= b->size && bytes <= b->size - offset) ||
+               gfx_fail("bytes [%llu, %llu) are outside storage buffer %d (%llu bytes)", (unsigned long long)offset,
+                        (unsigned long long)(offset + bytes), buf, (unsigned long long)b->size)) &&
+              (bytes == 0 || gfx_storage_transfer(b, offset, src, dst, bytes));
+    if (!ok) gfx_copy_err(err, errcap);
+    return ok;
+}
+
+bool gfx_buffer_upload(int buf, u64 offset, const void *data, u64 bytes, char *err, int errcap) {
+    return gfx_buffer_io(buf, offset, (const u8 *)data, NULL, bytes, err, errcap);
+}
+
+bool gfx_buffer_download(int buf, u64 offset, void *data, u64 bytes, char *err, int errcap) {
+    return gfx_buffer_io(buf, offset, NULL, (u8 *)data, bytes, err, errcap);
+}
+
+int gfx_compute_create(const GfxComputeDesc *d, char *err, int errcap) {
+    if (!gx.device) { gfx_fail("gfx is not initialized"); gfx_copy_err(err, errcap); return 0; }
+    const VkPhysicalDeviceLimits *lim = &gx.props.limits;
+    int slot = -1;
+    for (int i = 0; i < GFX_MAX_COMPUTES && slot < 0; i++) if (!gx.computes[i].used) slot = i;
+    bool ok = (d || gfx_fail("no compute pipeline description")) &&
+              gfx_check_spirv(d->spirv, d->nwords, 5) &&
+              ((d->nbuffers >= 0 && d->nbuffers <= GFX_COMPUTE_MAX_BUFFERS) ||
+               gfx_fail("nbuffers = %d: a compute pipeline takes 0 to %d storage buffers", d->nbuffers,
+                        GFX_COMPUTE_MAX_BUFFERS)) &&
+              ((u32)d->nbuffers + 1 <= lim->maxPerStageDescriptorStorageBuffers ||
+               gfx_fail("this GPU allows at most %u storage buffers per shader (the globals buffer included)",
+                        lim->maxPerStageDescriptorStorageBuffers)) &&
+              ((d->push_bytes <= 128 && d->push_bytes <= lim->maxPushConstantsSize && d->push_bytes % 4 == 0) ||
+               gfx_fail("push_bytes = %u: push constants take a multiple of 4 bytes, at most 128", d->push_bytes)) &&
+              (slot >= 0 || gfx_fail("too many compute pipelines (at most %d)", GFX_MAX_COMPUTES));
+    if (!ok) { gfx_copy_err(err, errcap); return 0; }
+
+    GfxCompute c;
+    memset(&c, 0, sizeof c);
+    c.nbuffers = d->nbuffers;
+    c.push_bytes = d->push_bytes;
+    /* Set 0: binding 0 = globals (dynamic offset: the chunk of the recording's globals
+       buffer holding the current gfx_set_globals version), bindings 1..n = buffers. */
+    VkDescriptorSetLayoutBinding b[1 + GFX_COMPUTE_MAX_BUFFERS];
+    memset(b, 0, sizeof b);
+    for (int i = 0; i <= c.nbuffers; i++) {
+        b[i].binding = (u32)i;
+        b[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[i].descriptorCount = 1;
+        b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo dci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    dci.bindingCount = (u32)c.nbuffers + 1;
+    dci.pBindings = b;
+    VkPushConstantRange pc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, c.push_bytes };
+    VkPipelineLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    lci.setLayoutCount = 1;
+    lci.pSetLayouts = &c.dsl;
+    lci.pushConstantRangeCount = c.push_bytes ? 1 : 0;
+    lci.pPushConstantRanges = &pc;
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkComputePipelineCreateInfo pci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    pci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.pName = "main";
+    ok = gfx_vk(vkCreateDescriptorSetLayout(gx.device, &dci, NULL, &c.dsl), "vkCreateDescriptorSetLayout") &&
+         gfx_vk(vkCreatePipelineLayout(gx.device, &lci, NULL, &c.layout), "vkCreatePipelineLayout") &&
+         gfx_shader_module(d->spirv, (size_t)d->nwords * 4, &module);
+    if (ok) {
+        pci.stage.module = module;
+        pci.layout = c.layout;
+        ok = gfx_vk(vkCreateComputePipelines(gx.device, VK_NULL_HANDLE, 1, &pci, NULL, &c.pipeline),
+                    "vkCreateComputePipelines");
+    }
+    if (module) vkDestroyShaderModule(gx.device, module, NULL);   /* the pipeline keeps its own copy */
+    if (!ok) {   /* nothing was used by the GPU */
+        vkDestroyPipeline(gx.device, c.pipeline, NULL);
+        vkDestroyPipelineLayout(gx.device, c.layout, NULL);
+        vkDestroyDescriptorSetLayout(gx.device, c.dsl, NULL);
+        gfx_copy_err(err, errcap);
+        return 0;
+    }
+    c.used = true;
+    c.uid = ++gx.next_uid;
+    gx.computes[slot] = c;
+    return slot + 1;
+}
+
+void gfx_compute_destroy(int pipe) {
+    GfxCompute *c = gfx_compute_get(pipe);
+    if (!c) return;
+    GfxGarbage g = { 0 };
+    g.pipeline = c->pipeline;
+    g.layout = c->layout;
+    g.dsl = c->dsl;
+    gfx_defer(g);
+    memset(c, 0, sizeof *c);
+    gfx_collect_garbage();
+}
+
+/* The recording that gfx_frame_fill_buffer / dispatch / copies go into: the open
+   batch, else the frame being recorded (before gfx_frame_draw); else NULL. */
+static GfxFrame *gfx_rec(const char *fn) {
+    if (gx.batching) return &gx.batch;
+    if (gx.recording && !gx.drawn) return &gx.frames[gx.frame];
+    gfx_warn(gx.recording ? "%s after gfx_frame_draw; ignored" : "%s outside a frame or batch; ignored", fn);
+    return NULL;
+}
+
+/* A recording error: the command is skipped. In a batch it makes gfx_batch_end fail
+   (with the first message); in a frame it is printed to stderr. */
+static void gfx_rec_fail(const char *fmt, ...) FS_PRINTF(1, 2);
+static void gfx_rec_fail(const char *fmt, ...) {
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    if (!gx.batching) gfx_warn("%s", msg);
+    else if (gx.batch_errors++ == 0) snprintf(gx.batch_err, sizeof gx.batch_err, "%s", msg);
+}
+
+/* The descriptor set binding pipeline `c`'s buffers `sb` and the current globals
+   chunk of recording `f` (its buffer; the chunk is picked by the dynamic offset).
+   Cached for the rest of the recording, so repeated dispatches allocate nothing. */
+static VkDescriptorSet gfx_compute_set(GfxFrame *f, const GfxCompute *c, GfxStorage *const *sb) {
+    for (int i = f->csets.len - 1; i >= 0; i--) {
+        const GfxComputeSet *s = &f->csets.data[i];
+        if (s->pipe_uid != c->uid || s->globals != f->globals.buf || s->globals_range != f->gchunk_size) continue;
+        int k = 0;
+        while (k < c->nbuffers && s->buf_uid[k] == sb[k]->uid) k++;
+        if (k == c->nbuffers) return s->set;
+    }
+    /* Allocate from the current pool, moving on to a new one when it is full. Each set
+       takes at most 1 + GFX_COMPUTE_MAX_BUFFERS descriptors, which the pools are sized for. */
+    if (f->cpool_sets == GFX_COMPUTE_POOL_SETS) {
+        f->cpool++;
+        f->cpool_sets = 0;
+    }
+    if (f->cpool == f->cpools.len) {
+        VkDescriptorPoolSize sizes[2] = {
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, GFX_COMPUTE_POOL_SETS },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, GFX_COMPUTE_POOL_SETS * GFX_COMPUTE_MAX_BUFFERS },
+        };
+        VkDescriptorPoolCreateInfo pci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = GFX_COMPUTE_POOL_SETS;
+        pci.poolSizeCount = 2;
+        pci.pPoolSizes = sizes;
+        VkDescriptorPool pool;
+        if (!gfx_vk(vkCreateDescriptorPool(gx.device, &pci, NULL, &pool), "vkCreateDescriptorPool")) return VK_NULL_HANDLE;
+        vec_push(f->cpools, pool);
+    }
+    VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    ai.descriptorPool = f->cpools.data[f->cpool];
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &c->dsl;
+    GfxComputeSet s;
+    memset(&s, 0, sizeof s);
+    if (!gfx_vk(vkAllocateDescriptorSets(gx.device, &ai, &s.set), "vkAllocateDescriptorSets")) return VK_NULL_HANDLE;
+    f->cpool_sets++;
+
+    VkDescriptorBufferInfo bi[1 + GFX_COMPUTE_MAX_BUFFERS];
+    VkWriteDescriptorSet wr[1 + GFX_COMPUTE_MAX_BUFFERS];
+    memset(wr, 0, sizeof wr);
+    for (int i = 0; i <= c->nbuffers; i++) {
+        bi[i].buffer = i == 0 ? f->globals.buf : sb[i - 1]->buf;
+        bi[i].offset = 0;
+        bi[i].range = i == 0 ? f->gchunk_size : sb[i - 1]->size;
+        wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wr[i].dstSet = s.set;
+        wr[i].dstBinding = (u32)i;
+        wr[i].descriptorCount = 1;
+        wr[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        wr[i].pBufferInfo = &bi[i];
+    }
+    vkUpdateDescriptorSets(gx.device, (u32)c->nbuffers + 1, wr, 0, NULL);
+    s.pipe_uid = c->uid;
+    for (int k = 0; k < c->nbuffers; k++) s.buf_uid[k] = sb[k]->uid;
+    s.globals = f->globals.buf;
+    s.globals_range = f->gchunk_size;
+    vec_push(f->csets, s);
+    return s.set;
+}
+
+void gfx_frame_fill_buffer(int buf, u64 offset, u64 bytes, u32 value) {
+    GfxFrame *f = gfx_rec("gfx_frame_fill_buffer");
+    if (!f) return;
+    GfxStorage *b = gfx_storage_get(buf);
+    if (!b) { gfx_rec_fail("gfx_frame_fill_buffer: invalid storage buffer %d", buf); return; }
+    if (offset % 4 || bytes % 4 || offset > b->size || bytes > b->size - offset) {
+        gfx_rec_fail("gfx_frame_fill_buffer: bytes [%llu, %llu) are outside storage buffer %d (%llu bytes) "
+                     "or not multiples of 4", (unsigned long long)offset, (unsigned long long)(offset + bytes), buf,
+                     (unsigned long long)b->size);
+        return;
+    }
+    if (bytes == 0) return;
+    vkCmdFillBuffer(f->cmd, b->buf, offset, bytes, value);
+    gfx_compute_barrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+}
+
+void gfx_frame_dispatch(int pipe, const int *bufs, const void *push, u32 nx, u32 ny, u32 nz) {
+    GfxFrame *f = gfx_rec("gfx_frame_dispatch");
+    if (!f) return;
+    GfxCompute *c = gfx_compute_get(pipe);
+    if (!c) { gfx_rec_fail("gfx_frame_dispatch: invalid compute pipeline %d", pipe); return; }
+    GfxStorage *sb[GFX_COMPUTE_MAX_BUFFERS];
+    for (int i = 0; i < c->nbuffers; i++) {
+        sb[i] = bufs ? gfx_storage_get(bufs[i]) : NULL;
+        if (!sb[i]) {
+            gfx_rec_fail("gfx_frame_dispatch: invalid storage buffer %d (bufs[%d])", bufs ? bufs[i] : 0, i);
+            return;
+        }
+    }
+    const u32 *maxn = gx.props.limits.maxComputeWorkGroupCount;
+    if (nx > maxn[0] || ny > maxn[1] || nz > maxn[2]) {
+        gfx_rec_fail("gfx_frame_dispatch: %u x %u x %u workgroups exceed this GPU's limit of %u x %u x %u",
+                     nx, ny, nz, maxn[0], maxn[1], maxn[2]);
+        return;
+    }
+    if (nx == 0 || ny == 0 || nz == 0) return;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!gfx_frame_globals_chunk(f) || !(set = gfx_compute_set(f, c, sb))) {
+        gfx_rec_fail("gfx_frame_dispatch: %s", gx.err);
+        return;
+    }
+    u32 off = (u32)f->gchunk_off;
+    if (f->bound_pipe != c->pipeline) {
+        vkCmdBindPipeline(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->pipeline);
+        f->bound_pipe = c->pipeline;
+        f->bound_set = VK_NULL_HANDLE;   /* the new pipeline's layout may differ: rebind */
+    }
+    if (f->bound_set != set || f->bound_offset != off) {
+        vkCmdBindDescriptorSets(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, c->layout, 0, 1, &set, 1, &off);
+        f->bound_set = set;
+        f->bound_offset = off;
+    }
+    if (c->push_bytes) {
+        static const u8 zeros[128];
+        vkCmdPushConstants(f->cmd, c->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, c->push_bytes, push ? push : zeros);
+    }
+    vkCmdDispatch(f->cmd, nx, ny, nz);
+    gfx_compute_barrier(f->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+}
+
+/* Checks of the buffer <-> target copies; false (error reported) if invalid. */
+static bool gfx_copy_args(const char *fn, int buf, u64 offset, int target, GfxStorage **b, GfxTexture **t) {
+    *b = gfx_storage_get(buf);
+    *t = gfx_target_get(target);
+    if (!*b || !*t) {
+        gfx_rec_fail("%s: invalid %s %d", fn, *b ? "target" : "storage buffer", *b ? target : buf);
+        return false;
+    }
+    u64 need = (u64)(*t)->w * (u64)(*t)->h * 4;
+    if (offset % 4 || offset > (*b)->size || need > (*b)->size - offset) {
+        gfx_rec_fail("%s: storage buffer %d (%llu bytes) has no room for %dx%d RGBA8 pixels at offset %llu%s", fn, buf,
+                     (unsigned long long)(*b)->size, (*t)->w, (*t)->h, (unsigned long long)offset,
+                     offset % 4 ? " (the offset must be a multiple of 4)" : "");
+        return false;
+    }
+    return true;
+}
+
+/* Before a copy to/from a target: SHADER_READ_ONLY -> `layout`, after earlier
+   color writes, shader reads, and copies of the image. */
+static void gfx_target_copy_begin(VkCommandBuffer cmd, const GfxTexture *t, VkImageLayout layout) {
+    gfx_image_barrier(cmd, t->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layout,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT
+                                                                     : VK_ACCESS_TRANSFER_READ_BIT);
+}
+
+/* After a copy to/from a target: back to SHADER_READ_ONLY, visible to later sampling,
+   copies and render passes; the buffer side gets the usual compute barrier. */
+static void gfx_target_copy_end(VkCommandBuffer cmd, const GfxTexture *t, VkImageLayout layout) {
+    bool to_image = layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    VkImageMemoryBarrier ib = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    ib.srcAccessMask = to_image ? VK_ACCESS_TRANSFER_WRITE_BIT : 0;
+    ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                       VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    ib.oldLayout = layout;
+    ib.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ib.image = t->image;
+    ib.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ib.subresourceRange.levelCount = 1;
+    ib.subresourceRange.layerCount = 1;
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = to_image ? 0 : VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                       VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &mb, 0, NULL, 1, &ib);
+}
+
+static VkBufferImageCopy gfx_target_region(const GfxTexture *t, u64 offset) {
+    VkBufferImageCopy r;
+    memset(&r, 0, sizeof r);
+    r.bufferOffset = offset;   /* rows tightly packed: bufferRowLength = bufferImageHeight = 0 */
+    r.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    r.imageSubresource.layerCount = 1;
+    r.imageExtent.width = (u32)t->w;
+    r.imageExtent.height = (u32)t->h;
+    r.imageExtent.depth = 1;
+    return r;
+}
+
+void gfx_frame_buffer_to_target(int buf, u64 offset, int target) {
+    GfxFrame *f = gfx_rec("gfx_frame_buffer_to_target");
+    GfxStorage *b;
+    GfxTexture *t;
+    if (!f || !gfx_copy_args("gfx_frame_buffer_to_target", buf, offset, target, &b, &t)) return;
+    VkBufferImageCopy region = gfx_target_region(t, offset);
+    gfx_target_copy_begin(f->cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vkCmdCopyBufferToImage(f->cmd, b->buf, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    gfx_target_copy_end(f->cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+}
+
+void gfx_frame_target_to_buffer(int target, int buf, u64 offset) {
+    GfxFrame *f = gfx_rec("gfx_frame_target_to_buffer");
+    GfxStorage *b;
+    GfxTexture *t;
+    if (!f || !gfx_copy_args("gfx_frame_target_to_buffer", buf, offset, target, &b, &t)) return;
+    VkBufferImageCopy region = gfx_target_region(t, offset);
+    gfx_target_copy_begin(f->cmd, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vkCmdCopyImageToBuffer(f->cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b->buf, 1, &region);
+    gfx_target_copy_end(f->cmd, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+}
+
+bool gfx_batch_begin(void) {
+    if (!gx.device || gx.fatal[0]) {
+        gfx_warn("gfx_batch_begin: %s", gx.device ? gx.fatal : "not initialized");
+        return false;
+    }
+    if (gx.batching || gx.recording) {
+        gfx_warn("gfx_batch_begin: %s", gx.batching ? "a batch is already open" : "inside a frame (end it first)");
+        return false;
+    }
+    GfxFrame *f = &gx.batch;
+    gfx_rec_reset(f);   /* the previous batch was waited for in gfx_batch_end */
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (!gfx_vk(vkBeginCommandBuffer(f->cmd, &bi), "vkBeginCommandBuffer")) {
+        gfx_warn("gfx_batch_begin: %s", gx.err);
+        return false;
+    }
+    gx.batching = true;
+    gx.batch_errors = 0;
+    gx.batch_err[0] = 0;
+    return true;
+}
+
+bool gfx_batch_end(char *err, int errcap) {
+    if (!gx.batching) {
+        gfx_fail("gfx_batch_end without gfx_batch_begin");
+        gfx_copy_err(err, errcap);
+        return false;
+    }
+    GfxFrame *f = &gx.batch;
+    gx.batching = false;
+    bool ok = gfx_vk(vkEndCommandBuffer(f->cmd), "vkEndCommandBuffer") &&
+              gfx_vk(vkResetFences(gx.device, 1, &f->fence), "vkResetFences");
+    if (ok) {
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &f->cmd;
+        ok = gfx_vk(vkQueueSubmit(gx.queue, 1, &si, f->fence), "vkQueueSubmit");
+    }
+    if (ok) f->serial = ++gx.submitted;
+    gfx_resolve_pending();
+    if (ok && (ok = gfx_vk(vkWaitForFences(gx.device, 1, &f->fence, VK_TRUE, UINT64_MAX), "vkWaitForFences"))) {
+        gx.completed = f->serial;
+        gfx_collect_garbage();
+    }
+    if (ok && gx.batch_errors > 0) {
+        if (gx.batch_errors == 1) gfx_fail("%s", gx.batch_err);
+        else gfx_fail("%s (and %d more errors)", gx.batch_err, gx.batch_errors - 1);
+        ok = false;
     }
     if (!ok) gfx_copy_err(err, errcap);
     return ok;
