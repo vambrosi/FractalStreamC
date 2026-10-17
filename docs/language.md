@@ -336,6 +336,7 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
   for `Bool`.
 - A text in quotes after a declaration (and its range) is its label. A line that is only a text is
   a note.
+- Lists of numbers are edited as text, items separated by commas (`1, i, -1, -i`); Enter applies.
 - A one-line function defined in `@config` (`define f(z, c) = z^2 + c`) is a formula you can edit
   in the config panel: the field edits the script itself, which runs again as you type (with Live
   on) or when you press Enter.

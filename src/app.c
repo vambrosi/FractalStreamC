@@ -90,6 +90,8 @@ typedef struct App {
     float config_scroll;
     const char *choice_open;  /* config choice whose list is open (points to choice_name), NULL none */
     char choice_name[128];
+    char list_buf[1024];    /* the list being edited in the config pane */
+    bool list_editing;
     /* the formula being edited in the config pane: its text, and where it is in the script */
     char formula_buf[512];
     int formula_start, formula_end;
@@ -1474,6 +1476,111 @@ static void editor_pane(float H) {
 
 static float config_row_h(void) { return px(30); }
 
+/* "1.5", "-2", "0.3i", "-0.8+0.156i", "1-i" */
+static bool parse_number_text(const char *s, float *re, float *im) {
+    while (*s == ' ') s++;
+    char *end;
+    *re = *im = 0;
+    double a = strtod(s, &end);
+    if (end == s) {
+        if (*s == 'i') { *im = 1; end = (char *)s + 1; }
+        else if (*s == '-' && s[1] == 'i') { *im = -1; end = (char *)s + 2; }
+        else return false;
+    } else if (*end == 'i') {
+        *im = (float)a;
+        end++;
+    } else {
+        *re = (float)a;
+        while (*end == ' ') end++;
+        if (*end == '+' || *end == '-') {
+            const char *t = end;
+            const char *q = t + 1;
+            while (*q == ' ') q++;
+            double b;
+            if (*q == 'i') {
+                b = 1;
+                end = (char *)q;
+            } else {
+                b = strtod(q, &end);
+                if (end == q) return false;
+            }
+            if (*end != 'i') return false;
+            end++;
+            *im = (float)(*t == '-' ? -b : b);
+        }
+    }
+    while (*end == ' ') end++;
+    return *end == 0;
+}
+
+/* a list of numbers, edited as text: "0, 1, 1 + i" (Enter applies it) */
+static void config_list(Sym *s, float x, float y, float w, float h) {
+    Type *lt = s->type, *et = lt->elem;
+    u32 *v = A.state + s->slot;
+    char id[200];
+    snprintf(id, sizeof id, "##cfglist_%s", s->name);
+    u32 fid = ui_id(id);
+    static char shown[1024];
+    char *buf = shown;
+    if (ui_focus_id() == fid && A.list_editing) {
+        buf = A.list_buf;
+    } else {
+        StrBuf sb = {0};
+        int n = FS_CLAMP((i32)v[0], 0, lt->n);
+        for (int k = 0; k < n; k++) {
+            const u32 *it = v + lt->data_off + k * lt->stride;
+            if (k) sb_puts(&sb, ", ");
+            if (et->kind == T_INT) sb_printf(&sb, "%d", (i32)it[0]);
+            else if (et->kind == T_REAL) sb_printf(&sb, "%.6g", wf(it[0]));
+            else if (et->kind == T_COMPLEX) {
+                float re = wf(it[0]), im = wf(it[1]);
+                char ims[40];
+                if (fabsf(im) == 1) snprintf(ims, sizeof ims, "i");
+                else snprintf(ims, sizeof ims, "%.6gi", fabsf(im));
+                if (im == 0) sb_printf(&sb, "%.6g", re);
+                else if (re == 0) sb_printf(&sb, "%s%s", im < 0 ? "-" : "", ims);
+                else sb_printf(&sb, "%.6g %c %s", re, im < 0 ? '-' : '+', ims);
+            } else if (et->kind == T_BOOL) sb_puts(&sb, it[0] ? "1" : "0");
+        }
+        snprintf(shown, sizeof shown, "%s", sb_cstr(&sb));
+        sb_free(&sb);
+    }
+    bool before = ui_focus_id() == fid;
+    int r = ui_text_field_ex(id, x, y, w, h, buf, buf == shown ? (int)sizeof shown : (int)sizeof A.list_buf, 0, "1, 2, 3");
+    if (!before && ui_focus_id() == fid) { /* just focused: edit a copy */
+        snprintf(A.list_buf, sizeof A.list_buf, "%s", shown);
+        A.list_editing = true;
+    }
+    if ((r & UI_TEXT_SUBMIT) || (r & UI_TEXT_BLURRED)) {
+        if (!(r & UI_TEXT_CANCEL) && buf == A.list_buf) {
+            /* parse the items; a bad one leaves the list as it was */
+            u32 *tmp = (u32 *)xcalloc((size_t)lt->size, sizeof(u32));
+            int n = 0;
+            bool ok = true;
+            char *copy = xstrdup(A.list_buf);
+            for (char *tok = strtok(copy, ","); tok && ok; tok = strtok(NULL, ",")) {
+                float re, im;
+                if (!parse_number_text(tok, &re, &im)) { ok = false; break; }
+                if (n >= lt->n) break; /* past the capacity */
+                u32 *it = tmp + lt->data_off + n * lt->stride;
+                if (et->kind == T_INT || et->kind == T_BOOL) it[0] = (u32)(i32)floorf(re + 0.5f);
+                else if (et->kind == T_REAL) it[0] = fw(re);
+                else { it[0] = fw(re); it[1] = fw(im); }
+                n++;
+            }
+            free(copy);
+            if (ok) {
+                tmp[0] = (u32)n;
+                memcpy(v, tmp, sizeof(u32) * (size_t)lt->size);
+            } else {
+                set_status(true, "%s: write numbers separated by commas, as in 0, 1.5, 2 - i", s->name);
+            }
+            free(tmp);
+        }
+        A.list_editing = false;
+    }
+}
+
 static void config_number(Sym *s, float x, float y, float w) {
     u32 *v = A.state + s->slot;
     float h = config_row_h() - px(4);
@@ -1531,6 +1638,12 @@ static void config_number(Sym *s, float x, float y, float w) {
             }
             float c[3] = {wf(v[0]), wf(v[1]), wf(v[2])};
             ui_rrect(x + w - h, y, h, h, px(4), rgb_u32(c, 1));
+            break;
+        }
+        /* fall through */
+    case T_LIST:
+        if (type_is_number(s->type->elem) && s->type->elem != t_quat) {
+            config_list(s, x, y, w, h);
             break;
         }
         /* fall through */
