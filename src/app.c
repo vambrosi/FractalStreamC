@@ -49,6 +49,7 @@ typedef struct ViewerRT {
     int tool;          /* this viewer's selected tool: TOOL_PAN, TOOL_PICK or a script tool */
     double strip_until; /* show the tool strip until then (after a change by keyboard) */
     u32 *show_snap;    /* the state when the selected tool last ran `on show` (NULL: run it) */
+    bool flood_checked; /* flood viewers: the start pixel's result was looked at */
 } ViewerRT;
 
 typedef struct App {
@@ -1925,6 +1926,17 @@ static bool render_viewers(void) {
                 if (!flood_gpu_start(&rt->flood, rt->tw, rt->th, sx, sy))
                     set_status(true, "Not enough GPU memory for the view '%s'", p->viewers[v]->name);
                 rt->rendered = true;
+                rt->flood_checked = false;
+            } else if (flood_gpu_done(&rt->flood) && !rt->flood_checked && rt->flood.field) {
+                /* finished (last frame): did the solution make it from its starting point to the start pixel? */
+                rt->flood_checked = true;
+                FloodEntry e;
+                char err[128];
+                u64 at = ((u64)rt->flood.plan.sy * (u64)rt->flood.w + (u64)rt->flood.plan.sx) * sizeof(FloodEntry);
+                if (gfx_buffer_download(rt->flood.field, at, &e, sizeof e, err, sizeof err) && e.status == FLOOD_FAILED)
+                    set_status(true, "%s: Newton's method fails at the starting point ('continuing from') or on the way from "
+                                     "it into this view; try a starting point inside the view",
+                               p->viewers[v]->display ? p->viewers[v]->display : p->viewers[v]->name);
             }
             if (!flood_gpu_done(&rt->flood)) {
                 flood_gpu_record(&rt->flood, A.flood_passes, rt->target);

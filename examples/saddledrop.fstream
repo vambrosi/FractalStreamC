@@ -105,6 +105,18 @@ define critical_point(near, c) = w where
     end
 end
 
+# carry the critical point v0 of the parameter `from` to the parameter `to` along the segment
+# (.stuck if it gets lost on the way)
+define carry(v0, from, to) = v where
+    v = v0
+    for k in 1..64 do
+        v = critical_point(v, from + (to - from) k / 64)
+        if .stuck then
+            return
+        end
+    end
+end
+
 # The critical point that escapes fastest for its size: the smallest nu + log|w| / log|lam|, a
 # number that does not change when w is replaced by lam w.  Found from a few seeds; 0 if none.
 define best_critical(c) = best where
@@ -180,24 +192,30 @@ else
     color = shade(potential(x))
 end
 
-# move the start of the continuation here, carrying its critical point along the segment
+# move the start of the continuation here, carrying its critical point along (around the black
+# set if the segment crosses it)
 @param.tool "Start here" "S" "flag"
 .panning = true
-v := w0
-ok := true
-for k in 1..64 do
-    v = critical_point(v, c0 + (c - c0) k / 64)
+v := carry(w0, c0, c)
+if .stuck then
+    d : R = |c - c0| / 2 + 2
+    up := (c0 + c) / 2 + d i
+    v = carry(w0, c0, up)
+    if not .stuck then
+        v = carry(v, up, c)
+    end
     if .stuck then
-        ok = false
-        break
+        down := (c0 + c) / 2 - d i
+        v = carry(w0, c0, down)
+        if not .stuck then
+            v = carry(v, down, c)
+        end
     end
 end
-if not ok then
-    # the segment crosses the black set: look for a critical point afresh
-    v = best_critical(c)
-    ok = v != 0
+if .stuck then
+    v = best_critical(c)   # lost on every way: look for a critical point afresh
 end
-if ok then
+if v != 0 then
     c0 = c
     w0 = v
     .c = c
