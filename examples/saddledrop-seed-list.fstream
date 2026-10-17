@@ -1,0 +1,184 @@
+# SaddleDrop with a list of seeds, as written for FractalStream: the Hénon map
+# H(x, y) = (x^2 + c - a y, x) with a fixed.
+#   Dynamical plane: the unstable manifold W^u(p) of the saddle fixed point p, parametrized by
+#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)), coloured by the escape rate G+.
+#   Parameter plane (c): Newton's method runs from each seed of "Seeds", in order, and keeps the
+#     first critical point of G+ on W^u(p) it finds (no larger than "Max. |solution|"); c is
+#     coloured by how fast that critical point escapes.
+# White: Newton's method failed from every seed; gray: it only found huge critical points; black:
+# the critical point does not escape. "Color by imaginary part" shows the sign of im x.
+# The tool "Push critical seed" (C) of the dynamical plane runs Newton's method from the click,
+# draws its steps, and puts the critical point it finds at the front of the seeds (unless a seed
+# is already that close to it).
+# Ported from FractalStream examples/saddledrop-seed-list.yaml
+
+@config
+.title = "SaddleDrop (seed list)"
+.width = 1024
+.height = 512
+dyn.radius = 2                # 1/128 per pixel in a 512 x 512 view
+param.radius = 2
+
+@config "Configuration"
+a : C = 0.3 "a ="
+.c = 0.6 + 0.2i "c ="         # (pick it in the parameter plane)
+n : Z = 0 "γ iterations:"
+seeds : List of C = [0.001, 0.01, 0.1, 1] "Seeds (tried in order):"
+minSep : R = 0.05 "Min. seed separation:"
+maxSol : R = 100000 "Max. |solution|:"
+.maxIterations = 100 "Critical max iterations:"
+maxIters : Z = 100 "Max iterations:"
+escapeR : R = 10 "Escape radius:"
+imColor : Bool = false "Color by imaginary part"
+
+@global
+# the saddle fixed point p (x = y = p, p^2 - (1 + a) p + c = 0) and its expanding eigenvalue:
+# of the two fixed points, the one with the larger eigenvalue
+define saddle(c) = (p, lambda) where
+    b := (1 + a) / 2
+    disc := sqrt(b^2 - c)
+    p_p := b + disc
+    p_m := b - disc
+    l_pp := p_p + sqrt(p_p^2 - a)
+    l_pm := p_p - sqrt(p_p^2 - a)
+    l_p := if |l_pp| > |l_pm| then l_pp else l_pm
+    l_mp := p_m + sqrt(p_m^2 - a)
+    l_mm := p_m - sqrt(p_m^2 - a)
+    l_m := if |l_mp| > |l_mm| then l_mp else l_mm
+    if |l_p| > |l_m| then
+        p = p_p
+        lambda = l_p
+    else
+        p = p_m
+        lambda = l_m
+    end
+end
+
+# gamma(w) pushed forward until it escapes (at most maxIters times): its first coordinate
+define escape_x(w, c) = x where
+    (p, lambda) := saddle(c)
+    s := w / lambda^n
+    x = p + lambda s
+    y := p + s
+    for k in 1..n do              # lift onto W^u(p)
+        (x, y) = (x^2 + c - a y, x)
+    end
+    for m in 1..maxIters do       # then iterate until it escapes
+        if |x| >= escapeR then
+            break
+        end
+        (x, y) = (x^2 + c - a y, x)
+    end
+end
+
+# The escape rate packed with the sign of im x: +-(m - log2 log|x| + 8) after m steps (the 8
+# keeps it away from 0), 0 for a bounded orbit
+define packed(w, c) = r : R where
+    (p, lambda) := saddle(c)
+    s := w / lambda^n
+    x := p + lambda s
+    y := p + s
+    for k in 1..n do
+        (x, y) = (x^2 + c - a y, x)
+    end
+    m : Z = 0
+    while |x| < escapeR and m < maxIters do
+        (x, y) = (x^2 + c - a y, x)
+        m += 1
+    end
+    r = 0
+    if |x| >= escapeR then
+        sign : R = if im(x) >= 0 then 1 else -1
+        r = sign (m - log2(log(|x|)) + 8)
+    end
+end
+
+define shade(r : R) = col : Color where
+    if |r| < 1 then               # bounded orbit: in K+
+        col = .black
+    else if imColor then
+        col = if r > 0 then .purple else .green
+    else
+        col = rainbow(|r| - 8)    # level sets of G+ (without the 8)
+    end
+end
+
+@viewer dyn z "Dynamical plane" "Ctrl + 1"
+color = shade(packed(z, .c))
+
+@viewer param c "Parameter plane (c)" "Ctrl + 2"
+# a critical point of G+ on W^u(p) (a zero of the derivative of log x along gamma), from each
+# seed in turn until one is found
+best := 0
+ok := false
+ran_away := false
+for seed in seeds do
+    if not ok then
+        w := critical t -> log(escape_x(t, c)) with seed seed
+        if not .stuck then
+            if |w| > maxSol then
+                ran_away = true
+            else
+                best = w
+                ok = true
+            end
+        end
+    end
+end
+if not ok and ran_away then
+    color = .gray
+else if not ok then
+    color = .white
+else
+    color = shade(packed(best, c))
+end
+
+@dyn.tool "Push critical seed" "C" "add_location"
+.panning = true               # (the old tool ran on clicks)
+(p, lambda) := saddle(.c)
+draw disk at z with radius 2 px and color .white
+# Newton's method for the derivative of log x, with the first and second derivatives (v, u)
+# of (x, y) along gamma, drawing each step
+w := z
+good := false
+for j in 1..(.maxIterations) do
+    s := w / lambda^n
+    x := p + lambda s
+    y := p + s
+    vx := lambda / lambda^n
+    vy := 1 / lambda^n
+    ux := 0
+    uy := 0
+    for k in 1..n do
+        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x, 2 x vx - a vy, vx, 2 (x ux + vx^2) - a uy, ux)
+    end
+    m : Z = 0
+    while |x| < escapeR and m < maxIters do
+        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x, 2 x vx - a vy, vx, 2 (x ux + vx^2) - a uy, ux)
+        m += 1
+    end
+    w_next := w - vx x / (ux x - vx^2)
+    draw line between w and w_next with color .white
+    w = w_next
+    good = |x| >= escapeR
+end
+draw disk at w with radius 2 px and color .white
+# put w at the front of the seeds, unless a seed is already close to it
+if good and |w| <= maxSol then
+    near := false
+    for old in seeds do
+        if |w - old| <= minSep then
+            near = true
+        end
+    end
+    if not near then
+        pushed : List of C = []
+        append(pushed, w)
+        for old in seeds do
+            if |pushed| < 64 then
+                append(pushed, old)
+            end
+        end
+        seeds = pushed
+    end
+end

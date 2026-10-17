@@ -1,0 +1,119 @@
+# SaddleDrop as first written for FractalStream: the Hénon map H(x, y) = (x^2 + c - a y, x)
+# with a fixed.
+#   Dynamical plane: the unstable manifold W^u(p) of the saddle fixed point p, parametrized by
+#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)), coloured by the escape rate G+.
+#   Parameter plane (c): Newton's method, started at "Critical seed" in every pixel, finds a
+#     critical point of G+ on W^u(p); c is coloured by how fast it escapes.
+# White: Newton's method failed; gray: it ran off to a huge critical point; black: the critical
+# point does not escape. "Color by imaginary part" shows the sign of im x when it escapes.
+# Each pixel starts afresh from the seed, so neighbouring pixels may find different critical
+# points (examples/saddledrop.fstream follows one from pixel to pixel instead).
+# The tool "Pick critical seed" (C) of the dynamical plane sets the seed.
+# Ported from FractalStream examples/saddledrop.yaml
+
+@config
+.title = "SaddleDrop (Newton from a seed)"
+.width = 1024
+.height = 512
+dyn.radius = 2                # 1/128 per pixel in a 512 x 512 view
+param.radius = 2
+
+@config "Configuration"
+a : C = 0.3 "a ="
+.c = 0.6 + 0.2i "c ="         # (pick it in the parameter plane)
+n : Z = 0 "γ iterations:"
+critSeed : C = 0.001 "Critical seed:"
+.maxIterations = 100 "Critical max iterations:"
+maxIters : Z = 100 "Max iterations:"
+escapeR : R = 10 "Escape radius:"
+imColor : Bool = false "Color by imaginary part"
+
+@global
+# the saddle fixed point p (x = y = p, p^2 - (1 + a) p + c = 0) and its expanding eigenvalue:
+# of the two fixed points, the one with the larger eigenvalue
+define saddle(c) = (p, lambda) where
+    b := (1 + a) / 2
+    disc := sqrt(b^2 - c)
+    p_p := b + disc
+    p_m := b - disc
+    l_pp := p_p + sqrt(p_p^2 - a)
+    l_pm := p_p - sqrt(p_p^2 - a)
+    l_p := if |l_pp| > |l_pm| then l_pp else l_pm
+    l_mp := p_m + sqrt(p_m^2 - a)
+    l_mm := p_m - sqrt(p_m^2 - a)
+    l_m := if |l_mp| > |l_mm| then l_mp else l_mm
+    if |l_p| > |l_m| then
+        p = p_p
+        lambda = l_p
+    else
+        p = p_m
+        lambda = l_m
+    end
+end
+
+# gamma(w) pushed forward until it escapes (at most maxIters times): its first coordinate
+define escape_x(w, c) = x where
+    (p, lambda) := saddle(c)
+    s := w / lambda^n
+    x = p + lambda s
+    y := p + s
+    for k in 1..n do              # lift onto W^u(p)
+        (x, y) = (x^2 + c - a y, x)
+    end
+    for m in 1..maxIters do       # then iterate until it escapes
+        if |x| >= escapeR then
+            break
+        end
+        (x, y) = (x^2 + c - a y, x)
+    end
+end
+
+# The escape rate, packed with the sign of im x: +-(m - log2 log|x|) after m steps, 0 for a
+# bounded orbit
+define rate(w, c) = r : R where
+    (p, lambda) := saddle(c)
+    s := w / lambda^n
+    x := p + lambda s
+    y := p + s
+    for k in 1..n do
+        (x, y) = (x^2 + c - a y, x)
+    end
+    m : Z = 0
+    while |x| < escapeR and m < maxIters do
+        (x, y) = (x^2 + c - a y, x)
+        m += 1
+    end
+    r = 0
+    if |x| >= escapeR then
+        sign : R = if im(x) >= 0 then 1 else -1
+        r = sign |m - log2(log(|x|))|
+    end
+end
+
+define shade(r : R) = col : Color where
+    if r vanishes then            # bounded orbit: in K+
+        col = .black
+    else if imColor then
+        col = if r > 0 then .purple else .green
+    else
+        col = rainbow(|r|)        # level sets of G+
+    end
+end
+
+@viewer dyn z "Dynamical plane" "Ctrl + 1"
+color = shade(rate(z, .c))
+
+@viewer param c "Parameter plane (c)" "Ctrl + 2"
+# a critical point of G+ on W^u(p): a zero of the derivative of log x along gamma
+w := critical t -> log(escape_x(t, c)) with seed critSeed
+if .stuck then
+    color = .white
+else if |w| > 10^5 then
+    color = .gray
+else
+    color = shade(rate(w, c))
+end
+
+@dyn.tool "Pick critical seed" "C" "my_location"
+draw point at z
+critSeed = z
