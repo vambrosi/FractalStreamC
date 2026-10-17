@@ -1368,7 +1368,51 @@ TEST(editor_preview) {
     te_preview(2.0f, "build/editor_preview_2x.png", true);
 }
 
+/* find / replace */
+TEST(editor_find_and_replace) {
+    Editor *ed = editor_create();
+    editor_set_text(ed, "z := 0\nwhile Z not escapes do\n    z = z^2 + c\nend\n", -1);
+    int cur = -1;
+    CHECK_INT(editor_count_matches(ed, "z", true, &cur), 3);
+    CHECK_INT(cur, 0);
+    CHECK_INT(editor_count_matches(ed, "z", false, NULL), 4); /* Z too */
+    editor_set_selection(ed, 0, 0);
+    CHECK(editor_find(ed, "z", true, false));
+    CHECK(editor_anchor(ed) == 0 && editor_cursor(ed) == 1);
+    CHECK_INT(editor_count_matches(ed, "z", true, &cur), 3);
+    CHECK_INT(cur, 1);
+    CHECK(editor_find(ed, "z", true, false)); /* the next one: on line 3 */
+    int line, col;
+    editor_offset_to_pos(ed, editor_anchor(ed), &line, &col);
+    CHECK(line == 3 && col == 5);
+    CHECK(editor_find(ed, "z", true, true)); /* back to the first */
+    CHECK_INT(editor_anchor(ed), 0);
+    CHECK(editor_find(ed, "z", true, true)); /* wraps to the last */
+    editor_offset_to_pos(ed, editor_anchor(ed), &line, &col);
+    CHECK(line == 3 && col == 9);
+    CHECK(!editor_find(ed, "zz", true, false));
+    CHECK(!editor_find(ed, "", true, false));
+    /* replace: only a selected match is replaced, then the next is selected */
+    editor_set_selection(ed, 0, 0);
+    CHECK(!editor_replace(ed, "escapes", "vanishes", true)); /* nothing selected: just finds */
+    char *sel = editor_selected_text(ed);
+    CHECK_STR(sel, "escapes");
+    free(sel);
+    CHECK(editor_replace(ed, "escapes", "vanishes", true));
+    CHECK(strstr(te_text(ed), "while Z not vanishes do") != NULL);
+    /* replace all: one undo step */
+    CHECK_INT(editor_replace_all(ed, "z", "w", false), 4);
+    CHECK_STR(te_text(ed), "w := 0\nwhile w not vanishes do\n    w = w^2 + c\nend\n");
+    CHECK(editor_undo(ed));
+    CHECK_STR(te_text(ed), "z := 0\nwhile Z not vanishes do\n    z = z^2 + c\nend\n");
+    /* highlighting doesn't change anything */
+    editor_set_search(ed, "z", false);
+    editor_set_search(ed, NULL, false);
+    editor_destroy(ed);
+}
+
 static const TestCase tests_editor[] = {
+    TESTCASE(editor_find_and_replace),
     TESTCASE(editor_text_basics),
     TESTCASE(editor_lines_and_positions),
     TESTCASE(editor_typing_and_deleting),

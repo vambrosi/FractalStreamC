@@ -24,8 +24,8 @@ end
   (Mandelbrot and Julia sets side by side). The pictures update as you type.
 - `fractalstream script.fstream` opens a script. The script pane folds into a thin bar on the
   left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
-  edge of a pane to resize it. Changes made to the file in another editor are picked up
-  automatically.
+  edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script. Changes
+  made to the file in another editor are picked up automatically.
 - Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
   button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
   the tools, and saves the picture as a PNG file (as on the screen, or four times larger for

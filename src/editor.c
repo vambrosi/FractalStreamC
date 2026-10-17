@@ -77,6 +77,8 @@ struct Editor {
     VEC(EdDiag) diags;
     char **builtins;
     int nbuiltins;
+    char *search; /* highlighted search text (NULL: none) */
+    bool search_case;
 };
 
 Editor *editor_create(void) {
@@ -114,6 +116,7 @@ static void edp_free_builtins(Editor *ed) {
 
 void editor_destroy(Editor *ed) {
     if (!ed) return;
+    free(ed->search);
     edp_free_history(ed);
     edp_free_diags(ed);
     edp_free_builtins(ed);
@@ -607,6 +610,7 @@ void editor_set_selection(Editor *ed, int anchor, int cursor) {
 }
 
 void editor_select_all(Editor *ed) { editor_set_selection(ed, 0, ed->len); }
+void editor_reveal(Editor *ed) { ed->reveal = true; }
 
 void editor_goto(Editor *ed, int line, int col) {
     int o = editor_pos_to_offset(ed, line, col);
@@ -948,6 +952,110 @@ void editor_paste(Editor *ed) {
 
 /* ---- raw edits ----------------------------------------------------------------------------------------------------- */
 
+/* ---- search ---------------------------------------------------------------------------------------------- */
+static int edp_fold(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+/* does the needle (n bytes, no newline) occur at pos? */
+static bool edp_match_at(const Editor *ed, int pos, const char *needle, int n, bool match_case) {
+    if (n <= 0 || pos < 0 || pos + n > ed->len) return false;
+    const char *t = ed->text + pos;
+    if (match_case) return memcmp(t, needle, (size_t)n) == 0;
+    for (int i = 0; i < n; i++)
+        if (edp_fold((unsigned char)t[i]) != edp_fold((unsigned char)needle[i])) return false;
+    return true;
+}
+
+static int edp_needle_len(const char *needle) {
+    if (!needle) return 0;
+    int n = 0;
+    while (needle[n] && needle[n] != '\n') n++;
+    return n;
+}
+
+void editor_set_search(Editor *ed, const char *needle, bool match_case) {
+    free(ed->search);
+    ed->search = edp_needle_len(needle) > 0 ? xstrdup(needle) : NULL;
+    if (ed->search) ed->search[edp_needle_len(needle)] = 0;
+    ed->search_case = match_case;
+}
+
+bool editor_find(Editor *ed, const char *needle, bool match_case, bool backwards) {
+    int n = edp_needle_len(needle);
+    if (n == 0 || n > ed->len) return false;
+    int lo, hi;
+    edp_selection(ed, &lo, &hi);
+    int last = ed->len - n;
+    if (!backwards) {
+        int start = hi > lo ? lo + 1 : ed->cursor; /* after the selected match */
+        for (int k = 0; k <= last; k++) {
+            int p = (start + k) % (last + 1);
+            if (edp_match_at(ed, p, needle, n, match_case)) {
+                editor_set_selection(ed, p, p + n);
+                ed->reveal = true;
+                return true;
+            }
+        }
+    } else {
+        int start = (hi > lo ? lo : ed->cursor) - 1;
+        for (int k = 0; k <= last; k++) {
+            int p = ((start - k) % (last + 1) + (last + 1)) % (last + 1);
+            if (edp_match_at(ed, p, needle, n, match_case)) {
+                editor_set_selection(ed, p, p + n);
+                ed->reveal = true;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int editor_count_matches(Editor *ed, const char *needle, bool match_case, int *current) {
+    int n = edp_needle_len(needle), count = 0, lo, hi;
+    edp_selection(ed, &lo, &hi);
+    if (current) *current = 0;
+    if (n == 0) return 0;
+    for (int p = 0; p + n <= ed->len; p++)
+        if (edp_match_at(ed, p, needle, n, match_case)) {
+            count++;
+            if (current && p == lo && hi == lo + n) *current = count;
+            p += n - 1; /* matches don't overlap */
+        }
+    return count;
+}
+
+bool editor_replace(Editor *ed, const char *needle, const char *with, bool match_case) {
+    int n = edp_needle_len(needle), lo, hi;
+    edp_selection(ed, &lo, &hi);
+    if (n == 0) return false;
+    bool replaced = false;
+    if (hi - lo == n && edp_match_at(ed, lo, needle, n, match_case)) {
+        int wl = with ? (int)strlen(with) : 0;
+        edp_begin(ed, EDK_OTHER);
+        if (edp_replace(ed, lo, n, with ? with : "", wl)) ed->cursor = ed->anchor = lo + wl;
+        ed->want_col = -1;
+        edp_end(ed);
+        replaced = true;
+    }
+    editor_find(ed, needle, match_case, false);
+    return replaced;
+}
+
+int editor_replace_all(Editor *ed, const char *needle, const char *with, bool match_case) {
+    int n = edp_needle_len(needle), wl = with ? (int)strlen(with) : 0;
+    if (n == 0) return 0;
+    VEC(EdLineEdit) edits = {0};
+    for (int p = 0; p + n <= ed->len; p++)
+        if (edp_match_at(ed, p, needle, n, match_case)) {
+            EdLineEdit e = {p, n, wl, with ? with : ""};
+            vec_push(edits, e);
+            p += n - 1;
+        }
+    int count = edits.len;
+    edp_apply_line_edits(ed, edits.data, edits.len);
+    vec_free(edits);
+    return count;
+}
+
 void editor_insert(Editor *ed, int offset, const char *utf8, int len) {
     if (!utf8) return;
     if (len < 0) len = (int)strlen(utf8);
@@ -987,6 +1095,7 @@ void editor_delete(Editor *ed, int offset, int len) {
 #define EDC_BUILTIN UI_HEX(0x82aaff)
 #define EDC_OPERATOR UI_HEX(0x9aa4bb)
 #define EDC_GUTTER_BG UI_HEX(0x14171c)
+#define EDC_SEARCH UI_RGBA(240, 190, 80, 64) /* occurrences of the searched text */
 
 static u32 edp_class_color(int cls) {
     switch (cls) {
@@ -1387,6 +1496,15 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
         if (worst == EDITOR_ERROR) ui_rect(L.tx, ry, L.tw, L.row_h, ui_alpha(UI_COL_ERROR, 0.07f));
         if (line == caret_line && sel_lo == sel_hi) ui_rect(L.tx, ry, L.tw, L.row_h, ui_alpha(0xFFFFFFFFu, 0.045f));
         float x0 = L.tx + L.pad - ed->scroll_x;
+        if (ed->search) { /* the searched text */
+            int n = (int)strlen(ed->search);
+            for (int p = ls; p + n <= le; p++)
+                if (edp_match_at(ed, p, ed->search, n, ed->search_case)) {
+                    float mx0 = x0 + edp_col_x(ed, ls, p), mx1 = x0 + edp_col_x(ed, ls, p + n);
+                    ui_rect(mx0, ry + 1, mx1 - mx0, L.row_h - 2, EDC_SEARCH);
+                    p += n - 1;
+                }
+        }
         if (sel_hi > sel_lo && sel_lo <= le && sel_hi > ls) { /* selection */
             int a = FS_MAX(sel_lo, ls), b = FS_MIN(sel_hi, le);
             float sx0 = x0 + edp_col_x(ed, ls, a), sx1 = x0 + edp_col_x(ed, ls, b);

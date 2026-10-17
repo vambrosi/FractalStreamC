@@ -89,6 +89,9 @@ typedef struct App {
     /* overlays */
     int menu_viewer;        /* viewer whose menu is open, -1 none */
     bool help_open;
+    /* find / replace in the script */
+    bool find_open, replace_open, find_focus, find_case, editor_grab;
+    char find_buf[256], replace_buf[256];
     float config_scroll;
     const char *choice_open;  /* config choice whose list is open (points to choice_name), NULL none */
     char choice_name[128];
@@ -1564,6 +1567,99 @@ static float pane_splitter(const char *id, float x, float H) {
     return NAN;
 }
 
+/* ---- find / replace ---------------------------------------------------------------------- */
+static void open_find(bool replace) {
+    A.editor_open = true;
+    A.find_open = true;
+    A.replace_open = replace || A.replace_open;
+    A.find_focus = true;
+    char *sel = editor_selected_text(A.ed); /* the selection, if one line, is what to look for */
+    if (sel[0] && !strchr(sel, '\n')) snprintf(A.find_buf, sizeof A.find_buf, "%s", sel);
+    free(sel);
+}
+
+static void close_find(void) {
+    A.find_open = A.replace_open = false;
+    editor_set_search(A.ed, NULL, false);
+    A.editor_grab = true;
+}
+
+static void find_step(bool backwards) {
+    if (!A.find_buf[0]) return;
+    if (!editor_find(A.ed, A.find_buf, A.find_case, backwards)) set_status(true, "\"%s\" is not in the script", A.find_buf);
+}
+
+/* the find bar (and replace bar) at the top of the script pane; returns its height */
+static float find_bar(float ew, float y) {
+    if (!A.find_open) return 0;
+    float rh = px(38), b = px(28), pad = px(6), gap = px(4);
+    float h = rh * (A.replace_open ? 2 : 1);
+    ui_panel_ex(0, y, ew, h, UI_COL_PANEL_HI, 0);
+    ui_rect(0, y + h - px(1), ew, px(1), UI_COL_BORDER);
+    float by = y + (rh - b) / 2;
+    /* buttons from the right: close, replace toggle, match case, next, previous, count */
+    float x = ew - pad - b;
+    if (ui_icon_button_ex("##find_close", "close", "x", x, by, b, UI_FLAT)) close_find();
+    ui_tooltip("Close (Esc)");
+    x -= b + gap;
+    if (ui_icon_button_ex("##find_repl", "find_replace", "R", x, by, b, A.replace_open ? UI_SELECTED : UI_FLAT))
+        A.replace_open = !A.replace_open;
+    ui_tooltip("Replace (" MODKEY "+Alt+F)");
+    x -= b + gap;
+    if (ui_button_ex(A.find_case ? "Aa##find_case_on" : "Aa##find_case", x, by, b, b, A.find_case ? UI_SELECTED : UI_FLAT))
+        A.find_case = !A.find_case;
+    ui_tooltip("Match case");
+    x -= b + gap;
+    if (ui_icon_button_ex("##find_next", "keyboard_arrow_down", "v", x, by, b, UI_FLAT)) find_step(false);
+    ui_tooltip("Next (Enter, " MODKEY "+G, F3)");
+    x -= b + gap;
+    if (ui_icon_button_ex("##find_prev", "keyboard_arrow_up", "^", x, by, b, UI_FLAT)) find_step(true);
+    ui_tooltip("Previous (Shift+Enter, " MODKEY "+Shift+G, Shift+F3)");
+    int current = 0, count = A.find_buf[0] ? editor_count_matches(A.ed, A.find_buf, A.find_case, &current) : 0;
+    char cnt[40] = "";
+    if (A.find_buf[0]) {
+        if (count == 0) snprintf(cnt, sizeof cnt, "none");
+        else if (current) snprintf(cnt, sizeof cnt, "%d of %d", current, count);
+        else snprintf(cnt, sizeof cnt, "%d", count);
+    }
+    float cw = px(64);
+    x -= cw + gap;
+    ui_label(x, by, cw, b, cnt, UI_ALIGN_CENTER, count == 0 && A.find_buf[0] ? UI_COL_ERROR : UI_COL_TEXT_DIM);
+    float fw = FS_MAX(px(60), x - gap - pad);
+    int r = ui_text_field_ex("##find_text", pad, by, fw, b, A.find_buf, (int)sizeof A.find_buf,
+                             UI_TF_KEEP_FOCUS | UI_TF_SELECT_ALL, "Find");
+    if (A.find_focus) {
+        ui_set_focus(ui_id("##find_text"));
+        A.find_focus = false;
+    }
+    if (r & UI_TEXT_CHANGED) { /* look from where the selection starts, as you type */
+        int a = editor_anchor(A.ed), c = editor_cursor(A.ed), lo = FS_MIN(a, c);
+        editor_set_selection(A.ed, lo, lo);
+        if (A.find_buf[0]) editor_find(A.ed, A.find_buf, A.find_case, false);
+    }
+    if (r & UI_TEXT_SUBMIT) find_step((A.in.mods & UI_MOD_SHIFT) != 0);
+    if (r & UI_TEXT_CANCEL) close_find();
+    if (A.replace_open && A.find_open) {
+        float ry = y + rh + (rh - b) / 2, aw = px(64);
+        float ax = ew - pad - aw;
+        if (ui_button_ex("All##repl_all", ax, ry, aw, b, 0) && A.find_buf[0]) {
+            int n = editor_replace_all(A.ed, A.find_buf, A.replace_buf, A.find_case);
+            set_status(false, "Replaced %d occurrence%s", n, n == 1 ? "" : "s");
+        }
+        ui_tooltip("Replace every occurrence (one undo step)");
+        float rw = px(76);
+        ax -= rw + gap;
+        bool one = ui_button_ex("Replace##repl_one", ax, ry, rw, b, 0);
+        ui_tooltip("Replace the selected occurrence and find the next");
+        int rr = ui_text_field_ex("##replace_text", pad, ry, FS_MAX(px(60), ax - gap - pad), b, A.replace_buf,
+                                  (int)sizeof A.replace_buf, UI_TF_KEEP_FOCUS, "Replace with");
+        if ((one || (rr & UI_TEXT_SUBMIT)) && A.find_buf[0]) editor_replace(A.ed, A.find_buf, A.replace_buf, A.find_case);
+        if (rr & UI_TEXT_CANCEL) close_find();
+    }
+    if (A.find_open) editor_set_search(A.ed, A.find_buf, A.find_case);
+    return A.find_open ? h : 0;
+}
+
 static void editor_pane(float H) {
     Rect r = A.editor_r;
     if (!A.editor_open) {
@@ -1594,6 +1690,12 @@ static void editor_pane(float H) {
     x += bhh + px(4);
     if (ui_icon_button_ex("##open", "folder_open", "O", x, y, bhh, 0)) ask_open();
     ui_tooltip("Open a script (" MODKEY "+O), or drop it on the window");
+    x += bhh + px(4);
+    if (ui_icon_button_ex("##find", "search", "F", x, y, bhh, A.find_open ? UI_SELECTED : 0)) {
+        if (A.find_open) close_find();
+        else open_find(false);
+    }
+    ui_tooltip("Find and replace (" MODKEY "+F, " MODKEY "+Alt+F)");
     x += bhh + px(10);
     ui_toggle("Live", x, y + px(3), px(64), bhh - px(6), &A.live);
     ui_tooltip("Run the script automatically shortly after you stop typing");
@@ -1606,7 +1708,12 @@ static void editor_pane(float H) {
     snprintf(name, sizeof name, "%.250s%s", A.path[0] ? fs_basename(A.path) : "untitled", editor_is_modified(A.ed) ? " *" : "");
     if (x < ew - bhh - px(50)) ui_label(x, y, ew - x - bhh - px(16), bhh, name, UI_ALIGN_RIGHT, UI_COL_TEXT_DIM);
     editor_set_clock(A.ed, fs_time_seconds());
-    editor_ui(A.ed, 0, bh, ew, H - bh, false);
+    static float last_fh;
+    float fh = find_bar(ew, bh);
+    if (fh != last_fh) editor_reveal(A.ed); /* the editor got shorter or taller: keep the match in view */
+    last_fh = fh;
+    editor_ui(A.ed, 0, bh + fh, ew, H - bh - fh, A.editor_grab);
+    A.editor_grab = false;
     ui_rect(ew - px(1), 0, px(1), H, UI_COL_BORDER);
     float nx = pane_splitter("##editor_split", ew, H);
     if (nx == nx && A.in.fb_w > 0) A.editor_frac = FS_CLAMP(nx / (float)A.in.fb_w, 0.15f, 0.8f);
@@ -2008,6 +2115,7 @@ static void help_overlay(float W, float H) {
         "  " MODKEY "+Enter or " MODKEY "+R          run the script",
         "  " MODKEY "+S, " MODKEY "+Shift+S          save, save as",
         "  " MODKEY "+O                       open a file (or drop it on the window)",
+        "  " MODKEY "+F, " MODKEY "+Alt+F            find, replace in the script (" MODKEY "+G: next)",
         "  " MODKEY "+E, " MODKEY "+T                show / hide the script, the config",
         "  " MODKEY "+1, 2, ...               show a view (or the shortcut written in the script)",
         "  H, P, tool keys            choose a tool of the view under the mouse",
@@ -2085,6 +2193,13 @@ static int target_viewer(void) { return A.hover_viewer >= 0 ? A.hover_viewer : A
 
 static void shortcuts(void) {
     Program *p = A.prog;
+    if (ui_shortcut(UI_KEY_F, UI_MOD_MOD)) open_find(false);
+    if (ui_shortcut(UI_KEY_F, UI_MOD_MOD | UI_MOD_ALT)) open_find(true);
+    if (ui_shortcut(UI_KEY_G, UI_MOD_MOD) || ui_shortcut(UI_KEY_F3, 0)) {
+        if (A.find_buf[0]) find_step(false);
+        else open_find(false);
+    }
+    if (ui_shortcut(UI_KEY_G, UI_MOD_MOD | UI_MOD_SHIFT) || ui_shortcut(UI_KEY_F3, UI_MOD_SHIFT)) find_step(true);
     if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD)) run_editor();
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD)) {
         if (A.path[0]) save_file(A.path);
@@ -2099,6 +2214,7 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_ESCAPE, 0)) {
         if (A.drag == DRAG_VIEWER) A.drag = DRAG_NONE;
         else if (A.help_open) A.help_open = false;
+        else if (A.find_open && editor_has_focus(A.ed)) close_find();
         else if (A.menu_viewer >= 0) A.menu_viewer = -1;
         else A.menu_viewer = target_viewer();
     }

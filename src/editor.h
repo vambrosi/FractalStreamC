@@ -76,6 +76,7 @@ void editor_set_selection(Editor *ed, int anchor, int cursor);
 void editor_select_all(Editor *ed);
 char *editor_selected_text(const Editor *ed);            /* malloc'd; "" if nothing is selected */
 void editor_goto(Editor *ed, int line, int col);         /* 1-based; also scrolls it into view */
+void editor_reveal(Editor *ed);                          /* scroll the caret into view at the next draw */
 void editor_move(Editor *ed, EditorMove move, bool extend_selection);
 
 /* ---- editing (what the keyboard does) --------------------------------------------------------------------------- */
@@ -97,6 +98,17 @@ void editor_delete(Editor *ed, int offset, int len);
 
 /* ---- highlighting and diagnostics ----------------------------------------------------------------------------------- */
 void editor_set_builtins(Editor *ed, const char *const *names, int n); /* function names to highlight */
+
+/* Search (one line of text; match_case false folds ASCII letters).  The searched text is highlighted in the
+ * rows while editor_set_search holds it (NULL or "" stops). */
+void editor_set_search(Editor *ed, const char *needle, bool match_case);
+bool editor_find(Editor *ed, const char *needle, bool match_case, bool backwards); /* select the next (previous)
+                                                                                     match, wrapping; reveals it */
+int editor_count_matches(Editor *ed, const char *needle, bool match_case, int *current); /* *current: 1-based index of
+                                                                                     the selected match, or 0 */
+bool editor_replace(Editor *ed, const char *needle, const char *with, bool match_case); /* if the selection is a match:
+                                                                                     replace it; then select the next */
+int editor_replace_all(Editor *ed, const char *needle, const char *with, bool match_case); /* one undo step; count */
 void editor_set_diagnostics(Editor *ed, const EditorDiag *diags, int n);
 void editor_clear_diagnostics(Editor *ed);
 
