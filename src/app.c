@@ -2357,9 +2357,18 @@ static void menu_overlay(float W, float H) {
         if (ui_last_hovered()) ui_tooltip(tips[k]);
     }
     y += rows_place * (bh + gap);
-    ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS),
-             "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: help", UI_ALIGN_CENTER,
-             UI_COL_TEXT_DIM);
+    {
+        const char *foot = "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: all the keys";
+        float lh = ui_font_line_height(UI_FONT_SANS), fw = ui_text_width(UI_FONT_SANS, foot, -1);
+        float fx = pr.x + (pr.w - fw) / 2;
+        UiInteract it = ui_interact("##menu_keys", fx, y, fw, lh); /* (a click: the keys, F1 needs fn on a Mac) */
+        ui_label(pr.x + gap, y, pr.w - 2 * gap, lh, foot, UI_ALIGN_CENTER, it.hovered ? UI_COL_TEXT : UI_COL_TEXT_DIM);
+        if (it.hovered) ui_set_cursor(UI_CURSOR_HAND);
+        if (it.clicked) {
+            A.help_open = true;
+            A.menu_viewer = -1;
+        }
+    }
     ui_pop_clip();
     if (bg.clicked && !in_rect(pr, A.in.mouse_x, A.in.mouse_y)) A.menu_viewer = -1;
     ui_layer(prev);
