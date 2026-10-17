@@ -1,9 +1,12 @@
-/* app.c - the GUI: viewers in tiles, the hamburger menu, tools and their
- * drawings, the config panel, and the code editor.
+/* app.c - the GUI: viewers in tiles (each with its own tool strip), the
+ * script editor and the config in collapsible side panes, menus, and
+ * the drawings made by tools.
  *
- * Frame: poll input -> lay out tiles -> mouse interaction with viewers
- * (pan, zoom, tools) -> draw tiles, editor and panels -> keyboard shortcuts
- * -> GPU: upload state, (re)render viewers whose inputs changed, draw. */
+ * Frame: poll input -> lay out panes and tiles -> pane splitters -> mouse
+ * interaction with viewers (pan, zoom, tools) -> draw tiles and their
+ * chrome, panes, overlays -> keyboard shortcuts -> GPU: upload the state,
+ * (re)render the viewers whose inputs changed (in bands, or by flood fill
+ * for viewers with a `continuing` solve), draw. */
 #include "app.h"
 #include <sys/stat.h>
 #ifndef _MSC_VER
@@ -16,9 +19,15 @@
 #define MAX_NODES (2 * MAX_TILES)
 #define MAX_FLOATS 4
 
+#if FS_OS_MACOS
+#define MODKEY "Cmd" /* the name of UI_MOD_MOD in labels */
+#else
+#define MODKEY "Ctrl"
+#endif
+
 enum { TOOL_PAN = -2, TOOL_PICK = -1 };
 enum { N_FREE, N_LEAF, N_HSPLIT, N_VSPLIT }; /* HSPLIT: a | b, VSPLIT: a over b */
-enum { DRAG_NONE, DRAG_PAN, DRAG_TOOL, DRAG_PICK, DRAG_CLICK, DRAG_SPLIT, DRAG_VIEWER, DRAG_EDITOR };
+enum { DRAG_NONE, DRAG_PAN, DRAG_TOOL, DRAG_PICK, DRAG_CLICK, DRAG_SPLIT, DRAG_VIEWER };
 enum { DROP_NONE, DROP_REPLACE, DROP_LEFT, DROP_RIGHT, DROP_TOP, DROP_BOTTOM, DROP_FLOAT };
 
 typedef struct Rect { float x, y, w, h; } Rect;
@@ -26,15 +35,19 @@ typedef struct LNode { int kind; int a, b; float ratio; int viewer; Rect r; } LN
 typedef struct VisTile { int viewer; Rect r; int node; int fl; } VisTile;
 
 typedef struct ViewerRT {
-    int pipeline;
+    int pipeline;      /* fragment shader (viewers without a `continuing` solve) */
+    FloodGpu flood;    /* compute shaders (viewers with one) */
+    bool is_flood;
     int target, tw, th;
-    u32 *snap;       /* state the image was rendered from */
-    bool *used;      /* per global: does the viewer read it? */
+    u32 *snap;         /* state the image was rendered from */
+    bool *used;        /* per global: does the viewer read it? */
     bool animated;
     bool rendered;
-    int next_row;    /* progressive rendering: next row to render (cycles through the image) */
-    int rows_left;   /* rows still to render with the latest state; 0 when the image is up to date */
-    bool picked;     /* show the picked-point marker */
+    int next_row;      /* progressive rendering: next row to render (cycles through the image) */
+    int rows_left;     /* rows still to render with the latest state; 0 when the image is up to date */
+    bool picked;       /* show the picked-point marker */
+    int tool;          /* this viewer's selected tool: TOOL_PAN, TOOL_PICK or a script tool */
+    double strip_until; /* show the tool strip until then (after a change by keyboard) */
 } ViewerRT;
 
 typedef struct App {
@@ -43,38 +56,42 @@ typedef struct App {
     Interp interp;
     ViewerRT *vrt;
     DrawItemVec *draws; /* per user tool */
-    int active_tool;
     LNode nodes[MAX_NODES];
     int root;
     int floats[MAX_FLOATS]; /* viewer shown in each corner (-1 none): TL TR BL BR */
     int focus_viewer;
     VisTile vis[MAX_TILES + MAX_FLOATS];
     int nvis;
-    Rect area;              /* viewer area */
+    Rect area;              /* viewer area, between the panes */
     int band_rows;
+    int flood_passes;       /* flood-fill passes per frame (adapts to the GPU) */
+    /* panes */
+    bool editor_open, config_open;
+    float editor_frac, config_frac;
+    Rect editor_r, config_r; /* the panes (open or collapsed to a bar) */
     /* editor */
     Editor *ed;
-    bool show_editor;
-    float editor_frac;
     char path[1024];
     u32 compiled_version;
+    int script_errors;      /* errors in the last compile */
     double edit_time;
     bool live;
     long long file_mtime;
     double next_file_check;
-    /* panels */
-    bool menu_open, config_open, help_open;
+    /* overlays */
+    int menu_viewer;        /* viewer whose menu is open, -1 none */
+    bool help_open;
     float config_scroll;
-    int modal; /* 0, 1 save as, 2 open */
+    int modal;              /* 0, 1 save as, 2 open */
     bool modal_focus;
     char modal_buf[1024];
     /* interaction */
     int drag;
-    int drag_viewer, drag_node, drag_tool, drag_float;
+    int drag_viewer, drag_node, drag_tool;
     float press_x, press_y, last_mx, last_my;
     bool moved;
-    int hover_viewer;
-    double menu_hint_until;
+    int hover_viewer;       /* viewer under the mouse (nothing above it) */
+    int hover_tile;         /* index in vis[] of the tile under the mouse, by geometry only (-1 none) */
     /* status line */
     char status[512];
     bool status_err;
@@ -90,9 +107,9 @@ static const char *welcome_script =
     "#\n"
     "# This is a script: edit it and the pictures follow as soon as there are no errors.\n"
     "# Ctrl+Enter runs it, Ctrl+S saves it, F1 shows all the keys (Cmd instead of Ctrl on a Mac).\n"
-    "# The menu button in the top-left corner of the pictures switches views and tools.\n"
-    "# Try the \"Pick point\" tool in the parameter plane: the Julia set follows the point.\n"
-    "# The language is described in docs/language.md.\n"
+    "# Move the mouse to the left edge of a picture for its tools; the menu button at the top of\n"
+    "# that strip switches and splits views. Try \"Pick point\" in the parameter plane: the Julia\n"
+    "# set follows the point. The language is described in docs/language.md.\n"
     "\n"
     "@config\n"
     ".title = \"Mandelbrot and Julia sets\"\n"
@@ -126,8 +143,9 @@ static const char *welcome_script =
     "    color = shade(.iterations)\n"
     "end\n"
     "\n"
-    "@tool \"Orbit\" \"O\"\n"
-    "w := .lastClick\n"
+    "# a tool of the julia viewer: z is the point you click\n"
+    "@julia.tool \"Orbit\" \"O\" \"timeline\"\n"
+    "w := z\n"
     "for k in 1..100 do\n"
     "    w2 := w^2 + .c\n"
     "    draw line between w and w2 with color .yellow\n"
@@ -290,11 +308,7 @@ static void shortcut_text(Shortcut sc, char *out, int cap) {
     else if (sc.key == UI_KEY_SPACE) snprintf(k, sizeof k, "Space");
     else if (sc.key < 128) snprintf(k, sizeof k, "%c", (char)sc.key);
     else snprintf(k, sizeof k, "?");
-#if FS_OS_MACOS
-    const char *mod = "Cmd+";
-#else
-    const char *mod = "Ctrl+";
-#endif
+    const char *mod = MODKEY "+";
     snprintf(out, (size_t)cap, "%s%s%s%s", sc.mods & UI_MOD_MOD ? mod : "", sc.mods & UI_MOD_SHIFT ? "Shift+" : "",
              sc.mods & UI_MOD_ALT ? "Alt+" : "", k);
 }
@@ -454,12 +468,51 @@ static int splitter_at(int n, float x, float y) {
     return r >= 0 ? r : splitter_at(nd->b, x, y);
 }
 
+
+/* ---- tools of a viewer ---------------------------------------------------------- */
+/* is `tool` (TOOL_PAN, TOOL_PICK or a script tool) offered in viewer v? */
+static bool tool_in_viewer(int tool, int v) {
+    if (tool < 0) return true;
+    int of = A.prog->tools[tool]->viewer_of;
+    return of < 0 || of == v;
+}
+
+static const char *tool_name(int tool) {
+    return tool == TOOL_PAN ? "Pan" : tool == TOOL_PICK ? "Pick point" : A.prog->tools[tool]->display;
+}
+
+static const char *tool_icon(int tool) {
+    return tool == TOOL_PAN ? "pan_tool" : tool == TOOL_PICK ? "my_location" : A.prog->tools[tool]->icon;
+}
+
+/* the first letter of the tool's name, shown when it has no (known) icon */
+static void tool_letter(int tool, char out[8]) {
+    const char *n = tool_name(tool);
+    u32 cp;
+    int len = utf8_decode(n, (int)strlen(n), &cp);
+    if (cp >= 'a' && cp <= 'z') cp -= 32;
+    out[utf8_encode(cp, out)] = 0;
+    (void)len;
+}
+
+static Shortcut tool_shortcut(int tool) {
+    if (tool == TOOL_PAN) return (Shortcut){UI_KEY_H, 0};
+    if (tool == TOOL_PICK) return (Shortcut){UI_KEY_P, 0};
+    return parse_shortcut(A.prog->tools[tool]->shortcut);
+}
+
+static void select_tool(int v, int tool, bool flash) {
+    A.vrt[v].tool = tool;
+    if (flash) A.vrt[v].strip_until = fs_time_seconds() + 1.5;
+}
+
 /* ---- program loading ------------------------------------------------------------ */
 static void free_viewers(void) {
     if (!A.prog) return;
     for (int v = 0; v < A.prog->nviewers; v++) {
         ViewerRT *rt = &A.vrt[v];
         if (rt->pipeline) gfx_viewer_destroy(rt->pipeline);
+        flood_gpu_destroy(&rt->flood);
         if (rt->target) gfx_target_destroy(rt->target);
         free(rt->snap);
         free(rt->used);
@@ -494,14 +547,24 @@ static void update_title(void) {
     platform_set_title(t);
 }
 
-/* compile `src`; on success replace the running program (keeping views) */
+static void destroy_rts(ViewerRT *vrt, int n) {
+    for (int k = 0; k < n; k++) {
+        if (vrt[k].pipeline) gfx_viewer_destroy(vrt[k].pipeline);
+        flood_gpu_destroy(&vrt[k].flood);
+        free(vrt[k].used);
+    }
+    free(vrt);
+}
+
+/* compile `src`; on success replace the running program (keeping views and tools) */
 static bool load_source(const char *src, bool reset_layout) {
     Program *p = program_load(src, A.path[0] ? A.path : "untitled");
     diags_to_editor(p);
     A.compiled_version = editor_version(A.ed);
+    A.script_errors = p->nerrors;
     if (p->nerrors) {
         set_status(true, "%d error%s in the script%s", p->nerrors, p->nerrors == 1 ? "" : "s",
-                   A.show_editor ? "" : " (Ctrl+E shows the editor)");
+                   A.editor_open ? "" : " (Ctrl+E shows it)");
         program_free(p);
         return false;
     }
@@ -513,24 +576,31 @@ static bool load_source(const char *src, bool reset_layout) {
     ViewerRT *vrt = (ViewerRT *)xcalloc((size_t)p->nviewers, sizeof(ViewerRT));
     char err[512];
     for (int v = 0; v < p->nviewers; v++) {
-        u32 n;
-        u32 *words = codegen_viewer(p, p->viewers[v], &n, err, sizeof err);
-        vrt[v].pipeline = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
-        free(words);
-        if (!vrt[v].pipeline) {
-            set_status(true, "The GPU rejected the viewer '%s': %s", p->viewers[v]->name, err);
-            for (int k = 0; k < v; k++) gfx_viewer_destroy(vrt[k].pipeline);
-            free(vrt);
+        Section *s = p->viewers[v];
+        bool ok;
+        if (s->flood) {
+            vrt[v].is_flood = true;
+            ok = flood_gpu_create(&vrt[v].flood, p, s, err, sizeof err);
+        } else {
+            u32 n;
+            u32 *words = codegen_viewer(p, s, &n, err, sizeof err);
+            vrt[v].pipeline = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
+            free(words);
+            ok = vrt[v].pipeline > 0;
+        }
+        vrt[v].used = (bool *)xcalloc((size_t)p->globals.len + 1, sizeof(bool));
+        if (!ok) {
+            set_status(true, "The GPU rejected the viewer '%s': %s", s->name, err);
+            destroy_rts(vrt, v + 1);
             program_free(p);
             return false;
         }
-        vrt[v].used = (bool *)xcalloc((size_t)p->globals.len + 1, sizeof(bool));
-        codegen_viewer_deps(p, p->viewers[v], vrt[v].used);
+        codegen_viewer_deps(p, s, vrt[v].used);
         for (int i = 0; i < p->globals.len; i++)
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
-        vrt[v].next_row = 0;
+        vrt[v].tool = TOOL_PAN;
     }
-    /* new state; keep the views and picked points of viewers that still exist */
+    /* new state; keep the views, picked points and tools of viewers that still exist */
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
     int *remap = (int *)xmalloc(sizeof(int) * (size_t)(A.prog ? A.prog->nviewers : 1));
@@ -548,6 +618,12 @@ static bool load_source(const char *src, bool reset_layout) {
                 memcpy(state + s->picked->slot, A.state + os->picked->slot, sizeof(u32) * (size_t)s->picked->type->size);
                 vrt[v].picked = true;
             }
+            int ot = A.vrt[ov].tool;
+            vrt[v].tool = ot < 0 ? ot : TOOL_PAN;
+            for (int t = 0; ot >= 0 && t < p->ntools; t++)
+                if (!strcmp(p->tools[t]->display, A.prog->tools[ot]->display) &&
+                    (p->tools[t]->viewer_of < 0 || p->tools[t]->viewer_of == v))
+                    vrt[v].tool = t;
         }
     }
     /* keep the layout if all the viewers in it still exist */
@@ -564,13 +640,6 @@ static bool load_source(const char *src, bool reset_layout) {
         A.focus_viewer = A.focus_viewer >= 0 && A.focus_viewer < A.prog->nviewers ? remap[A.focus_viewer] : 0;
         if (A.focus_viewer < 0) A.focus_viewer = 0;
     }
-    /* keep the active tool if a tool with the same name exists */
-    int tool = TOOL_PAN;
-    if (A.prog && A.active_tool == TOOL_PICK) tool = TOOL_PICK;
-    if (A.prog && A.active_tool >= 0) {
-        for (int t = 0; t < p->ntools; t++)
-            if (!strcmp(p->tools[t]->display, A.prog->tools[A.active_tool]->display)) tool = t;
-    }
     free(remap);
     free_viewers();
     if (A.prog) interp_free(&A.interp);
@@ -582,7 +651,7 @@ static bool load_source(const char *src, bool reset_layout) {
     A.uploaded = NULL;
     A.vrt = vrt;
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
-    A.active_tool = tool;
+    A.menu_viewer = -1;
     interp_init(&A.interp, p, A.state);
     A.interp.step_limit = 3e7;
     if (!keep) layout_reset(0);
@@ -607,7 +676,7 @@ static bool open_file(const char *path) {
     A.file_mtime = file_mtime(A.path);
     bool ok = load_source(src, true);
     free(src);
-    if (!ok) A.show_editor = true;
+    if (!ok) A.editor_open = true;
     else set_status(false, "Opened %s", fs_basename(path));
     return ok;
 }
@@ -642,11 +711,31 @@ static void default_save_path(char *out, int cap) {
     snprintf(out, (size_t)cap, "%s/untitled.fstream", stat(docs, &st) == 0 ? docs : home);
 }
 
-/* ---- tools ---------------------------------------------------------------------- */
+static void ask_save_as(void) {
+    A.modal = 1;
+    A.modal_focus = true;
+    if (A.path[0]) snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
+    else default_save_path(A.modal_buf, sizeof A.modal_buf);
+}
+
+static void ask_open(void) {
+    A.modal = 2;
+    A.modal_focus = true;
+    snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
+}
+
+/* ---- running tools ----------------------------------------------------------------- */
 static void run_tool(int tool, int viewer, float re, float im) {
     Program *p = A.prog;
     set_c(p->s_last_click, re, im);
     set_c(p->s_mouse, re, im);
+    /* remember the picked points: a tool that moves one makes its marker appear */
+    float before[64][2];
+    for (int v = 0; v < p->nviewers && v < 64; v++) {
+        Sym *ps = p->viewers[v]->picked;
+        before[v][0] = ps ? wf(A.state[ps->slot]) : 0;
+        before[v][1] = ps ? wf(A.state[ps->slot + 1]) : 0;
+    }
     DrawItemVec out = {0};
     A.interp.draws = &out;
     if (!interp_run_tool(&A.interp, p->tools[tool], re, im)) set_status(true, "%s: %s", p->tools[tool]->display, A.interp.error);
@@ -655,6 +744,12 @@ static void run_tool(int tool, int viewer, float re, float im) {
         if (out.data[k].viewer < 0) out.data[k].viewer = viewer;
     vec_free(A.draws[tool]);
     A.draws[tool] = out;
+    for (int v = 0; v < p->nviewers && v < 64; v++) {
+        Sym *ps = p->viewers[v]->picked;
+        if (ps && (wf(A.state[ps->slot]) != before[v][0] || wf(A.state[ps->slot + 1]) != before[v][1]))
+            for (int w = 0; w < p->nviewers; w++)
+                if (p->viewers[w]->picked == ps) A.vrt[w].picked = true;
+    }
 }
 
 static void pick(int viewer, float re, float im) {
@@ -665,7 +760,6 @@ static void pick(int viewer, float re, float im) {
     memset(dst, 0, sizeof(u32) * (size_t)s->picked->type->size);
     dst[0] = fw(re);
     dst[1] = fw(im);
-    A.vrt[viewer].picked = true;
     /* every viewer sharing this variable shows the marker */
     for (int v = 0; v < A.prog->nviewers; v++)
         if (A.prog->viewers[v]->picked == s->picked) A.vrt[v].picked = true;
@@ -707,13 +801,7 @@ static void reset_view(int v) {
     memcpy(A.state + s->radius->slot, A.prog->initial_state + s->radius->slot, 4);
 }
 
-static bool tool_pans(void) {
-    if (A.active_tool == TOOL_PAN) return true;
-    if (A.active_tool >= 0) return A.prog->tools[A.active_tool]->panning;
-    return false;
-}
-
-/* ---- viewer interaction ------------------------------------------------------------ */
+/* ---- dropping a view somewhere -------------------------------------------------------- */
 static int drop_zone(float x, float y, int *leaf, Rect *hl) {
     Rect ar = A.area;
     if (!in_rect(ar, x, y)) return DROP_NONE;
@@ -751,16 +839,13 @@ static void apply_drop(int viewer, float x, float y) {
     int leaf = -1;
     Rect hl;
     int z = drop_zone(x, y, &leaf, &hl);
-    if (getenv("FS_DEBUG")) fprintf(stderr, "drop viewer %d at %g,%g zone %d leaf %d\n", viewer, x, y, z, leaf);
     if (z == DROP_NONE) return;
     if (z == DROP_FLOAT) {
         if (find_leaf(A.root, viewer) >= 0 && count_leaves(A.root) == 1) {
             set_status(true, "The last view on screen can't float");
             return;
         }
-        int old = A.floats[leaf];
         detach_viewer(viewer);
-        (void)old;
         A.floats[leaf] = viewer;
         A.focus_viewer = viewer;
         return;
@@ -768,6 +853,9 @@ static void apply_drop(int viewer, float x, float y) {
     if (z == DROP_REPLACE) show_in_leaf(leaf, viewer);
     else split_leaf(leaf, z, viewer);
 }
+
+/* ---- viewer interaction ------------------------------------------------------------ */
+static int tile_layer(const VisTile *t) { return t->fl >= 0 ? UI_LAYER_PANEL : UI_LAYER_BASE; }
 
 static void viewer_interaction(void) {
     const UiInput *in = &A.in;
@@ -791,12 +879,10 @@ static void viewer_interaction(void) {
         return;
     }
     /* which tile is under the mouse (floats first) */
-    int hit = -1;
-    for (int i = A.nvis - 1; i >= 0; i--)
-        if (in_rect(A.vis[i].r, mx, my)) { hit = i; break; }
+    int hit = A.hover_tile;
     bool over = false;
     if (hit >= 0) {
-        int prev = ui_layer(A.vis[hit].fl >= 0 ? UI_LAYER_PANEL : UI_LAYER_BASE);
+        int prev = ui_layer(tile_layer(&A.vis[hit]));
         over = ui_mouse_over(A.vis[hit].r.x, A.vis[hit].r.y, A.vis[hit].r.w, A.vis[hit].r.h);
         ui_layer(prev);
     }
@@ -807,7 +893,10 @@ static void viewer_interaction(void) {
         VisTile *t = NULL;
         for (int i = 0; i < A.nvis; i++)
             if (A.vis[i].viewer == A.drag_viewer) t = &A.vis[i];
-        if (!t) { A.drag = DRAG_NONE; return; }
+        if (!t) {
+            A.drag = DRAG_NONE;
+            return;
+        }
         float dx = mx - A.last_mx, dy = my - A.last_my;
         if (fabsf(mx - A.press_x) + fabsf(my - A.press_y) > px(4)) A.moved = true;
         float re, im;
@@ -826,7 +915,7 @@ static void viewer_interaction(void) {
             if ((dx || dy) && A.drag_tool >= 0 && A.drag_tool < p->ntools) run_tool(A.drag_tool, t->viewer, re, im);
             platform_set_cursor(UI_CURSOR_CROSSHAIR);
             break;
-        case DRAG_CLICK: /* panning tool: drag pans, a click runs the tool */
+        case DRAG_CLICK: /* a tool with .panning: dragging pans, a click runs the tool */
             if (A.moved && (dx || dy)) pan_by(t->viewer, t->r, dx, dy);
             if (in->mouse_released[0] && !A.moved && A.drag_tool >= 0 && A.drag_tool < p->ntools)
                 run_tool(A.drag_tool, t->viewer, re, im);
@@ -837,32 +926,28 @@ static void viewer_interaction(void) {
         A.last_my = my;
         return;
     }
-    /* splitters */
+    /* splitters between tiles */
     int sp = in_rect(A.area, mx, my) ? splitter_at(A.root, mx, my) : -1;
-    if (sp >= 0) {
-        bool over_float = hit >= 0 && A.vis[hit].fl >= 0;
-        if (!over_float && ui_mouse_over(mx - 1, my - 1, 2, 2)) {
-            platform_set_cursor(A.nodes[sp].kind == N_HSPLIT ? UI_CURSOR_HRESIZE : UI_CURSOR_VRESIZE);
-            if (in->mouse_pressed[0]) {
-                A.drag = DRAG_SPLIT;
-                A.drag_node = sp;
-            }
-            return;
+    if (sp >= 0 && !(hit >= 0 && A.vis[hit].fl >= 0) && ui_mouse_over(mx - 1, my - 1, 2, 2)) {
+        platform_set_cursor(A.nodes[sp].kind == N_HSPLIT ? UI_CURSOR_HRESIZE : UI_CURSOR_VRESIZE);
+        if (in->mouse_pressed[0]) {
+            A.drag = DRAG_SPLIT;
+            A.drag_node = sp;
         }
+        return;
     }
     if (!over) return;
     VisTile *t = &A.vis[hit];
     int v = t->viewer;
+    ViewerRT *rt = &A.vrt[v];
     float re, im;
     plane_of(v, t->r, mx, my, &re, &im);
     if (re != wf(A.state[p->s_mouse->slot]) || im != wf(A.state[p->s_mouse->slot + 1])) {
         set_c(p->s_mouse, re, im);
-        if (A.active_tool >= 0 && p->tools[A.active_tool]->hover && (mx != A.last_mx || my != A.last_my))
-            run_tool(A.active_tool, v, re, im);
+        if (rt->tool >= 0 && p->tools[rt->tool]->hover && (mx != A.last_mx || my != A.last_my)) run_tool(rt->tool, v, re, im);
     }
-    /* wheel zoom */
     if (in->scroll_y != 0) zoom_at(v, t->r, mx, my, powf(0.85f, in->scroll_y));
-    /* float border: drag to move the view somewhere else; corner x closes it */
+    /* the border of a floating view: drag it somewhere else */
     if (t->fl >= 0) {
         float b = px(7);
         Rect inner = {t->r.x + b, t->r.y + b, t->r.w - 2 * b, t->r.h - 2 * b};
@@ -879,25 +964,25 @@ static void viewer_interaction(void) {
     }
     bool space = in->key_down[UI_KEY_SPACE] && !ui_wants_keyboard();
     int button = in->mouse_pressed[0] ? 0 : in->mouse_pressed[1] ? 1 : in->mouse_pressed[2] ? 2 : -1;
-    platform_set_cursor(A.active_tool == TOOL_PAN || space ? UI_CURSOR_HAND : UI_CURSOR_CROSSHAIR);
+    platform_set_cursor(rt->tool == TOOL_PAN || space ? UI_CURSOR_HAND : UI_CURSOR_CROSSHAIR);
     if (button < 0) return;
     A.focus_viewer = v;
     A.drag_viewer = v;
     A.press_x = A.last_mx = mx;
     A.press_y = A.last_my = my;
     A.moved = false;
-    A.drag_tool = A.active_tool;
-    if (button != 0 || space || A.active_tool == TOOL_PAN) {
+    A.drag_tool = rt->tool;
+    if (button != 0 || space || rt->tool == TOOL_PAN) {
         A.drag = DRAG_PAN;
         if (button == 0) set_c(p->s_last_click, re, im);
-    } else if (A.active_tool == TOOL_PICK) {
+    } else if (rt->tool == TOOL_PICK) {
         A.drag = DRAG_PICK;
         pick(v, re, im);
-    } else if (tool_pans()) {
+    } else if (p->tools[rt->tool]->panning) {
         A.drag = DRAG_CLICK;
     } else {
         A.drag = DRAG_TOOL;
-        run_tool(A.active_tool, v, re, im);
+        run_tool(rt->tool, v, re, im);
     }
     ui_set_mouse_captured(true);
 }
@@ -927,6 +1012,7 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
             ui_line(x0, y0, x1, y1, w, col);
             break;
         case DRAW_POINT:
+            if (!(fabsf(x0) < 1e6f && fabsf(y0) < 1e6f)) break;
             ui_disk(x0, y0, px(4.5f), shadow);
             ui_disk(x0, y0, px(3.2f), col);
             break;
@@ -937,8 +1023,7 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
                 pixel_of(t->viewer, t->r, d->p0[0] + d->radius, d->p0[1], &xr, &yr);
                 r = sqrtf((xr - x0) * (xr - x0) + (yr - y0) * (yr - y0));
             }
-            if (!(fabsf(x0) < 1e6f)) break;
-            if (!(r < 1e6f)) break;
+            if (!(fabsf(x0) < 1e6f && fabsf(y0) < 1e6f) || !(r < 1e6f)) break;
             if (d->shape == DRAW_DISK) {
                 ui_disk(x0, y0, r, col);
             } else {
@@ -951,6 +1036,7 @@ static void draw_items(VisTile *t, const DrawItemVec *items) {
     }
 }
 
+/* the picture, the drawings, the picked point and the name */
 static void draw_tile(VisTile *t) {
     Program *p = A.prog;
     ViewerRT *rt = &A.vrt[t->viewer];
@@ -958,7 +1044,6 @@ static void draw_tile(VisTile *t) {
     ui_push_clip(r.x, r.y, r.w, r.h);
     if (rt->target) ui_image(rt->target, r.x, r.y, (float)rt->tw, (float)rt->th);
     for (int tool = 0; tool < p->ntools; tool++) draw_items(t, &A.draws[tool]);
-    /* picked point */
     Section *s = p->viewers[t->viewer];
     if (rt->picked && s->picked) {
         float x, y;
@@ -970,26 +1055,84 @@ static void draw_tile(VisTile *t) {
     if (several || t->fl >= 0) {
         const char *name = s->display ? s->display : s->name;
         float tw = ui_text_width(UI_FONT_SANS, name, -1) + px(12), th = ui_font_line_height(UI_FONT_SANS) + px(4);
-        ui_rrect(r.x + px(6), r.y + r.h - th - px(6), tw, th, px(4), UI_RGBA(0, 0, 0, 120));
-        ui_text(UI_FONT_SANS, r.x + px(12), r.y + r.h - th - px(4), name, -1, UI_RGBA(255, 255, 255, 200));
+        ui_rrect(r.x + r.w - tw - px(6), r.y + r.h - th - px(6), tw, th, px(4), UI_RGBA(0, 0, 0, 120));
+        ui_text(UI_FONT_SANS, r.x + r.w - tw, r.y + r.h - th - px(4), name, -1, UI_RGBA(255, 255, 255, 200));
     }
     if (t->fl >= 0) ui_rect_outline(r.x, r.y, r.w, r.h, px(2), A.hover_viewer == t->viewer ? UI_COL_ACCENT : UI_COL_BORDER);
     else if (several && A.focus_viewer == t->viewer) ui_rect_outline(r.x, r.y, r.w, r.h, px(1), UI_COL_ACCENT_DIM);
     ui_pop_clip();
-    /* close button for tiles (when there are several) and floats */
+}
+
+/* The tool strip at the left edge of a tile (menu, Pan, Pick point, the viewer's tools), shown when the
+ * mouse comes near that edge; otherwise a small badge shows the selected tool.  Also the close button. */
+static float strip_button(void) { return px(34); }
+
+static void tile_chrome(int i) {
+    VisTile *t = &A.vis[i];
+    Program *p = A.prog;
+    int v = t->viewer;
+    ViewerRT *rt = &A.vrt[v];
+    Rect r = t->r;
+    float mx = A.in.mouse_x, my = A.in.mouse_y;
+    float b = strip_button(), pad = px(4), gap = px(2);
+    bool mouse_here = A.hover_tile == i && A.in.mouse_in_window;
+    bool dragging = A.drag != DRAG_NONE;
+    int prev = ui_layer(UI_LAYER_PANEL);
+    ui_push_clip(r.x, r.y, r.w, r.h);
+    /* which buttons */
+    int tools[66], n = 0;
+    tools[n++] = TOOL_PAN;
+    if (p->viewers[v]->picked) tools[n++] = TOOL_PICK;
+    for (int k = 0; k < p->ntools && n < 66; k++)
+        if (tool_in_viewer(k, v)) tools[n++] = k;
+    float sx = r.x + px(6), sy = r.y + px(6);
+    float sh = pad * 2 + b * (n + 1) + gap * n + px(6);
+    bool is_near = mouse_here && mx < r.x + b + px(40) && my < sy + sh + px(20);
+    bool show = !dragging && (is_near || fs_time_seconds() < rt->strip_until || A.menu_viewer == v);
+    if (show) {
+        ui_panel_ex(sx, sy, b + 2 * pad, FS_MIN(sh, r.h - px(12)), UI_RGBA(20, 22, 28, 215), px(8));
+        float y = sy + pad;
+        char id[64], letter[8], tip[160], sc[48];
+        snprintf(id, sizeof id, "##strip_menu%d", v);
+        if (ui_icon_button_ex(id, "menu", "=", sx + pad, y, b, A.menu_viewer == v ? UI_SELECTED : UI_FLAT))
+            A.menu_viewer = A.menu_viewer == v ? -1 : v;
+        ui_tooltip("Views and tools (Esc)");
+        y += b + px(6);
+        ui_rect(sx + pad + px(4), y - px(4), b - px(8), px(1), UI_COL_BORDER);
+        for (int k = 0; k < n; k++) {
+            if (y + b > r.y + r.h - px(6)) break; /* the menu lists the rest */
+            int tool = tools[k];
+            tool_letter(tool, letter);
+            snprintf(id, sizeof id, "##strip_tool%d_%d", v, tool);
+            if (ui_icon_button_ex(id, tool_icon(tool), letter, sx + pad, y, b, rt->tool == tool ? UI_SELECTED : UI_FLAT))
+                select_tool(v, tool, false);
+            shortcut_text(tool_shortcut(tool), sc, sizeof sc);
+            snprintf(tip, sizeof tip, "%s%s%s%s", tool_name(tool), sc[0] ? " (" : "", sc, sc[0] ? ")" : "");
+            ui_tooltip(tip);
+            y += b + gap;
+        }
+    } else if (!dragging) {
+        /* badge: the selected tool */
+        float bs = px(26);
+        char letter[8];
+        tool_letter(rt->tool, letter);
+        ui_rrect(sx, sy, bs, bs, px(6), UI_RGBA(20, 22, 28, 150));
+        ui_icon(tool_icon(rt->tool), letter, sx, sy, bs, UI_RGBA(230, 235, 245, 200));
+    }
+    /* close button */
     bool closable = t->fl >= 0 || count_leaves(A.root) > 1;
-    if (closable && A.hover_viewer == t->viewer && A.drag == DRAG_NONE) {
-        float b = px(22);
-        int prev = ui_layer(UI_LAYER_PANEL);
+    if (closable && mouse_here && !dragging) {
         char id[32];
-        snprintf(id, sizeof id, "×##close%d", t->viewer);
-        if (ui_button_ex(id, r.x + r.w - b - px(8), r.y + px(8), b, b, 0)) {
+        snprintf(id, sizeof id, "##close%d", v);
+        if (ui_icon_button_ex(id, "close", "x", r.x + r.w - px(30), r.y + px(6), px(24), UI_FLAT)) {
             if (t->fl >= 0) A.floats[t->fl] = -1;
             else remove_leaf(t->node);
+            if (A.menu_viewer == v) A.menu_viewer = -1;
         }
         ui_tooltip("Close this view");
-        ui_layer(prev);
     }
+    ui_pop_clip();
+    ui_layer(prev);
 }
 
 static void ensure_target(int v, int w, int h) {
@@ -1004,49 +1147,46 @@ static void ensure_target(int v, int w, int h) {
     rt->rendered = false;
 }
 
-/* ---- panels ------------------------------------------------------------------------- */
-static void hamburger(float W, float H) {
-    float s = px(36), m = px(10);
-    Rect b = {A.area.x + m, A.area.y + m, s, s};
-    float mx = A.in.mouse_x, my = A.in.mouse_y;
-    bool is_near = mx < b.x + px(140) && my < b.y + px(140) && mx >= A.area.x && A.in.mouse_in_window;
-    bool show = is_near || A.menu_open || fs_time_seconds() < A.menu_hint_until;
-    if (!show) return;
-    int prev = ui_layer(UI_LAYER_PANEL);
-    ui_rrect(b.x, b.y, b.w, b.h, px(6), UI_RGBA(20, 22, 28, 200));
-    UiInteract it = ui_interact("##hamburger", b.x, b.y, b.w, b.h);
-    u32 col = it.hovered ? UI_COL_ACCENT_HOVER : UI_COL_TEXT;
-    for (int k = 0; k < 3; k++) ui_rect(b.x + px(9), b.y + px(11) + k * px(7), b.w - px(18), px(2.5f), col);
-    if (it.clicked) A.menu_open = !A.menu_open;
-    if (it.hovered) ui_tooltip_now("Menu: views, tools and settings (Esc)");
-    ui_layer(prev);
-    (void)W;
-    (void)H;
-}
-
+/* ---- the menu of a tile -------------------------------------------------------------- */
 /* a button with a second, dimmer line (shortcut); returns 1 on click, 2 when dragged */
-static int menu_button(const char *id, const char *label, const char *sub, Rect r, bool selected, bool draggable) {
+static int menu_button(const char *id, const char *icon, const char *letter, const char *label, const char *sub, Rect r,
+                       bool selected, bool draggable) {
     UiInteract it = ui_interact(id, r.x, r.y, r.w, r.h);
     u32 fill = selected ? UI_COL_ACCENT_DIM : it.held ? UI_COL_WIDGET_ACTIVE : it.hovered ? UI_COL_WIDGET_HOVER : UI_COL_WIDGET;
     ui_rrect(r.x, r.y, r.w, r.h, px(6), fill);
     if (selected) ui_rrect_outline(r.x, r.y, r.w, r.h, px(6), px(1.5f), UI_COL_ACCENT);
     float lh = ui_font_line_height(UI_FONT_SANS);
+    float ix = 0;
+    if (icon || letter) {
+        float is = px(26);
+        ui_icon(icon, letter, r.x + px(10), r.y + (r.h - is) / 2, is, UI_COL_TEXT);
+        ix = is + px(8);
+    }
     float ty = sub && sub[0] ? r.y + r.h / 2 - lh + px(1) : r.y + (r.h - lh) / 2;
-    ui_label(r.x + px(6), ty, r.w - px(12), lh, label, UI_ALIGN_CENTER, UI_COL_TEXT);
-    if (sub && sub[0]) ui_label(r.x + px(6), ty + lh, r.w - px(12), lh, sub, UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
+    ui_label(r.x + px(8) + ix, ty, r.w - px(16) - ix, lh, label, ix ? UI_ALIGN_LEFT : UI_ALIGN_CENTER, UI_COL_TEXT);
+    if (sub && sub[0]) ui_label(r.x + px(8) + ix, ty + lh, r.w - px(16) - ix, lh, sub, ix ? UI_ALIGN_LEFT : UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
     if (draggable && it.held && fabsf(A.in.mouse_x - it.press_x) + fabsf(A.in.mouse_y - it.press_y) > px(8)) return 2;
     return it.clicked ? 1 : 0;
 }
 
 static void menu_overlay(float W, float H) {
-    if (!A.menu_open) return;
+    int mv = A.menu_viewer;
+    if (mv < 0 || !A.prog || mv >= A.prog->nviewers) {
+        A.menu_viewer = -1;
+        return;
+    }
     Program *p = A.prog;
     int prev = ui_layer(UI_LAYER_MENU);
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 175), 0);
     UiInteract bg = ui_interact("##menu_bg", 0, 0, W, H);
     ui_layer(UI_LAYER_POPUP); /* the panel and its buttons sit above the click-catcher */
-    float bw = px(170), bh = px(54), gap = px(12);
-    int nviews = 2 + p->nviewers, ntools = 2 + p->ntools;
+    int tools[66], ntools = 0;
+    tools[ntools++] = TOOL_PAN;
+    if (p->viewers[mv]->picked) tools[ntools++] = TOOL_PICK;
+    for (int k = 0; k < p->ntools && ntools < 66; k++)
+        if (tool_in_viewer(k, mv)) tools[ntools++] = k;
+    float bw = px(190), bh = px(54), gap = px(12);
+    int nviews = p->nviewers + 2;
     int cols = (int)FS_MAX(1.0f, FS_MIN((W - px(80)) / (bw + gap), 5.0f));
     int rows_top = (nviews + cols - 1) / cols, rows_bot = (ntools + cols - 1) / cols;
     float pw = cols * (bw + gap) + gap;
@@ -1055,75 +1195,148 @@ static void menu_overlay(float W, float H) {
     Rect pr = {(W - pw) / 2, FS_MAX((H - ph) / 2, px(10)), pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 240), px(10));
     float y = pr.y + px(12);
-    ui_text(UI_FONT_SANS, pr.x + gap, y, "Views", -1, UI_COL_TEXT_DIM);
+    ui_text(UI_FONT_SANS, pr.x + gap, y, "Views (click: show here, drag: split or float)", -1, UI_COL_TEXT_DIM);
     y += head - px(10);
-    char sub[64], id[64];
+    char sub[64], id[64], label[160], letter[8];
     for (int k = 0; k < nviews; k++) {
         Rect r = {pr.x + gap + (k % cols) * (bw + gap), y + (k / cols) * (bh + gap), bw, bh};
-        if (k == 0) {
-            if (menu_button("##m_config", "Config", "", r, A.config_open, false) == 1) {
-                A.config_open = !A.config_open;
-                A.menu_open = false;
+        if (k == p->nviewers) {
+            const char *eh = MODKEY "+E";
+            if (menu_button("##m_editor", "code", NULL, "Script", eh, r, A.editor_open, false) == 1) {
+                A.editor_open = !A.editor_open;
+                A.menu_viewer = -1;
             }
-        } else if (k == 1) {
-#if FS_OS_MACOS
-            const char *eh = "Cmd+E";
-#else
-            const char *eh = "Ctrl+E";
-#endif
-            if (menu_button("##m_editor", "Editor", eh, r, A.show_editor, false) == 1) {
-                A.show_editor = !A.show_editor;
-                A.menu_open = false;
-            }
-        } else {
-            int v = k - 2;
-            Section *s = p->viewers[v];
-            shortcut_text(viewer_shortcut(v), sub, sizeof sub);
-            snprintf(id, sizeof id, "##m_view%d", v);
-            int res = menu_button(id, s->display ? s->display : s->name, sub, r, viewer_visible(v), true);
-            if (res == 1) {
-                int leaf = find_leaf(A.root, A.focus_viewer);
-                if (leaf < 0) leaf = find_leaf(A.root, A.vis[0].viewer);
-                if (!viewer_visible(v) && leaf >= 0) show_in_leaf(leaf, v);
-                A.focus_viewer = v;
-                A.menu_open = false;
-            } else if (res == 2) {
-                if (getenv("FS_DEBUG")) fprintf(stderr, "drag start viewer %d\n", v);
-                A.drag = DRAG_VIEWER;
-                A.drag_viewer = v;
-                A.menu_open = false;
-                ui_reset_interaction();
-            }
-            if (ui_last_hovered()) ui_tooltip("Click to show here, or drag onto the screen: middle replaces, sides split, corners float");
+            continue;
         }
+        if (k == p->nviewers + 1) {
+            const char *ch = MODKEY "+T";
+            if (menu_button("##m_config", "tune", NULL, "Config", ch, r, A.config_open, false) == 1) {
+                A.config_open = !A.config_open;
+                A.menu_viewer = -1;
+            }
+            continue;
+        }
+        int v = k;
+        Section *s = p->viewers[v];
+        shortcut_text(viewer_shortcut(v), sub, sizeof sub);
+        snprintf(id, sizeof id, "##m_view%d", v);
+        int res = menu_button(id, s->projective ? "public" : "crop_free", NULL, s->display ? s->display : s->name, sub, r,
+                              viewer_visible(v), true);
+        if (res == 1) {
+            int leaf = find_leaf(A.root, mv);
+            if (leaf >= 0) show_in_leaf(leaf, v);
+            else {
+                int f = find_float(mv);
+                if (f >= 0 && !viewer_visible(v)) A.floats[f] = v;
+            }
+            A.focus_viewer = v;
+            A.menu_viewer = -1;
+        } else if (res == 2) {
+            A.drag = DRAG_VIEWER;
+            A.drag_viewer = v;
+            A.menu_viewer = -1;
+            ui_reset_interaction();
+        }
+        if (ui_last_hovered()) ui_tooltip("Click to show it here, or drag it onto the screen: middle replaces, sides split, corners float");
     }
     y += rows_top * (bh + gap) + px(8);
     ui_separator(pr.x + gap, y, pr.w - 2 * gap);
     y += px(14);
-    ui_text(UI_FONT_SANS, pr.x + gap, y, "Tools", -1, UI_COL_TEXT_DIM);
+    snprintf(label, sizeof label, "Tools of %s", p->viewers[mv]->display ? p->viewers[mv]->display : p->viewers[mv]->name);
+    ui_text(UI_FONT_SANS, pr.x + gap, y, label, -1, UI_COL_TEXT_DIM);
     y += head - px(10);
     for (int k = 0; k < ntools; k++) {
         Rect r = {pr.x + gap + (k % cols) * (bw + gap), y + (k / cols) * (bh + gap), bw, bh};
-        int tool = k - 2;
-        const char *label = tool == TOOL_PAN ? "Pan" : tool == TOOL_PICK ? "Pick point" : p->tools[tool]->display;
-        Shortcut sc = tool == TOOL_PAN ? (Shortcut){UI_KEY_H, 0} : tool == TOOL_PICK ? (Shortcut){UI_KEY_P, 0}
-                                                                                    : parse_shortcut(p->tools[tool]->shortcut);
-        shortcut_text(sc, sub, sizeof sub);
-        snprintf(id, sizeof id, "##m_tool%d", k);
-        if (menu_button(id, label, sub, r, A.active_tool == tool, false) == 1) {
-            A.active_tool = tool;
-            A.menu_open = false;
+        int tool = tools[k];
+        shortcut_text(tool_shortcut(tool), sub, sizeof sub);
+        snprintf(id, sizeof id, "##m_tool%d", tool);
+        tool_letter(tool, letter);
+        if (menu_button(id, tool_icon(tool), letter, tool_name(tool), sub, r, A.vrt[mv].tool == tool, false) == 1) {
+            select_tool(mv, tool, false);
+            A.menu_viewer = -1;
         }
     }
     y += rows_bot * (bh + gap);
     ui_label(pr.x + gap, y, pr.w - 2 * gap, ui_font_line_height(UI_FONT_SANS),
              "Wheel: zoom   Right/middle drag or Space+drag: pan   Home: reset view   F1: help", UI_ALIGN_CENTER,
              UI_COL_TEXT_DIM);
-    if (bg.clicked && !in_rect(pr, A.in.mouse_x, A.in.mouse_y)) {
-        if (getenv("FS_DEBUG")) fprintf(stderr, "menu bg click\n");
-        A.menu_open = false;
-    }
+    if (bg.clicked && !in_rect(pr, A.in.mouse_x, A.in.mouse_y)) A.menu_viewer = -1;
     ui_layer(prev);
+}
+
+/* ---- side panes ----------------------------------------------------------------------- */
+static float pane_bar(void) { return px(30); }
+
+/* a collapsed pane: a thin bar with an icon; a click opens it */
+static bool collapsed_bar(const char *id, Rect r, const char *icon, const char *arrow, const char *tip, bool alert) {
+    ui_panel_ex(r.x, r.y, r.w, r.h, UI_COL_PANEL, 0);
+    UiInteract it = ui_interact(id, r.x, r.y, r.w, r.h);
+    if (it.hovered) ui_rect(r.x, r.y, r.w, r.h, UI_RGBA(255, 255, 255, 12));
+    float s = px(22);
+    ui_icon(icon, NULL, r.x + (r.w - s) / 2, r.y + px(10), s, it.hovered ? UI_COL_ACCENT_HOVER : UI_COL_TEXT_DIM);
+    ui_icon(arrow, NULL, r.x + (r.w - s) / 2, r.y + px(38), s, it.hovered ? UI_COL_ACCENT_HOVER : UI_COL_TEXT_DIM);
+    if (alert) ui_disk(r.x + r.w / 2, r.y + px(76), px(4), UI_COL_ERROR);
+    if (it.hovered) ui_tooltip_now(tip);
+    return it.clicked;
+}
+
+/* the splitter at a pane's inner edge; returns the new edge position while dragged, else NAN */
+static float pane_splitter(const char *id, float x, float H) {
+    float g = px(5);
+    int prev = ui_layer(UI_LAYER_PANEL);
+    UiInteract it = ui_interact(id, x - g, 0, 2 * g, H);
+    ui_layer(prev);
+    if (it.hovered || it.held) ui_set_cursor(UI_CURSOR_HRESIZE);
+    if (it.held) return A.in.mouse_x;
+    return NAN;
+}
+
+static void editor_pane(float H) {
+    Rect r = A.editor_r;
+    if (!A.editor_open) {
+        bool errors = A.prog == NULL || A.script_errors > 0;
+        const char *tip = "Show the script (" MODKEY "+E)";
+        if (collapsed_bar("##editor_bar", r, "code", "chevron_right", tip, errors)) A.editor_open = true;
+        ui_rect(r.x + r.w - px(1), 0, px(1), H, UI_COL_BORDER);
+        return;
+    }
+    float ew = r.w;
+    float bh = px(40);
+    ui_panel_ex(0, 0, ew, bh, UI_COL_PANEL_HI, 0);
+    float x = px(8), y = px(6), bhh = bh - px(12);
+    ui_push_clip(0, 0, ew - bhh - px(8), bh);
+    bool wide = ew > px(340);
+    float lh = ui_font_line_height(UI_FONT_SANS);
+    float rw = wide ? ui_text_width(UI_FONT_SANS, "Run", -1) + bhh + px(12) : bhh;
+    if (ui_button_ex("##run", x, y, rw, bhh, UI_ACCENT)) run_editor();
+    ui_tooltip("Run the script (" MODKEY "+Enter)");
+    ui_icon("play_arrow", ">", x + (wide ? px(2) : 0), y, bhh, UI_COL_ON_ACCENT);
+    if (wide) ui_text(UI_FONT_SANS, x + bhh, y + (bhh - lh) / 2, "Run", -1, UI_COL_ON_ACCENT);
+    x += rw + px(6);
+    if (ui_icon_button_ex("##save", "save", "S", x, y, bhh, 0)) {
+        if (A.path[0]) save_file(A.path);
+        else ask_save_as();
+    }
+    ui_tooltip("Save (" MODKEY "+S), save as (" MODKEY "+Shift+S)");
+    x += bhh + px(4);
+    if (ui_icon_button_ex("##open", "folder_open", "O", x, y, bhh, 0)) ask_open();
+    ui_tooltip("Open a script (" MODKEY "+O), or drop it on the window");
+    x += bhh + px(10);
+    ui_toggle("Live", x, y + px(3), px(64), bhh - px(6), &A.live);
+    ui_tooltip("Run the script automatically shortly after you stop typing");
+    x += px(70);
+    ui_pop_clip();
+    /* collapse */
+    if (ui_icon_button_ex("##editor_collapse", "chevron_left", "<", ew - bhh - px(6), y, bhh, UI_FLAT)) A.editor_open = false;
+    ui_tooltip("Hide the script (" MODKEY "+E)");
+    char name[300];
+    snprintf(name, sizeof name, "%.250s%s", A.path[0] ? fs_basename(A.path) : "untitled", editor_is_modified(A.ed) ? " *" : "");
+    if (x < ew - bhh - px(50)) ui_label(x, y, ew - x - bhh - px(16), bhh, name, UI_ALIGN_RIGHT, UI_COL_TEXT_DIM);
+    editor_set_clock(A.ed, fs_time_seconds());
+    editor_ui(A.ed, 0, bh, ew, H - bh, false);
+    ui_rect(ew - px(1), 0, px(1), H, UI_COL_BORDER);
+    float nx = pane_splitter("##editor_split", ew, H);
+    if (nx == nx && A.in.fb_w > 0) A.editor_frac = FS_CLAMP(nx / (float)A.in.fb_w, 0.15f, 0.8f);
 }
 
 static float config_row_h(void) { return px(30); }
@@ -1190,18 +1403,50 @@ static void config_number(Sym *s, float x, float y, float w) {
     }
 }
 
-static void config_panel(float W, float H) {
-    if (!A.config_open || A.menu_open) return;
+/* which globals the config pane shows in each group: script variables, views, iteration settings */
+static bool config_shows(Program *p, Sym *s, int group) {
+    if (group == 0) return s->is_config;
+    if (group == 1) return s->viewer_index >= 0 && !s->is_internal;
+    return s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
+}
+
+static void config_label(Sym *s, char *out, int cap) { snprintf(out, (size_t)cap, "%s%s", s->is_internal ? "." : "", s->name); }
+
+static void config_pane(float W, float H) {
+    Rect pr = A.config_r;
+    const char *key = MODKEY "+T";
+    if (!A.config_open) {
+        char tip[64];
+        snprintf(tip, sizeof tip, "Show the config (%s)", key);
+        if (collapsed_bar("##config_bar", pr, "tune", "chevron_left", tip, false)) A.config_open = true;
+        ui_rect(pr.x, 0, px(1), H, UI_COL_BORDER);
+        return;
+    }
     Program *p = A.prog;
-    float pw = FS_MIN(px(420), W * 0.9f), m = px(10);
-    Rect pr = {W - pw - m, A.area.y + m, pw, H - A.area.y - 2 * m};
-    int prev = ui_layer(UI_LAYER_MENU);
-    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 245), px(8));
+    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
+    ui_rect(pr.x, 0, px(1), H, UI_COL_BORDER);
+    float bh = px(40);
+    ui_panel_ex(pr.x, 0, pr.w, bh, UI_COL_PANEL_HI, 0);
+    ui_text(UI_FONT_SANS, pr.x + px(14), px(11), "Config", -1, UI_COL_TEXT);
+    if (ui_icon_button_ex("##config_collapse", "chevron_right", ">", pr.x + pr.w - px(34), px(6), px(28), UI_FLAT))
+        A.config_open = false;
+    char tip[64];
+    snprintf(tip, sizeof tip, "Hide the config (%s)", key);
+    ui_tooltip(tip);
+    float nx = pane_splitter("##config_split", pr.x, H);
+    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((W - nx) / W, 0.12f, 0.6f);
+    if (!p) return;
     float rh = config_row_h();
-    float lw = pr.w * 0.38f;
-    ui_text(UI_FONT_SANS, pr.x + px(14), pr.y + px(10), "Config", -1, UI_COL_TEXT);
-    if (ui_button_ex("×##cfg_close", pr.x + pr.w - px(34), pr.y + px(6), px(26), px(26), UI_FLAT)) A.config_open = false;
-    Rect body = {pr.x + px(4), pr.y + px(42), pr.w - px(8), pr.h - px(48)};
+    float lw = px(60);
+    for (int group = 0; group < 3; group++)
+        for (int i = 0; i < p->globals.len; i++)
+            if (config_shows(p, p->globals.data[i], group)) {
+                char label[128];
+                config_label(p->globals.data[i], label, sizeof label);
+                lw = FS_MAX(lw, ui_text_width(UI_FONT_SANS, label, -1) + px(24));
+            }
+    lw = FS_MIN(lw, pr.w * 0.55f);
+    Rect body = {pr.x + px(4), bh + px(4), pr.w - px(8), pr.h - bh - px(8)};
     A.config_scroll += ui_scroll_area(body.x, body.y, body.w, body.h);
     ui_push_clip(body.x, body.y, body.w, body.h);
     float y = body.y - A.config_scroll + px(4);
@@ -1210,22 +1455,16 @@ static void config_panel(float W, float H) {
     for (int group = 0; group < 3; group++) {
         const char *title = group == 0 ? "Script" : group == 1 ? "Views" : "Iteration";
         bool any = false;
-        for (int i = 0; i < p->globals.len; i++) {
-            Sym *s = p->globals.data[i];
-            if (group == 0 ? s->is_config : group == 1 ? s->viewer_index >= 0 && !s->is_internal
-                                                       : s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon)
-                any = true;
-        }
+        for (int i = 0; i < p->globals.len; i++)
+            if (config_shows(p, p->globals.data[i], group)) any = true;
         if (!any) continue;
         ui_text(UI_FONT_SANS, x0, y + px(6), title, -1, UI_COL_ACCENT);
         y += rh;
         for (int i = 0; i < p->globals.len; i++) {
             Sym *s = p->globals.data[i];
-            bool show = group == 0 ? s->is_config : group == 1 ? s->viewer_index >= 0 && !s->is_internal
-                                                               : s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
-            if (!show) continue;
+            if (!config_shows(p, s, group)) continue;
             char label[128];
-            snprintf(label, sizeof label, "%s%s", s->is_internal ? "." : "", s->name);
+            config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
             config_number(s, x1, y, ww);
             y += rh;
@@ -1243,37 +1482,32 @@ static void config_panel(float W, float H) {
     float content = y + A.config_scroll - body.y;
     A.config_scroll = FS_CLAMP(A.config_scroll, 0.0f, FS_MAX(0.0f, content - body.h));
     ui_pop_clip();
-    ui_layer(prev);
 }
 
+/* ---- overlays ------------------------------------------------------------------------- */
 static void help_overlay(float W, float H) {
     if (!A.help_open) return;
-#if FS_OS_MACOS
-#define MODK "Cmd"
-#else
-#define MODK "Ctrl"
-#endif
     static const char *lines[] = {
         "Mouse",
         "  Wheel                      zoom at the mouse",
         "  Right or middle drag       pan (also Space + drag)",
-        "  Left click / drag          use the selected tool (Pan, Pick point, script tools)",
-        "  Menu button (top left)     views, tools, config; drag a view onto the screen to split",
+        "  Left click / drag          use the view's selected tool",
+        "  Left edge of a view        its tools; the menu button on top switches, splits and floats views",
         "Keys",
-        "  Esc                        open / close the menu",
-        "  " MODK "+Enter or " MODK "+R          run the script",
-        "  " MODK "+S, " MODK "+Shift+S          save, save as",
-        "  " MODK "+O                       open a file (or drop it on the window)",
-        "  " MODK "+E                       show / hide the editor",
-        "  " MODK "+1, 2, ...               show a view (or the shortcut written in the script)",
-        "  H, P                       Pan and Pick point tools",
+        "  Esc                        open / close the menu of the view under the mouse",
+        "  " MODKEY "+Enter or " MODKEY "+R          run the script",
+        "  " MODKEY "+S, " MODKEY "+Shift+S          save, save as",
+        "  " MODKEY "+O                       open a file (or drop it on the window)",
+        "  " MODKEY "+E, " MODKEY "+T                show / hide the script, the config",
+        "  " MODKEY "+1, 2, ...               show a view (or the shortcut written in the script)",
+        "  H, P, tool keys            choose a tool of the view under the mouse",
         "  Home                       reset the view under the mouse",
         "  F11                        full screen",
         "  F1                         this help",
     };
     int prev = ui_layer(UI_LAYER_POPUP);
     float lh = ui_font_line_height(UI_FONT_MONO) + px(3);
-    float pw = FS_MIN(px(720), W - px(40)), ph = (ARRAY_COUNT(lines) + 2) * lh + px(20);
+    float pw = FS_MIN(px(860), W - px(40)), ph = (ARRAY_COUNT(lines) + 2) * lh + px(20);
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
     UiInteract bg = ui_interact("##help_bg", 0, 0, W, H);
@@ -1330,74 +1564,27 @@ static void status_line(float W, float H) {
     ui_layer(prev);
 }
 
-static void editor_panel(float H) {
-    if (!A.show_editor) return;
-    float ew = A.area.x;
-    float bh = px(40);
-    ui_panel_ex(0, 0, ew, bh, UI_COL_PANEL_HI, 0);
-    float x = px(8), y = px(6), bhh = bh - px(12);
-#if FS_OS_MACOS
-    const char *runl = "Run  ⌘↵";
-#else
-    const char *runl = "Run (Ctrl+Enter)";
-#endif
-    float rw = ui_text_width(UI_FONT_SANS, runl, -1) + px(24);
-    if (ui_button_ex(runl, x, y, rw, bhh, UI_ACCENT)) run_editor();
-    x += rw + px(6);
-    if (ui_button_ex("Save", x, y, px(64), bhh, 0)) {
-        if (A.path[0]) save_file(A.path);
-        else { A.modal = 1; A.modal_focus = true; default_save_path(A.modal_buf, sizeof A.modal_buf); }
-    }
-    x += px(70);
-    if (ui_button_ex("Open", x, y, px(64), bhh, 0)) {
-        A.modal = 2;
-        A.modal_focus = true;
-        snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
-    }
-    x += px(70);
-    ui_toggle("Live", x, y + px(3), px(64), bhh - px(6), &A.live);
-    ui_tooltip("Run the script automatically shortly after you stop typing");
-    x += px(70);
-    char name[300];
-    snprintf(name, sizeof name, "%.250s%s", A.path[0] ? fs_basename(A.path) : "untitled", editor_is_modified(A.ed) ? " *" : "");
-    if (x < ew - px(40)) ui_label(x, y, ew - x - px(8), bhh, name, UI_ALIGN_RIGHT, UI_COL_TEXT_DIM);
-    editor_set_clock(A.ed, fs_time_seconds());
-    editor_ui(A.ed, 0, bh, ew, H - bh, false);
-    /* splitter */
-    Rect sp = {ew - px(3), 0, px(6), H};
-    UiInteract it = ui_interact("##editor_split", sp.x, sp.y, sp.w, sp.h);
-    if (it.hovered || it.held) ui_set_cursor(UI_CURSOR_HRESIZE);
-    if (it.held && A.in.fb_w > 0) A.editor_frac = FS_CLAMP(A.in.mouse_x / (float)A.in.fb_w, 0.15f, 0.85f);
-    ui_rect(ew - px(1), 0, px(1), H, UI_COL_BORDER);
-}
-
 /* ---- keyboard ---------------------------------------------------------------------- */
+static int target_viewer(void) { return A.hover_viewer >= 0 ? A.hover_viewer : A.focus_viewer; }
+
 static void shortcuts(void) {
     Program *p = A.prog;
     if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD)) run_editor();
     if (ui_shortcut(UI_KEY_S, UI_MOD_MOD)) {
         if (A.path[0]) save_file(A.path);
-        else { A.modal = 1; A.modal_focus = true; default_save_path(A.modal_buf, sizeof A.modal_buf); }
+        else ask_save_as();
     }
-    if (ui_shortcut(UI_KEY_S, UI_MOD_MOD | UI_MOD_SHIFT)) {
-        A.modal = 1;
-        A.modal_focus = true;
-        if (A.path[0]) snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
-        else default_save_path(A.modal_buf, sizeof A.modal_buf);
-    }
-    if (ui_shortcut(UI_KEY_O, UI_MOD_MOD)) {
-        A.modal = 2;
-        A.modal_focus = true;
-        snprintf(A.modal_buf, sizeof A.modal_buf, "%s", A.path);
-    }
-    if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.show_editor = !A.show_editor;
+    if (ui_shortcut(UI_KEY_S, UI_MOD_MOD | UI_MOD_SHIFT)) ask_save_as();
+    if (ui_shortcut(UI_KEY_O, UI_MOD_MOD)) ask_open();
+    if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.editor_open = !A.editor_open;
+    if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
     if (ui_shortcut(UI_KEY_F1, 0)) A.help_open = !A.help_open;
     if (ui_shortcut(UI_KEY_ESCAPE, 0)) {
         if (A.drag == DRAG_VIEWER) A.drag = DRAG_NONE;
         else if (A.help_open) A.help_open = false;
-        else if (A.config_open && !A.menu_open) A.config_open = false;
-        else A.menu_open = !A.menu_open;
+        else if (A.menu_viewer >= 0) A.menu_viewer = -1;
+        else A.menu_viewer = target_viewer();
     }
     for (int v = 0; v < p->nviewers; v++) {
         Shortcut sc = viewer_shortcut(v);
@@ -1409,13 +1596,19 @@ static void shortcuts(void) {
         }
     }
     if (ui_wants_keyboard()) return;
+    int tv = target_viewer();
     for (int t = 0; t < p->ntools; t++) {
         Shortcut sc = parse_shortcut(p->tools[t]->shortcut);
-        if (sc.key != UI_KEY_NONE && ui_shortcut(sc.key, sc.mods)) A.active_tool = t;
+        if (sc.key == UI_KEY_NONE || !ui_shortcut(sc.key, sc.mods)) continue;
+        /* the view under the mouse if the tool belongs there, else a visible view it belongs to */
+        int v = tv >= 0 && tool_in_viewer(t, tv) ? tv : -1;
+        for (int i = 0; v < 0 && i < A.nvis; i++)
+            if (tool_in_viewer(t, A.vis[i].viewer)) v = A.vis[i].viewer;
+        if (v >= 0) select_tool(v, t, true);
     }
-    if (ui_shortcut(UI_KEY_H, 0)) A.active_tool = TOOL_PAN;
-    if (ui_shortcut(UI_KEY_P, 0)) A.active_tool = TOOL_PICK;
-    if (ui_shortcut(UI_KEY_HOME, 0)) reset_view(A.hover_viewer >= 0 ? A.hover_viewer : A.focus_viewer);
+    if (tv >= 0 && ui_shortcut(UI_KEY_H, 0)) select_tool(tv, TOOL_PAN, true);
+    if (tv >= 0 && ui_shortcut(UI_KEY_P, 0) && p->viewers[tv]->picked) select_tool(tv, TOOL_PICK, true);
+    if (tv >= 0 && ui_shortcut(UI_KEY_HOME, 0)) reset_view(tv);
 }
 
 /* ---- rendering ---------------------------------------------------------------------- */
@@ -1444,9 +1637,27 @@ static bool render_viewers(void) {
         int v = A.vis[i].viewer;
         ViewerRT *rt = &A.vrt[v];
         if (!rt->target) continue;
-        if (viewer_dirty(v)) {
+        bool dirty = viewer_dirty(v);
+        if (dirty) {
             if (!rt->snap) rt->snap = (u32 *)xmalloc(bytes);
             memcpy(rt->snap, A.state, bytes);
+        }
+        if (rt->is_flood) {
+            /* flood fill: restart from the start pixel whenever an input changes */
+            if (dirty) {
+                int sx, sy;
+                flood_start_pixel(p, A.state, p->viewers[v], rt->tw, rt->th, &sx, &sy);
+                if (!flood_gpu_start(&rt->flood, rt->tw, rt->th, sx, sy))
+                    set_status(true, "Not enough GPU memory for the view '%s'", p->viewers[v]->name);
+                rt->rendered = true;
+            }
+            if (!flood_gpu_done(&rt->flood)) {
+                flood_gpu_record(&rt->flood, A.flood_passes, rt->target);
+                if (!flood_gpu_done(&rt->flood)) busy = true;
+            }
+            continue;
+        }
+        if (dirty) {
             if (!rt->rendered || rt->rows_left == 0) rt->next_row = 0;
             rt->rows_left = rt->th; /* keep going round from where we are, so every row gets refreshed
                                        even while the state changes every frame (panning) */
@@ -1470,7 +1681,32 @@ static bool render_viewers(void) {
     return busy;
 }
 
+static bool viewers_busy(void) {
+    for (int i = 0; A.prog && i < A.nvis; i++) {
+        ViewerRT *rt = &A.vrt[A.vis[i].viewer];
+        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(&rt->flood))) return true;
+    }
+    return false;
+}
+
 /* ---- main loop ----------------------------------------------------------------------- */
+static void layout_panes(float W, float H) {
+    float bar = pane_bar();
+    float ew = A.editor_open ? floorf(W * A.editor_frac) : bar;
+    float cw = A.config_open ? floorf(W * A.config_frac) : bar;
+    if (A.config_open) cw = FS_MAX(cw, px(260));
+    /* the views keep at least a third of the window */
+    float avail = W - ew - cw;
+    if (avail < W / 3) {
+        float k = (W * 2 / 3) / FS_MAX(ew + cw, 1.0f);
+        ew = FS_MAX(bar, floorf(ew * k));
+        cw = FS_MAX(bar, floorf(cw * k));
+    }
+    A.editor_r = (Rect){0, 0, ew, H};
+    A.config_r = (Rect){W - cw, 0, cw, H};
+    A.area = (Rect){ew, 0, W - ew - cw, H};
+}
+
 static void frame(void) {
     UiInput *in = &A.in;
     float W = (float)in->fb_w, H = (float)in->fb_h;
@@ -1482,8 +1718,7 @@ static void frame(void) {
     for (int k = 0; k < in->ndropped; k++) open_file(in->dropped_files[k]);
 
     /* layout */
-    float ex = A.show_editor ? floorf(W * A.editor_frac) : 0;
-    A.area = (Rect){ex, 0, W - ex, H};
+    layout_panes(W, H);
     A.nvis = 0;
     layout_compute(A.root, A.area);
     for (int c = 0; c < MAX_FLOATS; c++)
@@ -1492,6 +1727,12 @@ static void frame(void) {
             A.vis[A.nvis++] = t;
         }
     for (int i = 0; i < A.nvis; i++) ensure_target(A.vis[i].viewer, (int)A.vis[i].r.w, (int)A.vis[i].r.h);
+    A.hover_tile = -1;
+    for (int i = A.nvis - 1; i >= 0; i--)
+        if (in_rect(A.vis[i].r, in->mouse_x, in->mouse_y)) {
+            A.hover_tile = i;
+            break;
+        }
 
     /* time */
     float t = (float)(fs_time_seconds() - A.t0);
@@ -1499,11 +1740,12 @@ static void frame(void) {
 
     viewer_interaction();
     for (int i = 0; i < A.nvis; i++) {
-        int prev = ui_layer(A.vis[i].fl >= 0 ? UI_LAYER_PANEL : UI_LAYER_BASE);
+        int prev = ui_layer(tile_layer(&A.vis[i]));
         draw_tile(&A.vis[i]);
         if (A.vis[i].fl >= 0) ui_occlude(A.vis[i].r.x, A.vis[i].r.y, A.vis[i].r.w, A.vis[i].r.h);
         ui_layer(prev);
     }
+    for (int i = 0; i < A.nvis; i++) tile_chrome(i);
     /* drop zones while dragging a view */
     if (A.drag == DRAG_VIEWER) {
         int prev = ui_layer(UI_LAYER_TOOLTIP);
@@ -1520,10 +1762,9 @@ static void frame(void) {
         ui_text(UI_FONT_SANS, in->mouse_x + px(22), in->mouse_y + px(16), name, -1, UI_COL_TEXT);
         ui_layer(prev);
     }
-    editor_panel(H);
-    hamburger(W, H);
+    editor_pane(H);
+    config_pane(W, H);
     menu_overlay(W, H);
-    config_panel(W, H);
     help_overlay(W, H);
     modal_dialog(W, H);
     status_line(W, H);
@@ -1567,6 +1808,34 @@ static void frame(void) {
     if (busy || dt > 0.06) {
         if (dt > 0.06 && A.band_rows > 16) A.band_rows /= 2;
         else if (dt < 0.025 && A.band_rows < 8192) A.band_rows *= 2;
+        if (dt > 0.06 && A.flood_passes > 4) A.flood_passes /= 2;
+        else if (dt < 0.025 && A.flood_passes < 4096) A.flood_passes *= 2;
+    }
+}
+
+/* nothing could be loaded yet: only the editor (full width) */
+static void frame_editor_only(void) {
+    UiInput *in = &A.in;
+    ui_begin_frame(in);
+    int aw, ah;
+    const u8 *atlas = ui_take_atlas_update(&aw, &ah);
+    if (atlas) gfx_set_font_atlas(atlas, aw, ah);
+    A.editor_open = true;
+    A.editor_r = (Rect){0, 0, (float)in->fb_w, (float)in->fb_h};
+    A.area = (Rect){(float)in->fb_w, 0, 0, (float)in->fb_h};
+    editor_pane((float)in->fb_h);
+    status_line((float)in->fb_w, (float)in->fb_h);
+    if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD) ||
+        (editor_version(A.ed) != A.compiled_version && A.live)) {
+        int l;
+        const char *t2 = editor_get_text(A.ed, &l);
+        load_source(t2, true);
+    }
+    const GfxDrawList *dl = ui_end_frame();
+    if (gfx_frame_begin()) {
+        static const float bg[3] = {0.063f, 0.071f, 0.086f};
+        gfx_frame_draw(dl, bg);
+        gfx_frame_end();
     }
 }
 
@@ -1574,11 +1843,13 @@ int app_run(const char *script_path) {
     memset(&A, 0, sizeof A);
     A.t0 = fs_time_seconds();
     A.band_rows = 8192;
+    A.flood_passes = 64;
     A.editor_frac = 0.4f;
+    A.config_frac = 0.22f;
     A.live = true;
-    A.active_tool = TOOL_PAN;
     A.hover_viewer = -1;
-    A.menu_hint_until = A.t0 + 4.0;
+    A.hover_tile = -1;
+    A.menu_viewer = -1;
     char err[512];
     /* read the script first: it may set the window size */
     char *src = NULL;
@@ -1644,49 +1915,29 @@ int app_run(const char *script_path) {
     editor_set_text(A.ed, text, (int)strlen(text));
     editor_set_unmodified(A.ed);
     A.file_mtime = file_mtime(A.path);
-    A.show_editor = script_path == NULL;
+    A.editor_open = script_path == NULL;
     layout_reset(0);
     if (!load_source(text, true)) {
-        A.show_editor = true;
-        /* nothing to show: keep the editor up so the errors can be fixed */
-    } else if (!script_path && A.prog->nviewers >= 2) {
-        split_leaf(A.root, DROP_RIGHT, 1);
-        A.focus_viewer = 0;
+        A.editor_open = true; /* nothing to show: keep the editor up so the errors can be fixed */
+    } else {
+        if (!script_path && A.prog->nviewers >= 2) {
+            split_leaf(A.root, DROP_RIGHT, 1);
+            A.focus_viewer = 0;
+        }
+        for (int v = 0; v < A.prog->nviewers; v++) A.vrt[v].strip_until = A.t0 + 3.0; /* show where the tools are */
     }
     free(src);
     UiInput *in = &A.in;
     platform_poll(in, false);
-    while (!platform_should_close()) {
+    /* FS_AUTOQUIT=seconds closes the window after that long (for automated runs under sanitizers) */
+    double autoquit = getenv("FS_AUTOQUIT") ? atof(getenv("FS_AUTOQUIT")) : 0;
+    while (!platform_should_close() && !(autoquit > 0 && fs_time_seconds() - A.t0 > autoquit)) {
         if (A.prog) frame();
-        else {
-            /* no program could be loaded at all: editor only */
-            ui_begin_frame(in);
-            int aw, ah;
-            const u8 *atlas = ui_take_atlas_update(&aw, &ah);
-            if (atlas) gfx_set_font_atlas(atlas, aw, ah);
-            A.area = (Rect){(float)in->fb_w, 0, 0, (float)in->fb_h};
-            A.editor_frac = 1.0f;
-            A.show_editor = true;
-            editor_panel((float)in->fb_h);
-            status_line((float)in->fb_w, (float)in->fb_h);
-            if (ui_shortcut(UI_KEY_ENTER, UI_MOD_MOD) || ui_shortcut(UI_KEY_R, UI_MOD_MOD) ||
-                (editor_version(A.ed) != A.compiled_version && A.live)) {
-                int l;
-                const char *t2 = editor_get_text(A.ed, &l);
-                if (load_source(t2, true)) A.editor_frac = 0.4f;
-            }
-            const GfxDrawList *dl = ui_end_frame();
-            if (gfx_frame_begin()) {
-                static const float bg[3] = {0.063f, 0.071f, 0.086f};
-                gfx_frame_draw(dl, bg);
-                gfx_frame_end();
-            }
-        }
-        bool animating = false;
-        for (int i = 0; A.prog && i < A.nvis; i++)
-            if (A.vrt[A.vis[i].viewer].animated || A.vrt[A.vis[i].viewer].rows_left > 0) animating = true;
-        double wait = animating || A.drag != DRAG_NONE ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
+        else frame_editor_only();
+        double wait = viewers_busy() || A.drag != DRAG_NONE ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
         if (A.status[0] && fs_time_seconds() < A.status_until) wait = FS_MIN(wait, 0.1);
+        for (int v = 0; A.prog && v < A.prog->nviewers; v++)
+            if (A.vrt[v].strip_until > fs_time_seconds()) wait = FS_MIN(wait, 0.2);
         platform_poll_timeout(in, wait);
     }
     free_viewers();
