@@ -805,6 +805,18 @@ bool interp_run_section(Interp *I, Section *s) {
     return interp_finish(I);
 }
 
+/* Run a tool; for a tool of a viewer (@NAME.tool) the viewer's variable is (re, im). */
+bool interp_run_tool(Interp *I, Section *t, float re, float im) {
+    u32 *frame;
+    interp_run_section_frame(I, t, &frame);
+    if (t->coord) {
+        frame[t->coord->slot] = fw(re);
+        frame[t->coord->slot + 1] = fw(im);
+    }
+    exec_block(I, &t->body);
+    return interp_finish(I);
+}
+
 /* Evaluate a viewer at one point on the CPU (reference implementation). */
 bool interp_eval_viewer(Interp *I, Section *v, float zre, float zim, float rgb[3]) {
     u32 *frame;

@@ -985,6 +985,8 @@ static void parse_section_header(Parser *p, Section *s, Token *h) {
             s->display = a->str;
         else if (a->kind == TK_STRING && !s->shortcut && s->kind != SEC_CONFIG && s->kind != SEC_GLOBAL)
             s->shortcut = a->str;
+        else if (a->kind == TK_STRING && !s->icon && s->kind == SEC_TOOL)
+            s->icon = a->str;
         else if (a->kind == TK_IDENT && strcmp(a->str, "projective") == 0 && s->kind == SEC_VIEWER)
             s->projective = true;
         else {
@@ -1034,16 +1036,26 @@ void parse_tokens(Program *prog, Token *toks, int ntoks, const char **builtins, 
         while (at(p, TK_SECTION)) {
             Token *h = advance(p);
             SectionKind kind;
-            if (strcmp(h->str, "viewer") == 0) kind = SEC_VIEWER;
+            const char *dot = strchr(h->str, '.');
+            char *of_viewer = NULL;
+            if (dot && strcmp(dot + 1, "tool") == 0) {
+                of_viewer = arena_strndup(&p->prog->arena, h->str, (size_t)(dot - h->str));
+                kind = SEC_TOOL;
+            } else if (dot) {
+                p->nerr_stmt = 0;
+                perr(p, h, "unknown section @%s (did you mean @%.*s.tool?)", h->str, (int)(dot - h->str), h->str);
+                kind = SEC_GLOBAL;
+            } else if (strcmp(h->str, "viewer") == 0) kind = SEC_VIEWER;
             else if (strcmp(h->str, "tool") == 0) kind = SEC_TOOL;
             else if (strcmp(h->str, "config") == 0) kind = SEC_CONFIG;
             else if (strcmp(h->str, "global") == 0 || strcmp(h->str, "globals") == 0) kind = SEC_GLOBAL;
             else {
                 p->nerr_stmt = 0;
-                perr(p, h, "unknown section @%s (expected @viewer, @tool, @config or @global)", h->str);
+                perr(p, h, "unknown section @%s (expected @viewer, @tool, @NAME.tool, @config or @global)", h->str);
                 kind = SEC_GLOBAL;
             }
             Section *s = new_section(p, kind, h->line);
+            s->of_viewer = of_viewer;
             p->nerr_stmt = 0;
             parse_section_header(p, s, h);
             s->body = parse_block(p, TK_EOF, TK_EOF, false, 1);

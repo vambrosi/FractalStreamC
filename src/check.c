@@ -1679,6 +1679,14 @@ static void check_section(Checker *c, Section *s) {
         if (s->var) s->coord = declare(c, &at, s->var, t_complex);
         s->color = declare(c, &at, "color", t_color);
     }
+    if (s->kind == SEC_TOOL && s->viewer_of >= 0) {
+        /* @NAME.tool: the viewer's variable is the point that was clicked */
+        Section *v = c->prog->viewers[s->viewer_of];
+        Expr at = {0};
+        at.line = s->line;
+        at.col = 1;
+        if (v->var) s->coord = declare(c, &at, v->var, t_complex);
+    }
     if (s->kind == SEC_TOOL) extract_tool_settings(c, s);
     chk_block(c, &s->body);
     layout_frame(&s->locals, &s->frame_words);
@@ -1727,6 +1735,14 @@ bool check_program(Program *p) {
             p->tools[p->ntools++] = s;
             if (!s->display) s->display = arena_printf(&p->arena, "Tool %d", p->ntools);
         }
+    }
+    for (int t = 0; t < p->ntools; t++) {
+        Section *s = p->tools[t];
+        s->viewer_of = -1;
+        if (!s->of_viewer) continue;
+        Section *v = find_viewer(p, s->of_viewer);
+        if (v) s->viewer_of = v->index;
+        else prog_diag(p, DIAG_ERROR, s->line, 1, 0, "@%s.tool: there is no viewer named '%s'", s->of_viewer, s->of_viewer);
     }
     if (p->nviewers == 0)
         prog_diag(p, DIAG_WARNING, 1, 1, 0, "the script has no @viewer section, so there is nothing to show");

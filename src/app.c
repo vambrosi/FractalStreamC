@@ -649,7 +649,7 @@ static void run_tool(int tool, int viewer, float re, float im) {
     set_c(p->s_mouse, re, im);
     DrawItemVec out = {0};
     A.interp.draws = &out;
-    if (!interp_run_section(&A.interp, p->tools[tool])) set_status(true, "%s: %s", p->tools[tool]->display, A.interp.error);
+    if (!interp_run_tool(&A.interp, p->tools[tool], re, im)) set_status(true, "%s: %s", p->tools[tool]->display, A.interp.error);
     A.interp.draws = NULL;
     for (int k = 0; k < out.len; k++)
         if (out.data[k].viewer < 0) out.data[k].viewer = viewer;

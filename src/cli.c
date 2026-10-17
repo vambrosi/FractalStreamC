@@ -286,7 +286,7 @@ int cli_main(int argc, char **argv) {
         interp_init(&I, p, state);
         DrawItemVec draws = {0};
         I.draws = &draws;
-        if (!interp_run_section(&I, t)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
+        if (!interp_run_tool(&I, t, re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
         static const char *shapes[] = {"point", "circle", "disk", "line"};
         for (int k = 0; k < draws.len; k++) {
             DrawItem *d = &draws.data[k];

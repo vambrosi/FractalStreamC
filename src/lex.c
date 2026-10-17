@@ -147,6 +147,10 @@ void lex_program(Program *prog, const char *src, int first_line) {
         if (c == '@' && is_ident_start(s[lx.pos + 1])) {
             lx.pos++;
             while (is_ident_char(s[lx.pos])) lx.pos++;
+            if (s[lx.pos] == '.' && is_ident_start(s[lx.pos + 1])) { /* @julia.tool */
+                lx.pos++;
+                while (is_ident_char(s[lx.pos])) lx.pos++;
+            }
             t.kind = TK_SECTION;
             t.len = lx.pos - start;
             t.str = arena_strndup(&prog->arena, t.text + 1, (size_t)t.len - 1);

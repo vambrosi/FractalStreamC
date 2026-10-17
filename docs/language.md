@@ -187,19 +187,29 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.r
 
 ## Tools
 
-A tool runs when you click (and while you drag) in a viewer while the tool is selected:
+A tool runs when you click (and while you drag) in a viewer while the tool is selected. Most tools
+belong to one viewer, written `@NAME.tool`; inside it, the viewer's variable is the point you
+clicked:
 
 ```
-@tool "Orbit" "O"
-w := .lastClick
+@viewer julia z "Julia set" "Ctrl + 2"
+...
+
+@julia.tool "Orbit" "O" "timeline"
+w := z                      # z is the clicked point
 for k in 1..100 do
     w2 := w^2 + .c
     draw line between w and w2
     w = w2
 end
-draw circle at .lastClick with radius 4 px and color .red
+draw circle at z with radius 4 px and color .red
 ```
 
+- The header takes a name, a keyboard shortcut and an icon, all optional. Icons are named like the
+  [Material Icons](https://fonts.google.com/icons?icon.set=Material+Icons) (`"timeline"`,
+  `"my_location"`, `"brush"`, ...); without one the tool shows the first letter of its name.
+- `@tool` (without a viewer) makes a tool available in every viewer; it reads the clicked point
+  from `.lastClick`.
 - `draw point at P`, `draw circle at P with radius R [px]`, `draw disk at P with radius R [px]`,
   `draw line between A and B`, with optional `with/and color C` and `width W px`, and
   `in VIEWER` to draw in another viewer. Radii are in plane units unless followed by `px`.
@@ -207,9 +217,9 @@ draw circle at .lastClick with radius 4 px and color .red
 - Settings at the top of a tool: `.panning = true` makes dragging pan the view, so the tool only
   runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button.
 
-Every script also has the built-in tools **Pan** (drag to move, wheel to zoom) and **Pick point**
+Every viewer also has the built-in tools **Pan** (drag to move, wheel to zoom) and **Pick point**
 (sets `.VAR` of the viewer you click in and marks it). The mouse wheel always zooms, and dragging
-with the right or middle button always pans.
+with the right or middle button always pans. Each viewer remembers its own selected tool.
 
 ## Config
 

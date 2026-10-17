@@ -244,6 +244,9 @@ struct Section {
     Sym *center, *radius; /* viewer properties */
     Sym *mobius;        /* projective viewers: view map, C^4 (a, b, c, d) */
     bool panning, hover; /* tool settings */
+    char *icon;         /* tool: Material Icons name ("timeline"), NULL = first letter */
+    char *of_viewer;    /* tool: written @NAME.tool, the viewer it belongs to (NULL = every viewer) */
+    int viewer_of;      /* tool: index of that viewer, -1 = every viewer */
     bool uses_time, uses_mouse; /* viewer depends on .time / .mouse */
     bool implicit;      /* the whole file was this (default) viewer */
 };
