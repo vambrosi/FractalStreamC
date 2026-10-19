@@ -42,7 +42,7 @@ enum {
     GLSLSinh = 19, GLSLCosh = 20, GLSLTanh = 21, GLSLAsinh = 22, GLSLAcosh = 23, GLSLAtanh = 24,
     GLSLAtan2 = 25, GLSLPow = 26, GLSLExp = 27, GLSLLog = 28, GLSLExp2 = 29, GLSLLog2 = 30, GLSLSqrt = 31,
     GLSLFMin = 37, GLSLSMin = 39, GLSLFMax = 40, GLSLSMax = 42, GLSLFClamp = 43, GLSLSClamp = 45, GLSLFMix = 46,
-    GLSLStep = 48, GLSLSmoothStep = 49, GLSLLength = 66,
+    GLSLStep = 48, GLSLSmoothStep = 49, GLSLFma = 50, GLSLLength = 66,
 };
 
 typedef VEC(u32) WordVec;
@@ -282,6 +282,18 @@ static void spv_entry_point(Spv *s, u32 fn, const u32 *iface, int n) {
     wv_inst(&s->entry, SpvOpEntryPoint, o, 2 + k + n);
     u32 em[2] = {fn, 7}; /* OriginUpperLeft */
     wv_inst(&s->exec, SpvOpExecutionMode, em, 2);
+}
+
+/* SPV_KHR_float_controls' SignedZeroInfNanPreserve (32-bit floats) for the entry point fn: IEEE float behaviour,
+   which drivers that otherwise compile with fast math (MoltenVK "on demand") respect */
+static void spv_float_controls_ieee(Spv *s, u32 fn) {
+    u32 cap = 4466; /* Capability SignedZeroInfNanPreserve */
+    wv_inst(&s->caps, SpvOpCapability, &cap, 1);
+    u32 o[8];
+    int n = spv_string_words("SPV_KHR_float_controls", o, 8);
+    wv_inst(&s->caps, 10 /* OpExtension */, o, n);
+    u32 em[3] = {fn, 4461 /* ExecutionMode SignedZeroInfNanPreserve */, 32};
+    wv_inst(&s->exec, SpvOpExecutionMode, em, 3);
 }
 
 /* final module; caller frees */

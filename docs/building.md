@@ -84,6 +84,8 @@ for VS", then
 | `FS_GPU=<text>` | use the GPU whose name contains `<text>` (case-insensitive), e.g. `FS_GPU=intel` |
 | `FS_VULKAN_LIBRARY=<path>` | load this Vulkan library (or MoltenVK dylib) before the default ones |
 | `FS_VULKAN_VALIDATION=1` | enable the Vulkan validation layer and print its messages |
+| `FS_DEBUG=1` | print what the app decides at startup (the GPU; how deep zooms keep their arithmetic exact) |
+| `MVK_CONFIG_FAST_MATH_ENABLED` | (macOS) set to `2` by the program unless already set: MoltenVK's fast maths, except in the shaders of deep zooms, which declare IEEE floats (SPIR-V float controls) and then need no per-operation workaround, the slow part of double precision before |
 
 Without `FS_GPU` a discrete GPU is preferred, then an integrated one, then anything
 else (e.g. lavapipe).

@@ -357,6 +357,8 @@ typedef struct GfxState {
     GLFWwindow *window;
     bool vsync;
     bool validation;           /* validation layer enabled */
+    bool props2;               /* VK_KHR_get_physical_device_properties2 enabled */
+    bool float_controls;       /* VK_KHR_shader_float_controls with SignedZeroInfNanPreserve for 32-bit floats */
     VkInstance instance;
     VkDebugUtilsMessengerEXT messenger;
     VkSurfaceKHR surface;
@@ -1072,8 +1074,8 @@ static bool gfx_create_instance(bool want_validation) {
         enable[ne++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
         flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
     }
-    if (gfx_has_ext(exts, next, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
-        enable[ne++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
+    bool props2 = gfx_has_ext(exts, next, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    if (props2) enable[ne++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
 
     const char *layers[1];
     u32 nlayers = 0;
@@ -1110,6 +1112,7 @@ static bool gfx_create_instance(bool want_validation) {
     ci.enabledExtensionCount = ne;
     ci.ppEnabledExtensionNames = enable;
     VkResult r = vkCreateInstance(&ci, NULL, &gx.instance);
+    gx.props2 = props2;
     if (r == VK_ERROR_INCOMPATIBLE_DRIVER)
         return gfx_fail("no Vulkan driver found (install the GPU's Vulkan driver, or Mesa lavapipe for software rendering)");
     if (!gfx_vk(r, "vkCreateInstance")) { gx.instance = VK_NULL_HANDLE; return false; }
@@ -1211,12 +1214,28 @@ static bool gfx_pick_device(void) {
 static bool gfx_create_device(void) {
     u32 next = 0;
     VkExtensionProperties *exts = gfx_device_exts(gx.phys, &next);
-    const char *enable[2];
+    const char *enable[4];
     u32 ne = 0;
     if (gx.window) enable[ne++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     /* Implementations that are not fully conformant (MoltenVK) expose this and require
        it to be enabled; we use nothing it restricts. */
     if (gfx_has_ext(exts, next, "VK_KHR_portability_subset")) enable[ne++] = "VK_KHR_portability_subset";
+    /* IEEE float behaviour that a shader can ask for (exact double-single arithmetic, see codegen.c) */
+    gx.float_controls = false;
+    if (gx.props2 && gfx_has_ext(exts, next, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
+        PFN_vkGetPhysicalDeviceProperties2KHR props2 =
+            (PFN_vkGetPhysicalDeviceProperties2KHR)vkGetInstanceProcAddr(gx.instance, "vkGetPhysicalDeviceProperties2KHR");
+        if (props2) {
+            VkPhysicalDeviceFloatControlsProperties fc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES };
+            VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+            p2.pNext = &fc;
+            props2(gx.phys, &p2);
+            if (fc.shaderSignedZeroInfNanPreserveFloat32) {
+                enable[ne++] = VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME;
+                gx.float_controls = true;
+            }
+        }
+    }
     free(exts);
 
     float priority = 1.0f;
@@ -1347,6 +1366,7 @@ void gfx_shutdown(void) {
 }
 
 const char *gfx_device_name(void) { return gx.device_name; }
+bool gfx_has_float_controls(void) { return gx.float_controls; }
 int gfx_max_image_size(void) { return gx.device ? (int)gx.props.limits.maxImageDimension2D : 0; }
 const char *gfx_fatal_error(void) { return gx.fatal[0] ? gx.fatal : NULL; }
 int gfx_validation_errors(void) { return gfx_validation_ever ? gfx_validation_error_total : -1; }

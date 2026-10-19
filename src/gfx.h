@@ -76,6 +76,7 @@ bool gfx_init(const GfxInitDesc *desc, char *err, int errcap);
 void gfx_shutdown(void);
 
 const char *gfx_device_name(void);   /* "" before gfx_init */
+bool gfx_has_float_controls(void);    /* shaders can ask for IEEE floats (SPV_KHR_float_controls SignedZeroInfNanPreserve) */
 int gfx_max_image_size(void);        /* largest target / render width or height */
 const char *gfx_fatal_error(void);   /* NULL while healthy */
 /* Validation messages of severity "error" seen so far (across init/shutdown);

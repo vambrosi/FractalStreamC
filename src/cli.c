@@ -197,9 +197,10 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
         free(spv);
         return false;
     }
+    bool df = viewer_wants_df(p, state, v, w, h, false); /* deep zooms: double-single precision */
+    if (df) app_init_exact_floats();
     gfx_set_globals(state, (u32)p->state_words * 4);
     bool ok;
-    bool df = viewer_wants_df(p, state, v, w, h, false); /* deep zooms: double-single precision */
     if (v->flood) {
         ok = flood_render_gpu_ex(p, state, v, df, w, h, rgba, NULL, err, errcap);
     } else {
@@ -228,6 +229,10 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
 #include "app.h"
 
 int cli_main(int argc, char **argv) {
+#ifdef __APPLE__
+    /* MoltenVK: fast maths, except in the shaders that declare IEEE floats (deep zooms, see codegen.c) */
+    setenv("MVK_CONFIG_FAST_MATH_ENABLED", "2", 0);
+#endif
     const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL, *event = NULL;
     int w = 512, h = 512;
     bool cpu = false;

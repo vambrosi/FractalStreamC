@@ -172,9 +172,17 @@ static u32 one_of(Gen *g, Type *t) {
  * computed in single precision (they serve colours, not coordinates). */
 enum { SpvDecNoContraction = 42, GLSLInverseSqrt = 32 };
 
+/* How double-single shaders keep their float operations exact: NoContraction on each operation (always right,
+ * but SPIRV-Cross implements it in Metal with a function call per operation that the compiler may not inline,
+ * which is very slow), or the whole shader declared IEEE with SPV_KHR_float_controls (then MoltenVK compiles it
+ * without fast math, when MVK_CONFIG_FAST_MATH_ENABLED is "on demand"; see app_init_exact_floats). */
+static bool cg_float_controls;
+void codegen_set_float_controls(bool on) { cg_float_controls = on; }
+bool codegen_float_controls(void) { return cg_float_controls; }
+
 static u32 xop(Gen *g, u32 op, u32 a, u32 b) { /* an exact float operation */
     u32 r = op2(g, op, g->tfloat, a, b);
-    spv_decorate(&g->s, r, SpvDecNoContraction, NULL, 0);
+    if (!cg_float_controls) spv_decorate(&g->s, r, SpvDecNoContraction, NULL, 0);
     return r;
 }
 static u32 df_hi(Gen *g, u32 a) { return extract(g, g->tfloat, a, 0); }
@@ -206,8 +214,16 @@ static void df_split(Gen *g, u32 a, u32 *hi, u32 *lo) {
     *hi = xop(g, SpvOpFSub, c, xop(g, SpvOpFSub, c, a));
     *lo = xop(g, SpvOpFSub, a, *hi);
 }
-/* p + e = a b exactly (Dekker's product: a fused multiply-add isn't guaranteed to be fused) */
+/* p + e = a b exactly: with a fused multiply-add, e = fma(a, b, -p); else Dekker's product (the decorated
+   operations can't be fused, and that is what a split needs: c - (c - a) with c = 4097 a fused would not be a
+   split).  The shaders that declare IEEE floats get the fma (exact in Metal and llvmpipe). */
 static void two_prod(Gen *g, u32 a, u32 b, u32 *p, u32 *e) {
+    if (cg_float_controls) {
+        *p = op2(g, SpvOpFMul, g->tfloat, a, b);
+        *e = ext3(g, g->tfloat, GLSLFma, a, b, op1(g, SpvOpFNegate, g->tfloat, *p));
+        spv_decorate(&g->s, *e, SpvDecNoContraction, NULL, 0); /* (a fused fma: Vulkan only promises it so) */
+        return;
+    }
     *p = xop(g, SpvOpFMul, a, b);
     u32 ah, al, bh, bl;
     df_split(g, a, &ah, &al);
@@ -2052,6 +2068,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         u32 iface[2] = {g->fragcoord, g->out_color};
         spv_entry_point(s, mainfn, iface, 2);
     }
+    if (g->df && cg_float_controls) spv_float_controls_ieee(s, mainfn);
     u32 *words = spv_finish(s, nwords);
     spv_free(s);
     vec_free(g->queue);

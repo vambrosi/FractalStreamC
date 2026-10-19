@@ -233,6 +233,58 @@ static const char *welcome_script =
     "    w = w2\n"
     "end\n";
 
+/* ---- exact floats for deep zooms ------------------------------------------------------ */
+/* the double-single arithmetic deep zooms need, computed on the GPU: white if every operation is exact */
+static const char *df_check_src =
+    "@viewer v c\n" /* (typed locals: not folded into constants by the compiler) */
+    "a : R = 1\n"
+    "b : R = 0.0000000001\n"
+    "add := ((a + b) - a) * 1e10\n"
+    "x : R = 1 + 1 / 1048576\n"
+    "mul := (x * x - 1 - 2 / 1048576) * 1099511627776.0\n"
+    "three : R = 3\n"
+    "q := a / three\n"
+    "div := (q * three - a) * 1e13 + 0.5\n"
+    "two : R = 2\n"
+    "r := sqrt(two)\n"
+    "sq := (r * r - two) * 1e12 + 0.5\n"
+    "tiny : R = 0.0000001\n"
+    "z := complex(a, tiny)\n"
+    "zz := z * z\n"
+    "cm := (re(zz) - a) * -1e14\n"
+    "color = [add, mul, if |div - 0.5| < 0.1 and |sq - 0.5| < 0.1 and |cm - 1| < 0.01 then 1 else 0]\n";
+
+static bool df_check_gpu(void) {
+    char err[256];
+    Program *p = program_load(df_check_src, "df check");
+    bool ok = false;
+    if (p->nerrors == 0) {
+        gfx_set_globals(p->initial_state, (u32)p->state_words * 4);
+        u32 n;
+        u32 *words = codegen_viewer_ex(p, p->viewers[0], true, &n, err, sizeof err);
+        int vid = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
+        free(words);
+        if (vid > 0) {
+            u8 px[16];
+            ok = gfx_render_to_memory(vid, 2, 2, 0, px, err, sizeof err) && px[0] == 255 && px[1] == 255 && px[2] == 255;
+            if (getenv("FS_DEBUG")) fprintf(stderr, "df check: %d %d %d %s\n", px[0], px[1], px[2], err);
+            gfx_viewer_destroy(vid);
+        }
+    }
+    program_free(p);
+    return ok;
+}
+
+bool app_init_exact_floats(void) {
+    codegen_set_float_controls(false);
+    if (!gfx_has_float_controls()) return false;
+    codegen_set_float_controls(true);
+    if (df_check_gpu()) return true;
+    codegen_set_float_controls(false); /* (the GPU doesn't keep them exact: each operation is marked instead) */
+    if (getenv("FS_DEBUG")) fprintf(stderr, "deep zooms: IEEE floats per shader don't check out; marking each operation\n");
+    return false;
+}
+
 /* ---- small helpers ----------------------------------------------------------- */
 static float px(float v) { return ui_px(v); }
 static bool in_rect(Rect r, float x, float y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
@@ -4654,6 +4706,8 @@ int app_run(const char *script_path) {
         free(src);
         return 1;
     }
+    bool fast_df = app_init_exact_floats();
+    if (getenv("FS_DEBUG")) fprintf(stderr, "deep zooms: %s\n", fast_df ? "IEEE floats per shader" : "each operation marked exact");
     A.ed = editor_create();
     {
         /* highlight the built-in function names */

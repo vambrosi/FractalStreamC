@@ -643,6 +643,40 @@ TEST(df_arithmetic) {
 #endif
 }
 
+/* Deep zooms in shaders that declare IEEE floats (float controls) instead of marking each operation: a valid
+   module, and in Metal (through SPIRV-Cross) plain arithmetic, without the per-operation helper functions that
+   make the marked version slow there.  (Whether a GPU keeps such shaders exact is checked when the app starts:
+   app_init_exact_floats; Mesa doesn't, Metal without fast maths does.) */
+TEST(df_float_controls_module) {
+    Program *p = program_load("@viewer v c\nz := 0\nwhile z not escapes do\n    z = z^2 + c\nend\n"
+                              "color = gray(.iterations / 100)\n", "fc");
+    CHECK(p->nerrors == 0);
+    char err[256];
+    u32 n;
+    codegen_set_float_controls(true);
+    u32 *words = codegen_viewer_ex(p, p->viewers[0], true, &n, err, sizeof err);
+    codegen_set_float_controls(false);
+    program_free(p);
+    CHECK_MSG(words != NULL, "%s", err);
+    if (!words) return;
+    fs_write_file("build/test_fc.spv", words, n * 4);
+    free(words);
+    static int have_val = -1, have_cross = -1;
+    if (have_val < 0) have_val = system("spirv-val --version > /dev/null 2>&1") == 0;
+    if (have_cross < 0) have_cross = system("spirv-cross --help > /dev/null 2>&1") == 0 || system("which spirv-cross > /dev/null 2>&1") == 0;
+    if (have_val) CHECK_MSG(system("spirv-val build/test_fc.spv > build/test_fc.txt 2>&1") == 0, "spirv-val failed (build/test_fc.txt)");
+    if (!have_cross) SKIP("spirv-cross not installed");
+    CHECK(system("spirv-cross --msl build/test_fc.spv --output build/test_fc.metal > /dev/null 2>&1") == 0);
+    size_t len;
+    char *msl = fs_read_file("build/test_fc.metal", &len);
+    CHECK(msl != NULL);
+    if (msl) {
+        CHECK_MSG(!strstr(msl, "optnone") && !strstr(msl, "spvFAdd"), "the Metal code still calls helpers per operation");
+        CHECK(strstr(msl, "fma(") != NULL); /* (the exact products) */
+        free(msl);
+    }
+}
+
 /* a deep zoom of the Mandelbrot set (radius 1e-10) against a double-precision reference */
 static int df_ref_iter(double cr, double ci, int maxit) {
     double zr = 0, zi = 0;
@@ -723,6 +757,7 @@ TEST(df_deep_zoom) {
 static const TestCase tests_codegen[] = {
     TESTCASE(df_viewers),
     TESTCASE(df_arithmetic),
+    TESTCASE(df_float_controls_module),
     TESTCASE(df_deep_zoom),
     TESTCASE(flood_spirv_validates),
     TESTCASE(flood_gpu_matches_cpu),
