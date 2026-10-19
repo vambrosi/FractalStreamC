@@ -483,11 +483,13 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 
 - Every variable declared in `@config` gets a control in the config panel (Ctrl+T, Cmd+T on a
   Mac), in the order of the script: sliders for `Z` and `R` with a range (logarithmic when the
-  range spans more than a factor 100), a list for choices, fields for complex numbers, a check box
-  for `Bool`.
+  range spans more than a factor 100), a list for choices, fields for complex numbers and points of
+  the sphere, a check box for `Bool`. A range written with real numbers makes a real variable
+  (`speed := 1 in 0.1..10` is `R`).
 - A text in quotes after a declaration (and its range) is its label. A line that is only a text is
   a note.
-- Lists of numbers are edited as text, items separated by commas (`1, i, -1, -i`); Enter applies.
+- Lists of numbers are edited as text, items separated by commas (`1, i, -1, -i`), and points of
+  the sphere as a complex number or `inf`; Enter, or leaving the field, applies (Escape doesn't).
 - A one-line function defined in `@config` (`define f(z, c) = z^2 + c`) is a formula you can edit
   in the config panel: the field edits the script itself, which runs again as you type (with Live
   on) or when you press Enter.
