@@ -1500,6 +1500,17 @@ static void chk_stmt(Checker *c, Stmt *s) {
             t = infer_decl_type(vt, s->value);
             Type *h = hint_for(c, tg->line, tg->col), *j = h ? join_types(t, h) : NULL; /* (assigned wider values) */
             if (j) t = j;
+            Sym *old = scope_find_local(c->load && !c->fn ? &c->globals : c->scope, tg->name);
+            if (old && old->untyped && old->type != t && old->type != t_error) { /* declared again (t := 0 in one
+                                                                                   branch, t := 0.5 in the other) */
+                if (conv_cost(t, old->type) >= 0) {
+                    t = old->type;
+                } else if (widen_sym(c, old, t)) { /* (checked again with the wider type) */
+                    s->sym = tg->sym = old;
+                    tg->type = old->type;
+                    return;
+                }
+            }
             s->value = coerce(c, s->value, t, "the value");
         }
         Sym *sym = declare(c, tg, tg->name, t);

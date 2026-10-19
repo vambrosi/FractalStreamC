@@ -865,6 +865,13 @@ TEST(variables_take_the_widest_type_assigned) {
         if (!strcmp(p->viewers[0]->locals.data[i]->name, "w")) w = p->viewers[0]->locals.data[i];
     CHECK(w && w->type == t_complex);
     program_free(p);
+    /* declared again (in two branches, say): the wider type */
+    p = LOAD_OK("@global\nc := 1\nif c > 0 then\n    t := 0\nelse\n    t := 0.5\nend\n"
+                "if c > 0 then\n    u := 0.5\nelse\n    u := 2\nend\n");
+    CHECK(find_global(p, "t") && find_global(p, "t")->type == t_real);
+    CHECK(find_global(p, "u") && find_global(p, "u")->type == t_real);
+    CHECK_NEAR(gnum(p, "u", 0), 0.5, 1e-7);
+    program_free(p);
     /* a value that can't fit: the error is about the assignment */
     EXPECT_ERROR("@global\nk := 1\nk = true\n", "must be Z, but this is Bool");
     EXPECT_ERROR("@global\nn : Z = 1\nn = 0.5\n", "floor, ceil or round");

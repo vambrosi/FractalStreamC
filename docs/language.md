@@ -71,6 +71,9 @@ with: `2` is `Z`, `2.5` is `R` (so are `pi`, `e`, `tau`), `2i` and `2 + 0.5i` ar
 
 **Promotion.** Numbers convert automatically along `Z -> R -> C -> H` (and elementwise for
 vectors), never backwards: use `re`, `im`, `|z|`, `floor`, `ceil`, `round` to go down.
+Functions follow the type of their argument: `sqrt(-4)` and `log(-1)` are real functions of a real
+number, so they give NaN (not a number), while `sqrt(-4 + 0i)` is `2i`. A variable meant to be complex
+from the start is declared so: `x : C = -4`.
 
 **Precision.** Reals are 32-bit floats (GPUs on macOS have no doubles). A flat view zoomed in until a
 pixel is smaller than about a millionth of the numbers in view gets blocky; with `.doublePrecision`
