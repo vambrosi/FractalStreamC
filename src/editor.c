@@ -489,7 +489,8 @@ static const char *const edp_keywords[] = {
     "and", "or", "not", "true", "false", "escapes", "vanishes", "draw", "at", "with", "between", "to", "radius", "px",
     "point", "circle", "disk", "line", "color", "width", "List", "of",
 };
-static const char *const edp_types[] = { "Z", "R", "C", "H", "Color", "Bool", "Integers", "Reals", "Complex", "Quaternions" };
+static const char *const edp_types[] = { "Z", "R", "C", "H", "P", "Color", "Colour", "Bool", "List", "Integer", "Real",
+                                          "Complex", "Quaternion", "Projective", "Boolean" };
 static const char *const edp_default_builtins[] = { /* docs/language.md "Built-in functions" (the app can replace the list) */
     "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "exp", "log", "ln",
     "sqrt", "atan2", "log2", "log10", "floor", "ceil", "round", "trunc", "fract", "sign", "min", "max", "clamp", "mix",
