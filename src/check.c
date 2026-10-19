@@ -2220,11 +2220,23 @@ static void px_pieces(Checker *c, Expr **slot, bool collect, Func *f, SymVec *pa
     px_lower_expr(c, slot);
     if (!collect) return;
     e = *slot;
-    if (e->kind == E_NAME && e->sym && (e->sym->kind == SYM_CONST || e->sym->kind == SYM_GLOBAL)) return;
-    Sym *s = new_sym(c, arena_printf(&c->prog->arena, "__x%d", params->len + 1), e->type, SYM_LOCAL, e->line, e->col);
-    s->owner = f;
-    vec_push(*params, s);
-    vec_push(*pieces, e);
+    if (e->kind == E_NAME && e->sym && e->sym->kind == SYM_CONST) return;
+    /* Each piece is an argument, computed by the caller in order (a global read before a call that changes it keeps
+       its old value). The same variable is the same argument, so that its powers cancel (exact at 0 and ∞), unless
+       a call in between may have changed it (a global). */
+    Sym *s = NULL;
+    bool var = (e->kind == E_NAME || e->kind == E_INTERNAL || e->kind == E_MEMBER) && e->sym;
+    for (int i = pieces->len - 1; var && i >= 0 && !s; i--) {
+        Expr *q = pieces->data[i];
+        if ((q->kind == E_NAME || q->kind == E_INTERNAL || q->kind == E_MEMBER) && q->sym == e->sym) s = params->data[i];
+        else if (e->sym->kind == SYM_GLOBAL && !px_cheap(q)) break;
+    }
+    if (!s) {
+        s = new_sym(c, arena_printf(&c->prog->arena, "__x%d", params->len + 1), e->type, SYM_LOCAL, e->line, e->col);
+        s->owner = f;
+        vec_push(*params, s);
+        vec_push(*pieces, e);
+    }
     Expr *n = ARENA_NEW(&c->prog->arena, Expr);
     *n = *e;
     n->kind = E_NAME;

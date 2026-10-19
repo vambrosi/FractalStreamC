@@ -871,11 +871,11 @@ static Jet ad_jet_held(AD *ad, Jet j) { return jet_hold(ad, j.v, j.d1, j.d2); }
 static BindMark ad_bind_params(AD *ad, Expr *call) {
     BindMark m = {ad->map.len, ad->cbind.len, ad->pbind.len};
     Func *f = call->fn;
-    int n = FS_MIN(f->nparams, 32);
-    PJet pj[32];
-    Jet cj[32];
-    Sym *tmp[32];
-    int kind[32];
+    int n = f->nparams; /* (generated functions of points can have many: one per piece of a formula) */
+    PJet *pj = (PJet *)xcalloc((size_t)FS_MAX(n, 1), sizeof(PJet));
+    Jet *cj = (Jet *)xcalloc((size_t)FS_MAX(n, 1), sizeof(Jet));
+    Sym **tmp = (Sym **)xcalloc((size_t)FS_MAX(n, 1), sizeof(Sym *));
+    int *kind = (int *)xcalloc((size_t)FS_MAX(n, 1), sizeof(int));
     for (int i = 0; i < n; i++) { /* (all the arguments first: they belong to the caller) */
         Sym *ps = f->params[i];
         Expr *arg = call->args[i];
@@ -909,6 +909,10 @@ static BindMark ad_bind_params(AD *ad, Expr *call) {
             vec_push(ad->cbind, b);
         }
     }
+    free(pj);
+    free(cj);
+    free(tmp);
+    free(kind);
     return m;
 }
 
@@ -1213,8 +1217,9 @@ static void ad_collect_captures(Expr *e, Sym *var, SymVec *out) {
  *       k += 1; .stuck = false; <jets>; if .stuck then break end   -- a loop of the expression got stuck
  *       step = num / den; t -= step; a = |step|; scale = 1 + |t|
  *       if a <= .epsilon scale then conv = true; break end          -- converged
- *       if a <= 1e-3 scale and a >= prev / 2 then conv = true; break end
- *                                    -- steps stopped shrinking: rounding noise of 32-bit floats
+ *       if a <= 1e-3 scale and prev / 2 <= a < 1.4 prev then conv = true; break end
+ *                                    -- steps stopped shrinking: rounding noise of 32-bit floats, or a multiple
+ *                                       root (steps growing faster: moving away from a pole, not converging)
  *       if not (a < 1e30) then break end                             -- diverged (or NaN)
  *       prev = a
  *   end */
@@ -1287,7 +1292,10 @@ static void ad_newton(AD *ad, int op, Expr *body, bool pbody, Sym *t, PChart *pc
     Expr *eps = ad_name(ad, ad->p->s_epsilon);
     ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, eps, ad_name(ad, scale))), conv));
     Expr *small = ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 1e-3f), ad_name(ad, scale)));
-    Expr *stalled = ad_bin(ad, TK_GE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 0.5f), ad_name(ad, prev)));
+    /* (not shrinking, but not growing much either: next to a pole of order m, where they are small too, the steps grow
+       by 1 + 1/m, so 2 for a simple pole (1.5 for the derivative's double pole when looking for a critical point)) */
+    Expr *stalled = ad_bin(ad, TK_AND, ad_bin(ad, TK_GE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 0.5f), ad_name(ad, prev))),
+                           ad_bin(ad, TK_LT, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 1.4f), ad_name(ad, prev))));
     ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_AND, small, stalled), conv));
     ad_emit(ad, ad_if_break(ad, ad_not(ad, ad_bin(ad, TK_LT, ad_name(ad, a), ad_real(ad, 1e30f))), NULL));
     ad_assign(ad, prev, ad_name(ad, a));
@@ -1388,6 +1396,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
         arg->args = NULL;
         body->args[0] = arg;
     }
+    Expr *spare = !pmode && !cont ? clone_expr(&p->arena, body) : NULL; /* (in case it is a map to the sphere) */
     Scope lam = {{0}, c->scope};
     vec_push(lam.syms, var);
     Scope *saved_scope = c->scope;
@@ -1396,6 +1405,29 @@ static Type *chk_solve(Checker *c, Expr *e) {
     c->scope = saved_scope;
     vec_free(lam.syms);
     if (bt == t_error) return t_error;
+    if (bt == t_proj && spare) {
+        /* a map to the sphere at a complex number: the variable is a point too, so that both sides use natural charts
+           (a multiplier is a product of derivatives at points of a cycle, each the source of one and the target of
+           another). If the expression only works with a complex variable, it stays one. */
+        int d0 = p->diags.len, e0 = p->nerrors;
+        Sym *pv = new_sym(c, var->name, t_proj, SYM_LOCAL, e->line, e->col);
+        pv->owner = f;
+        Scope plam = {{0}, c->scope};
+        vec_push(plam.syms, pv);
+        c->scope = &plam;
+        Type *pt = chk(c, spare);
+        c->scope = saved_scope;
+        vec_free(plam.syms);
+        if (pt == t_proj && p->nerrors == e0) {
+            pmode = true;
+            var = pv;
+            body = spare;
+            e->b = coerce(c, e->b, t_proj, "the point");
+        } else {
+            p->diags.len = d0;
+            p->nerrors = e0;
+        }
+    }
     bool pbody = bt == t_proj; /* a map to the sphere */
     if (!pbody && (!type_is_number(bt) || bt == t_quat)) {
         ERR(c, body, "the expression after '->' must be a number or a point of the sphere, not %s", type_str(bt));

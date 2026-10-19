@@ -106,11 +106,18 @@ L : List of P = [0, ∞, 1 + i]
 ```
 
 A formula of a point `z` (sums, products, quotients and integer powers of `z` and of numbers) is
-computed with the coordinates of `z`, the common factors cancelled, so a rational map written as a
-formula is right everywhere, also where `z` or its value is `∞`. (A value kept in a variable along the
-way loses that: `w := z^2` then `w / z` is `[0 : 0]` at infinity, where `z^2 / z` is `∞`. Write maps as
-one formula, or as a function of `z`.) Transcendental functions (`exp`, `sin`, ...) take complex
-numbers: use `complex(p)`. `derivative`, `root` and `critical` work on points too (see below).
+computed with the coordinates of `z`, the common powers of `z` (and of its coordinates) cancelled, so
+a rational map written as a formula is right everywhere, also where `z` or its value is `∞`. Two
+things lose that:
+
+- a value kept in a variable along the way: `w := z^2` then `w / z` is `[0 : 0]` at infinity, where
+  `z^2 / z` is `∞`. Write maps as one formula, or as a function of `z`;
+- terms that cancel each other: `z - z^2/(z + 1)` is `z/(z + 1)`, which is 1 at infinity, but
+  written this way its leading terms cancel and it gives `[0 : 0]` there (so does
+  `(z + 1)^2 - z^2`). Simplify such formulas first.
+
+Transcendental functions (`exp`, `sin`, ...) take complex numbers: use `complex(p)`. `derivative`,
+`root` and `critical` work on points too (see below).
 
 ## Variables
 
@@ -262,7 +269,8 @@ Other variables in the expression are constants for the derivative. Conditions m
 holomorphic: `re`, `im`, `conj`, `|z|` and `arg` can't be differentiated.
 
 **On the sphere.** With a point of `P` after `at` or `with seed`, the variable is a point too, and
-`f` may be a map to the sphere:
+`f` may be a map to the sphere. So is it when the expression is a point (a map to the sphere), even
+if the point after `at` is written as a complex number, and then `root` and `critical` give points:
 
 ```
 define f(z : P) = (z^2 + a)/(z^2 - 1)

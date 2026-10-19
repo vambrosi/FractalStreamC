@@ -665,6 +665,59 @@ TEST(projective_points) {
     CHECK_POINT(p, "x1", (sqrt(3.0) - 1) / 2, 0);
     CHECK_NEAR(gnum(p, "mu", 0), -2, 1e-3);
     program_free(p);
+    /* the same with the point written as a complex number: still natural charts on both sides (2/z swaps 2 and 1:
+       multiplier 1); a map to the sphere makes `critical` give a point */
+    p = LOAD_OK(
+        "@global\n"
+        "define f(z : P) = 2 / z\n"
+        "xc := 2\n"
+        "mc := (derivative f at xc) * (derivative f at f(xc))\n"
+        "define g(z : P) = (z^2 + 0.3)/(z^2 - 1)\n"
+        "cg := critical t -> g(t) with seed 0.1\n");
+    CHECK_NEAR(gnum(p, "mc", 0), 1, 1e-5);
+    CHECK_NEAR(gnum(p, "mc", 1), 0, 1e-5);
+    CHECK_POINT(p, "cg", 0, 0);
+    program_free(p);
+    /* pieces of a formula with calls: computed in order (a global read before the call that changes it), the same
+       variable once (so its powers still cancel at 0 and ∞), any number of them in a derivative */
+    p = LOAD_OK(
+        "@global\n"
+        "g : P = 2\n"
+        "define bump(z : P) = r : P where\n"
+        "    g = 10\n"
+        "    r = z\n"
+        "end\n"
+        "a := g * bump(1)\n"
+        "define id(z : P) = z\n"
+        "define t1(w : P) = w * w / w + id(0)\n"
+        "define t2(w : P) = (w^2 + 1)/(w^2 - 1) * id(1)\n"
+        "q1 := t1(∞)\n"
+        "q2 := t2(∞)\n"
+        "define sq(w : P) = w^2\n"
+        "d := derivative t -> sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) +"
+        " sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) +"
+        " sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) + sq(t) at [0.1 : 1]\n");
+    CHECK_POINT(p, "a", 2, 0);
+    CHECK_POINT(p, "q1", INFINITY, 0);
+    CHECK_POINT(p, "q2", 1, 0);
+    CHECK_NEAR(gnum(p, "d", 0), 34 * 0.2, 1e-4);
+    program_free(p);
+    /* Newton's method moves away from a pole (its steps grow): not a root */
+    p = LOAD_OK(
+        "@global\n"
+        "define fc(z : C) = (z^2 + 0.25)/(z^2 - 1)\n"
+        "q := root fc with seed 0.999\n"
+        "sq := .stuck\n"
+        "define f(z : P) = (z^2 + 0.25)/(z^2 - 1)\n"
+        "r := root f with seed [0.999 : 1]\n"
+        "sr := .stuck\n"
+        "r2 := root f with seed [0.6i : 1]\n"   /* (a root: 0.5i) */
+        "sr2 := .stuck\n");
+    CHECK_NEAR(gnum(p, "sq", 0), 1, 0);
+    CHECK_NEAR(gnum(p, "sr", 0), 1, 0);
+    CHECK_NEAR(gnum(p, "sr2", 0), 0, 0);
+    CHECK_POINT(p, "r2", 0, 0.5);
+    program_free(p);
 }
 
 TEST(autodiff_through_loops) {
