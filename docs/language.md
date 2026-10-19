@@ -54,16 +54,17 @@ end
 
 | type | meaning | literals / constructors |
 |---|---|---|
-| `Z` (`Integers`) | 32-bit integers | `42` |
-| `R` (`Reals`) | real numbers (32-bit floats) | `2.5`, `1e-3`, `pi`, `e`, `tau` |
+| `Z` (`Integer`) | 32-bit integers | `42` |
+| `R` (`Real`) | real numbers (32-bit floats) | `2.5`, `1e-3`, `pi`, `e`, `tau` |
 | `C` (`Complex`) | complex numbers | `3i`, `2 + 0.5i`, `complex(x, y)`, `cis(t)`, `polar(r, t)` |
-| `H` (`Quaternions`) | quaternions | `quat(a, b, c, d)`, `.j`, `.k` |
-| `Bool` | `true` / `false` | comparisons, `and`, `or`, `not` |
+| `H` (`Quaternion`) | quaternions | `quat(a, b, c, d)`, `.j`, `.k` |
+| `Bool` (`Boolean`) | `true` / `false` | comparisons, `and`, `or`, `not` |
 | `R^3`, `C^2`, `Z^5`, ... | fixed-size vectors | `[1, 2, 3]` |
 | `Color` | same as `R^3` (red, green, blue in 0..1) | `rgb(r, g, b)`, `hsv(h, s, v)`, `gray(v)`, `.red` |
 | `List of C` (etc.) | list of up to 64 numbers (`List of C up to 1000`: up to 1000) | `[]`, `[1, i]`, `append(L, x)` |
 
-`i` is the imaginary unit and can't be used as a variable name.
+`i` is the imaginary unit and can't be used as a variable name. A number has the type it is written
+with: `2` is `Z`, `2.5` is `R` (so are `pi`, `e`, `tau`), `2i` and `2 + 0.5i` are `C`.
 
 **Promotion.** Numbers convert automatically along `Z -> R -> C -> H` (and elementwise for
 vectors), never backwards: use `re`, `im`, `|z|`, `floor`, `ceil`, `round` to go down.
@@ -85,19 +86,26 @@ keeps all its digits, so a script can open at a deep place.
 ```
 x : R = 2.5          # declaration with a type
 n : Z                # declared, starts at 0
-z := 1 + i           # declaration with the type of the value
-w = z^2              # assignment; declares w if no variable named w exists yet
+z := 1 + i           # declaration without a type: see below
+w := 0
+w = w^2 + c          # assignment, to a variable declared before
 w += 1               # also -=, *=, /=
 v[2] = 0             # vectors, lists, and the parts of C (z[1] = re, z[2] = im) and H
 (a, b) := f(x)       # unpack a function's results
 (x, y) = (x^2 + c - a y, x)   # parallel assignment: every value is computed before any is stored
 ```
 
-- **Untyped declarations take the type of their value, but plain numbers are complex.**
-  `z := 0` and `t := 2.5` declare complex numbers (so `n := 0` can't count a `for` loop: write
-  `n : Z = 0`), while `r := |z|` is real, `k := n + 1` is an integer when `n` is, and
-  `(n, ok) := f(x)` keeps the types of `f`'s results. Untyped vectors are at least real
-  (`v := [1, 2]` is `R^2`).
+- **Declare, then assign.** `x := ...` (or `x : T = ...`) declares a variable; `x = ...` assigns
+  one that is already declared. Assigning a name that isn't declared is an error (with a "did you
+  mean ...?" when it looks like a typo), so a misspelt name can't quietly become a new variable.
+- **A variable declared without a type takes the widest type it is given:** first the type of its
+  value, then wider if the script assigns it wider values. With `w := 0` and then
+  `w = w^2 + c` (`c` complex), `w` is complex; with `t := 0` and `t = t + 0.1`, `t` is real;
+  `n := 0` stays an integer if it only counts. `r := |z|` is real, `(n, ok) := f(x)` keeps the
+  types of `f`'s results, and vectors are at least real (`v := [1, 2]` is `R^2`). Hover over a
+  name in the editor to see its type.
+- Give the type when it matters from the start: `c : C = 0` for a config value you will set to
+  complex numbers (`c := 0` makes a field for integers), `x : R = 1` for a real number.
 - **Scopes.** A section body and a function body are scopes; `if`/`for`/`while` bodies are not.
   A `for` loop always declares its own counter.
 - Viewers can change globals, but only their own per-pixel copy. Tools change the real state.
@@ -162,7 +170,7 @@ color = if use_arenberg then palette("arenberg", m) ...
 ## Functions
 
 ```
-define f(z) = z^2 + c                    # one expression; untyped parameters are C
+define f(z) = z^2 + c                    # one expression
 define g(x : R, n : Z) = x^n
 define h(x, y) = (u, w) where            # several results, computed by a block
     u = x + y
@@ -180,9 +188,19 @@ end
 mark(0.5i)
 ```
 
+**Parameters without a type take the type of the argument.** `f(2)` computes with an integer,
+`f(0.5)` with a real number and `f(z)` with a complex number: each list of argument types gets its
+own copy of `f`, made when the script is checked, so one definition serves every type it makes
+sense for (`sq(x) = x^2` squares integers, reals, complex numbers and vectors). Inside, such a
+parameter can still get wider, like a variable declared without a type. Results without a type
+take the widest type assigned to them. A function nothing calls yet is checked as if called with
+complex numbers (or real numbers, or integers: the first that works), so typos show up at once.
+A parameter with a type converts its argument (`g(x : R)` turns `g(2)` into `g(2.0)`).
+
 Functions see the global state (and may change it), their parameters, their results and their own
 variables; not the variables of the section that calls them. Functions with the same name but
-different parameter types are allowed (the closest match is used). Recursion is not supported.
+different parameter types are allowed (the closest match is used; when one with types and one
+without fit equally well, the one with types is used). Recursion is not supported.
 
 ## Derivatives and Newton's method
 
@@ -261,6 +279,9 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.red .green .blue
 .black .white .gray .yellow .cyan .magenta .orange .purple .pink .brown .violet`, quaternion units
 `.j .k`.
+
+Most of these functions are written in the language itself: the reference in the app (F2) ends
+with their definitions, and `fractalstream --builtins` prints them.
 
 ## Internals (names starting with a dot)
 

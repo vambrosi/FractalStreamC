@@ -139,10 +139,11 @@ TEST(types_and_conversions) {
         "@global\n"
         "n : Z = 7\n"
         "x : R = n / 2\n"
-        "c := 7\n"          /* untyped number -> C */
-        "d := n\n"          /* untyped from a value: its type */
+        "c := 7\n"          /* untyped: the type of the value (7 is Z, 2.5 is R, 2i is C) */
+        "d := n\n"
         "t := n / 2 + pi\n" /* R */
-        "u := 2 pi + 1\n"   /* numbers and constants -> C */
+        "u := 2 pi + 1\n"   /* R */
+        "w := 2 + 0i\n"     /* C */
         "q : H = 1 + 2i\n"
         "v : R^3 = [1, 2, 3]\n"
         "k : Z = 2^10\n"
@@ -151,10 +152,11 @@ TEST(types_and_conversions) {
         "f : R = 7.5 mod 2\n"
         "b := 3 > 2 and not false\n");
     CHECK_NEAR(gnum(p, "x", 0), 3.5, 1e-6);
-    CHECK(find_global(p, "c") && find_global(p, "c")->type == t_complex);
+    CHECK(find_global(p, "c") && find_global(p, "c")->type == t_int);
     CHECK(find_global(p, "d") && find_global(p, "d")->type == t_int);
     CHECK(find_global(p, "t") && find_global(p, "t")->type == t_real);
-    CHECK(find_global(p, "u") && find_global(p, "u")->type == t_complex);
+    CHECK(find_global(p, "u") && find_global(p, "u")->type == t_real);
+    CHECK(find_global(p, "w") && find_global(p, "w")->type == t_complex);
     CHECK_NEAR(gnum(p, "q", 1), 2, 1e-6);
     CHECK_NEAR(gnum(p, "v", 2), 3, 1e-6);
     CHECK_NEAR(gnum(p, "k", 0), 1024, 0);
@@ -165,7 +167,9 @@ TEST(types_and_conversions) {
     program_free(p);
     EXPECT_ERROR("@global\nr : R = 2i\n", "must be R");
     EXPECT_ERROR("@global\nk : Z = 2.5\n", "floor, ceil or round");
-    EXPECT_ERROR("@global\nn := 3\nfor k in 1..n do\nend\n", "integers");
+    EXPECT_ERROR("@global\nn := 3.5\nfor k in 1..n do\nend\n", "integers");
+    EXPECT_ERROR("@global\nx : Integers = 2\n", "write Integer (or Z)");
+    EXPECT_ERROR("@global\nx : Reals = 2\n", "write Real (or R)");
     EXPECT_ERROR("@global\nb := 1i < 2\n", "can't be ordered");
 }
 
@@ -435,7 +439,7 @@ TEST(errors) {
     EXPECT_ERROR("x := 1\nx\n", "does nothing");
     EXPECT_ERROR("@viewer a z\ncolor = .red\n@viewer a w\ncolor = .red\n", "already a viewer");
     EXPECT_ERROR("color = 2 3\n", "explicit *");
-    EXPECT_ERROR("@global\nx := 5\n@viewer v z\ncolor = gray(x)\n", "must be R");
+    EXPECT_ERROR("@global\nx := 5i\n@viewer v z\ncolor = gray(x)\n", "must be R");
     EXPECT_ERROR("@global\ndefine sin(x : R) = x\n", "built-in");
     EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\nw := z\n", "only defined inside the viewer");
 }
@@ -688,6 +692,142 @@ TEST(solve_fails_when_its_expression_gets_stuck) {
     program_free(p);
 }
 
+TEST(variables_take_the_widest_type_assigned) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "x := 1\n"
+        "x = x / 2\n"            /* R */
+        "n := 0\n"
+        "for k in 1..4 do\n"
+        "    n = n + k\n"        /* stays Z */
+        "end\n"
+        "z := 0\n"
+        "z = z + 1i\n"           /* C */
+        "v := [1, 2]\n"
+        "v[2] = 0.5i\n"          /* C^2 */
+        "(a, b) := (1, 2)\n"
+        "(a, b) = (b, a + 0.5i)\n" /* b is C, so a is too */
+        "define count(t) = m where\n"
+        "    m = 0\n"
+        "    while m < t do\n"
+        "        m = m + 1\n"
+        "    end\n"
+        "end\n"
+        "q := count(2.5)\n"
+        "define sum3(u) = s where\n" /* an output without a type: what is assigned to it */
+        "    s = u\n"
+        "    s = s + u + u\n"
+        "end\n"
+        "r := sum3(0.5)\n"
+        "@viewer plane c\n"
+        "w := 0\n"
+        "while w not escapes do\n"
+        "    w = w^2 + c\n"
+        "end\n"
+        "color = .black\n");
+    CHECK(find_global(p, "x") && find_global(p, "x")->type == t_real);
+    CHECK_NEAR(gnum(p, "x", 0), 0.5, 1e-7);
+    CHECK(find_global(p, "n") && find_global(p, "n")->type == t_int);
+    CHECK_NEAR(gnum(p, "n", 0), 10, 0);
+    CHECK(find_global(p, "z") && find_global(p, "z")->type == t_complex);
+    CHECK(find_global(p, "v") && find_global(p, "v")->type == type_vec(t_complex, 2));
+    CHECK_NEAR(gnum(p, "v", 3), 0.5, 1e-7);
+    CHECK(find_global(p, "a") && find_global(p, "a")->type == t_complex);
+    CHECK(find_global(p, "b") && find_global(p, "b")->type == t_complex);
+    CHECK_NEAR(gnum(p, "a", 0), 2, 1e-7);
+    CHECK_NEAR(gnum(p, "b", 1), 0.5, 1e-7);
+    CHECK(find_global(p, "q") && find_global(p, "q")->type == t_int);
+    CHECK_NEAR(gnum(p, "q", 0), 3, 0);
+    CHECK(find_global(p, "r") && find_global(p, "r")->type == t_real);
+    CHECK_NEAR(gnum(p, "r", 0), 1.5, 1e-7);
+    Sym *w = NULL;
+    for (int i = 0; i < p->viewers[0]->locals.len; i++)
+        if (!strcmp(p->viewers[0]->locals.data[i]->name, "w")) w = p->viewers[0]->locals.data[i];
+    CHECK(w && w->type == t_complex);
+    program_free(p);
+    /* a value that can't fit: the error is about the assignment */
+    EXPECT_ERROR("@global\nk := 1\nk = true\n", "must be Z, but this is Bool");
+    EXPECT_ERROR("@global\nn : Z = 1\nn = 0.5\n", "floor, ceil or round");
+}
+
+TEST(assigning_needs_a_declaration) {
+    EXPECT_ERROR("@viewer v z\nw := z\nwx = w^2\ncolor = .red\n", "'wx' isn't declared: did you mean 'w'?");
+    EXPECT_ERROR("@viewer v z\nn = 1\ncolor = .red\n", "declare it with n := ... (or with its type: n : Z = ...)");
+    EXPECT_ERROR("@viewer v z\n(a, b) = (1, 2)\ncolor = .red\n", "'a' isn't declared");
+    EXPECT_ERROR("@global\ncount := 0\n@tool \"T\"\ncuont = 1\n", "did you mean 'count'?");
+    EXPECT_ERROR("@global\nCount := 0\n@tool \"T\"\ncount = 1\n", "did you mean 'Count'?");
+    /* one error for the name, not more for its uses */
+    Program *p = load_src("@viewer v z\nq = 1\nq = q + 1\ncolor = gray(q)\n");
+    CHECK_INT(p->nerrors, 1);
+    program_free(p);
+}
+
+TEST(generic_functions) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define sq(x) = x^2\n"
+        "define twice(x) = y where\n"
+        "    y = x + x\n"
+        "end\n"
+        "define acc(z, n : Z) = w where\n"
+        "    w = 0\n"
+        "    for k in 1..n do\n"
+        "        w = w + z\n"
+        "    end\n"
+        "end\n"
+        "define g(x : R) = 1\n"
+        "define g(x) = 2\n"
+        "define unused(t) = t < 1\n"   /* (checked anyway: it works for real numbers) */
+        "define rainbow(t) = [t, t, t]\n"
+        "a := sq(3)\n"
+        "b := sq(1.5)\n"
+        "c := sq(1 + 2i)\n"
+        "d := twice(2)\n"
+        "e := twice([1, 2])\n"
+        "f := acc(2, 3)\n"
+        "h := acc(0.5i, 4)\n"
+        "k := g(1.5)\n"
+        "m := g(true)\n"
+        "col := rainbow(0.25)\n"
+        "@viewer plane z\n"
+        "color = gray(|sq(z)|)\n");
+    CHECK(find_global(p, "a") && find_global(p, "a")->type == t_int);
+    CHECK_NEAR(gnum(p, "a", 0), 9, 0);
+    CHECK(find_global(p, "b") && find_global(p, "b")->type == t_real);
+    CHECK_NEAR(gnum(p, "b", 0), 2.25, 1e-6);
+    CHECK(find_global(p, "c") && find_global(p, "c")->type == t_complex);
+    CHECK_NEAR(gnum(p, "c", 0), -3, 1e-6);
+    CHECK_NEAR(gnum(p, "c", 1), 4, 1e-6);
+    CHECK(find_global(p, "d") && find_global(p, "d")->type == t_int);
+    CHECK(find_global(p, "e") && find_global(p, "e")->type->kind == T_VEC);
+    CHECK_NEAR(gnum(p, "e", 1), 4, 1e-6);
+    CHECK(find_global(p, "f") && find_global(p, "f")->type == t_int);
+    CHECK_NEAR(gnum(p, "f", 0), 6, 0);
+    CHECK(find_global(p, "h") && find_global(p, "h")->type == t_complex);
+    CHECK_NEAR(gnum(p, "h", 1), 2, 1e-6);
+    CHECK_NEAR(gnum(p, "k", 0), 1, 0); /* the version with types wins */
+    CHECK_NEAR(gnum(p, "m", 0), 2, 0);
+    CHECK_NEAR(gnum(p, "col", 1), 0.25, 1e-6); /* the script's rainbow */
+    program_free(p);
+    EXPECT_ERROR("@global\ndefine f(x) = x < 1\nv := f(1i)\n", "(in f(x : C), called on line 3)");
+    EXPECT_ERROR("@global\ndefine bad(t) = foo + t\n", "since nothing calls it yet");
+    EXPECT_ERROR("@global\ndefine f(x) = 1\ndefine f(y) = 2\n", "already defined");
+    EXPECT_ERROR("@global\ndefine sin(x) = x\n", "built-in");
+    EXPECT_ERROR("@global\ndefine f(z) = f(z + 1)\nx := f(1)\n", "recursive");
+    /* the same error in two instances is reported once */
+    p = load_src("@global\ndefine f(x) = foo(x)\na := f(1)\nb := f(1i)\n");
+    int n = 0;
+    for (int i = 0; i < p->diags.len; i++)
+        if (strstr(p->diags.data[i].msg, "unknown name 'foo'")) n++;
+    CHECK_INT(n, 1);
+    program_free(p);
+    /* derivatives through a generic function */
+    p = LOAD_OK("@global\ndefine f(z) = z^3 - 1\nd := derivative f at 2\nr := root f with seed 1 + 0.5i\n");
+    CHECK_NEAR(gnum(p, "d", 0), 12, 1e-5);
+    CHECK_NEAR(gnum(p, "r", 0), 1, 1e-5);
+    program_free(p);
+}
+
 TEST(declarations_take_the_type_of_their_value) {
     Program *p = LOAD_OK(
         "@global\n"
@@ -701,7 +841,7 @@ TEST(declarations_take_the_type_of_their_value) {
         "q := fract(2.5)\n");
     CHECK(find_global(p, "n") && find_global(p, "n")->type == t_int);
     CHECK(find_global(p, "ok") && find_global(p, "ok")->type == t_bool);
-    CHECK(find_global(p, "x") && find_global(p, "x")->type == t_complex);
+    CHECK(find_global(p, "x") && find_global(p, "x")->type == t_int);
     CHECK(find_global(p, "y") && find_global(p, "y")->type == t_int);
     CHECK(find_global(p, "r") && find_global(p, "r")->type == t_real);
     CHECK(find_global(p, "q") && find_global(p, "q")->type == t_real);
@@ -1197,6 +1337,9 @@ static const TestCase tests_lang[] = {
     TESTCASE(pixel_size_and_px),
     TESTCASE(solve_fails_when_its_expression_gets_stuck),
     TESTCASE(declarations_take_the_type_of_their_value),
+    TESTCASE(variables_take_the_widest_type_assigned),
+    TESTCASE(assigning_needs_a_declaration),
+    TESTCASE(generic_functions),
     TESTCASE(autodiff_through_loops),
     TESTCASE(continuing_checks),
     TESTCASE(projective_mapping),

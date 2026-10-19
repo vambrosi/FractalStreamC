@@ -114,14 +114,21 @@ static void initial_center_lo(Program *p, Section *v) {
     lo[1] = fw((float)(im - (double)(float)im));
 }
 
-/* Parse + check + initial state.  Always returns a Program; check
- * p->nerrors / p->diags.  `source` is copied. */
-Program *program_load(const char *source, const char *path) {
+/* One run of parse + check (+ initial state), with what earlier runs found out about the types of untyped variables
+ * (`hints`).  If this run finds a variable that must be wider (p->new_hints) and it isn't the last run, the program is
+ * not run (program_load runs the checker again). */
+static Program *program_load_round(const char *source, const char *path, const TypeHint *hints, int nhints, bool final) {
     types_init();
     Program *p = (Program *)xcalloc(1, sizeof(Program));
     p->path = path ? arena_strndup(&p->arena, path, strlen(path)) : "script";
     p->source = arena_strndup(&p->arena, source, strlen(source));
     p->title = "FractalStream";
+    p->final_round = final;
+    if (nhints) {
+        p->hints = (TypeHint *)xmalloc(sizeof(TypeHint) * (size_t)nhints);
+        memcpy(p->hints, hints, sizeof(TypeHint) * (size_t)nhints);
+        p->nhints = p->cap_hints = nhints;
+    }
 
     NameVec builtins = {0}, ufuncs = {0}, gvars = {0};
     for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) vec_push(builtins, intrinsics[k].name);
@@ -147,6 +154,7 @@ Program *program_load(const char *source, const char *path) {
     vec_free(ufuncs);
     vec_free(gvars);
     if (p->nerrors == 0) check_program(p);
+    if (p->new_hints && !final) return p; /* (run again with wider types) */
     if (getenv("FS_DUMP_FUNCS")) { /* debugging aid: print generated functions */
         StrBuf sb = {0};
         for (int i = 0; i < p->funcs.len; i++)
@@ -196,6 +204,29 @@ Program *program_load(const char *source, const char *path) {
     return p;
 }
 
+void program_free(Program *p);
+
+/* Parse + check + initial state.  Always returns a Program; check p->nerrors / p->diags.  `source` is copied.
+ * A variable declared without a type takes the widest type it is assigned: when the checker finds an assignment
+ * that needs a wider type, it notes it and the whole script is checked again (a few times at most). */
+Program *program_load(const char *source, const char *path) {
+    TypeHint *hints = NULL;
+    int nhints = 0;
+    for (int round = 0;; round++) {
+        bool final = round >= 6;
+        Program *p = program_load_round(source, path, hints, nhints, final);
+        if (!p->new_hints || final) {
+            free(hints);
+            return p;
+        }
+        free(hints);
+        nhints = p->nhints;
+        hints = (TypeHint *)xmalloc(sizeof(TypeHint) * (size_t)FS_MAX(nhints, 1));
+        memcpy(hints, p->hints, sizeof(TypeHint) * (size_t)nhints);
+        program_free(p);
+    }
+}
+
 /* Run the @prepare sections on `state` (after the state changed); what they print goes to `out` (if not NULL).
  * False (message in err) on an error. */
 bool program_prepare_ex(Program *p, u32 *state, StrBuf *out, char *err, int errcap) {
@@ -216,6 +247,7 @@ bool program_prepare(Program *p, u32 *state, char *err, int errcap) { return pro
 void program_free(Program *p) {
     if (!p) return;
     free(p->load_output);
+    free(p->hints);
     for (int i = 0; i < p->sections.len; i++) vec_free(p->sections.data[i]->locals);
     for (int i = 0; i < p->funcs.len; i++) vec_free(p->funcs.data[i]->locals);
     vec_free(p->tokens);

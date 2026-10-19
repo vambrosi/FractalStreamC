@@ -15,7 +15,7 @@
 .escapeRadius = 10
 # the b of the dynamical plane (pick it in the b-plane)
 .c = 0.6 + 0.2i
-a := 0.3                      # "default a to 0.3."
+a : C = 0.3                   # "default a to 0.3."
 zoom : R = 0.001              # "default zoom to 0.001."
 
 @global

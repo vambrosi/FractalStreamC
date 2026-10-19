@@ -19,6 +19,7 @@ static const char *cli_usage =
     "  fractalstream --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
     "                                      run a tool once at a point (a click, or one event of a tool with\n"
     "                                      'on' blocks); print what it prints, its draw calls and the globals\n"
+    "  fractalstream --builtins            print how the built-in functions are defined\n"
     "  fractalstream --version | --help\n";
 
 static int cli_load(const char *path, Program **out) {
@@ -225,6 +226,7 @@ int cli_main(int argc, char **argv) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { printf("%s", cli_usage); return 0; }
         if (!strcmp(a, "--version")) { printf("FractalStream %s\n", FS_VERSION); return 0; }
+        if (!strcmp(a, "--builtins")) { printf("%s", prelude_source); return 0; }
         if (!strcmp(a, "--check") || !strcmp(a, "--state")) { mode = a; continue; }
         if ((!strcmp(a, "--spirv") || !strcmp(a, "--render")) && i + 1 < argc) { mode = a; arg = argv[++i]; continue; }
         if (!strcmp(a, "--viewer") && i + 1 < argc) { viewer = argv[++i]; continue; }

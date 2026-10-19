@@ -163,6 +163,26 @@ static bool rd_load(void) {
     if (!md) return false;
     rd_parse(md, &rd.blocks);
     free(md);
+    /* and how the built-in functions are defined (the prelude, without the palettes' data) */
+    StrBuf sb = {0};
+    sb_puts(&sb, "## Definitions of the built-in functions\n\n"
+                 "Most built-in functions are written in the language itself, and this is their source "
+                 "(also printed by `fractalstream --builtins`).\n\n```\n");
+    bool skipped = false;
+    for (const char *l = prelude_source; *l;) {
+        const char *e = strchr(l, '\n');
+        int n = e ? (int)(e - l) : (int)strlen(l);
+        if (!strncmp(l, "define __palette_", 17)) {
+            if (!skipped) sb_puts(&sb, "# (the palettes of palette(\"name\", t): __wheel with other colours)\n");
+            skipped = true;
+        } else {
+            sb_printf(&sb, "%.*s\n", n, l);
+        }
+        l += n + (e ? 1 : 0);
+    }
+    sb_puts(&sb, "```\n");
+    rd_parse(sb_cstr(&sb), &rd.blocks);
+    sb_free(&sb);
     return rd.blocks.len > 0;
 }
 

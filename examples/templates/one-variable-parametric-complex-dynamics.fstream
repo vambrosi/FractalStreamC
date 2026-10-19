@@ -26,7 +26,7 @@ dynamical.radius = 3
 "indicate what color to use for that pixel."
 "Use the dynamic variable to test if the script is " +
 "running in the z-plane."
-z0 := 0 "Initial value for z in the C plane"
+z0 : C = 0 "Initial value for z in the C plane"
 
 @config "Parameter value"
 .C = 0 "C"  # (pick it in the parameter plane)

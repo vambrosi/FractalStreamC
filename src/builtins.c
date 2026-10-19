@@ -64,6 +64,14 @@ static const IntrinsicInfo intrinsics[] = {
  * Overloads are chosen by argument type (fewest promotions wins), so
  * sin(2) uses the real version and sin(2 + i) the complex one. */
 static const char *prelude_source =
+    "# The built-in functions that are written in the language itself.\n"
+    "# Names that start with __ are instructions of the GPU (and of the\n"
+    "# CPU interpreter), not meant for scripts. A name can have several\n"
+    "# definitions with different parameter types: a call uses the one\n"
+    "# that fits its arguments best, so sin(2) is the real sine and\n"
+    "# sin(2 + i) the complex one.\n"
+    "\n"
+    "# ---- real numbers\n"
     "define sin(x : R) = __sin(x)\n"
     "define cos(x : R) = __cos(x)\n"
     "define tan(x : R) = __tan(x)\n"
@@ -106,7 +114,8 @@ static const char *prelude_source =
     "define mix(a : R^3, b : R^3, t : R) = a + (b - a) * t\n"
     "define smoothstep(a : R, b : R, x : R) = __smoothstep(a, b, x)\n"
     "define step(edge : R, x : R) = __step(edge, x)\n"
-    /* complex numbers */
+    "\n"
+    "# ---- complex numbers\n"
     "define arg(z : C) = __atan2(im(z), re(z))\n"
     "define conj(z : C) = complex(re(z), -im(z))\n"
     "define norm(z : C) = re(z) * re(z) + im(z) * im(z)\n"
@@ -137,7 +146,8 @@ static const char *prelude_source =
     "define asin(z : C) = -i * log(i * z + sqrt(1 - z * z))\n"
     "define acos(z : C) = complex(1.570796327, 0) - asin(z)\n"
     "define atan(z : C) = 0.5 * i * (log(1 - i * z) - log(1 + i * z))\n"
-    /* powers used by ^ when the exponent is not a small integer constant */
+    "\n"
+    "# ---- powers, for ^ when the exponent is not a small integer constant\n"
     "define __powr(x : R, y : R) = __pow(x, y)\n"
     "define __powc(z : C, w : C) = p : C where\n"
     "    if re(z) * re(z) + im(z) * im(z) <= 0 then\n"
@@ -176,9 +186,11 @@ static const char *prelude_source =
     "        r = 1 / r\n"
     "    end\n"
     "end\n"
-    /* quaternions */
+    "\n"
+    "# ---- quaternions\n"
     "define conj(q : H) = quat(q[1], -q[2], -q[3], -q[4])\n"
-    /* colours (components between 0 and 1; hue in turns) */
+    "\n"
+    "# ---- colours (components between 0 and 1; the hue in turns)\n"
     "define rgb(r : R, g : R, b : R) = [r, g, b]\n"
     "define gray(v : R) = [v, v, v]\n"
     "define grey(v : R) = [v, v, v]\n"
@@ -189,7 +201,9 @@ static const char *prelude_source =
     "    b : R = __fclamp(2 - __fabs(hh - 4), 0, 1)\n"
     "    c = [v * (1 - s + s * r), v * (1 - s + s * g), v * (1 - s + s * b)]\n"
     "end\n"
-    /* colour helpers and palettes of the first FractalStream (a script may define its own instead) */
+    "\n"
+    "# ---- colour helpers and palettes of the first FractalStream (a script\n"
+    "# may define its own blend, cycle, dark, light, invert and rainbow)\n"
     "define blend(t : R, a : R^3, b : R^3) = a * t + b * (1 - t)\n"
     "define cycle(t : R, a : R^3, b : R^3) = c : R^3 where\n"
     "    u : R = 2 * __fract(t)\n"

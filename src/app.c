@@ -177,13 +177,19 @@ static App A;
 static const char *welcome_script =
     "# Welcome to FractalStream!\n"
     "#\n"
-    "# This is a script: edit it and the pictures follow as soon as there are no errors.\n"
-    "# Ctrl+Enter runs it, Ctrl+S saves it, F1 shows all the keys (Cmd instead of Ctrl on a Mac).\n"
-    "# The bar on the left has a numbered button for each view, with the view's tools below it\n"
-    "# (drag a number onto the pictures to split or float that view); the bar on the right has\n"
-    "# the config and what you can do with the view you clicked last. Try \"Pick point\" in the\n"
-    "# parameter plane: the Julia set follows the point. The language is described in\n"
-    "# docs/language.md (F2 shows it here).\n"
+    "# This is a script: edit it and the pictures follow as\n"
+    "# soon as there are no errors. Ctrl+Enter runs it,\n"
+    "# Ctrl+S saves it, F1 shows all the keys (Cmd instead\n"
+    "# of Ctrl on a Mac).\n"
+    "#\n"
+    "# The bar on the left has a numbered button for each\n"
+    "# view, with the view's tools below it (drag a number\n"
+    "# onto the pictures to split or float that view); the\n"
+    "# bar on the right has the config and what you can do\n"
+    "# with the view you clicked last. Try \"Pick point\" in\n"
+    "# the parameter plane: the Julia set follows the point.\n"
+    "# The language is described in docs/language.md (F2\n"
+    "# shows it here).\n"
     "\n"
     "@config\n"
     ".title = \"Mandelbrot and Julia sets\"\n"
@@ -973,7 +979,7 @@ static void update_completions(Program *p) {
     static const char *words[] = {"critical", "root", "derivative", "seed", "continuing", "from", "erase", "all",
                                   "on", "press", "release", "click", "hover", "show", "hide", "button", "append",
                                   "clear", "line", "point", "circle", "disk", "text", "radius", "color", "width",
-                                  "List", "Integers", "Reals", "Complex", "Quaternions", "Bool", "Color", "up"};
+                                  "List", "Integer", "Real", "Complex", "Quaternion", "Boolean", "Bool", "Color", "up"};
     static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick",
                                       ".mouse", ".dragStart", ".width", ".height", ".title", ".stuck",
                                       ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
@@ -990,7 +996,7 @@ static void update_completions(Program *p) {
     if (p) {
         for (int i = 0; i < p->funcs.len; i++) {
             Func *f = p->funcs.data[i];
-            if (f->name[0] != '_') ADD_NAME(f->name, f->prelude ? "built-in" : "function");
+            if (f->name[0] != '_' && !f->tmpl) ADD_NAME(f->name, f->prelude ? "built-in" : "function");
         }
         for (int i = 0; i < p->globals.len; i++) {
             Sym *g = p->globals.data[i];
@@ -1098,11 +1104,26 @@ static const char *hover_info(void *user, const char *word) {
         int shown = 0;
         for (int i = 0; i < p->funcs.len && !var && shown < 4; i++) { /* functions (several for the overloads) */
             Func *f = p->funcs.data[i];
-            if (strcmp(f->name, word) != 0) continue;
+            if (strcmp(f->name, word) != 0 || f->tmpl || f->shadowed) continue; /* (instances: below) */
             sb_printf(&sb, "%s%s(", shown ? "\n" : "", f->name);
-            for (int k = 0; k < f->nparams; k++)
-                sb_printf(&sb, "%s%s : %s", k ? ", " : "", f->params[k]->name, f->params[k]->type ? type_str(f->params[k]->type) : "?");
-            sb_printf(&sb, ")%s%s", f->ret ? " : " : "", f->ret ? type_str(f->ret) : "");
+            for (int k = 0; k < f->nparams; k++) {
+                if (f->generic && !f->param_tsyn[k]) sb_printf(&sb, "%s%s", k ? ", " : "", f->params[k]->name);
+                else sb_printf(&sb, "%s%s : %s", k ? ", " : "", f->params[k]->name, f->params[k]->type ? type_str(f->params[k]->type) : "?");
+            }
+            if (!f->generic) {
+                sb_printf(&sb, ")%s%s", f->ret ? " : " : "", f->ret ? type_str(f->ret) : "");
+            } else { /* the copies made for the calls */
+                sb_puts(&sb, ")\n(parameters without a type take the type of the argument)");
+                int ninst = 0;
+                for (Func *g = f->instances; g; g = g->next_instance) {
+                    if (g->probe || g->failed || ninst >= 4) continue;
+                    sb_printf(&sb, "\n%s %s(", ninst ? "    " : "used as", g->name);
+                    for (int k = 0; k < g->nparams; k++)
+                        sb_printf(&sb, "%s%s : %s", k ? ", " : "", g->params[k]->name, type_str(g->params[k]->type));
+                    sb_printf(&sb, ")%s%s", g->ret ? " : " : "", g->ret ? type_str(g->ret) : "");
+                    ninst++;
+                }
+            }
             shown++;
         }
         for (int k = 0; k < ARRAY_COUNT(intrinsics) && !sb.len; k++) { /* built-ins */

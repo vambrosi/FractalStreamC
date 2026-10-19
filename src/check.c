@@ -1,11 +1,14 @@
 /* check.c - name resolution, type checking, implicit conversions, layout.
  *
  * Scoping (Python-like): a section body and a function body are scopes;
- * if/for/while bodies are not.  Declarations: `x := e`, `x : T = e`, or a
- * plain `x = e` to a name that is not yet visible.  Untyped numeric
- * variables are complex (C); untyped vectors are at least real.  Variables
- * declared in @global/@config (outside functions) are program state.
- * Functions see globals, their parameters, outputs and own locals.
+ * if/for/while bodies are not.  Declarations: `x := e` or `x : T = e`
+ * (assigning a name that isn't declared is an error).  Numbers have their
+ * own types (2 is Z, 2.5 is R, 2i is C); a variable declared without a type
+ * takes the widest type assigned to it anywhere: when an assignment needs a
+ * wider type, the checker notes it (Program.hints) and program_load checks
+ * the script again.  Untyped vectors are at least real.  Variables declared
+ * in @global/@config (outside functions) are program state.  Functions see
+ * globals, their parameters, outputs and own locals.
  * Implicit promotions: Z -> R -> C -> H (elementwise for vectors). */
 #include "ast.h"
 #include <ctype.h>
@@ -98,6 +101,10 @@ bool type_is_number(Type *t) { return type_number_rank(t) > 0; }
 bool type_is_scalar_real(Type *t) { return t->kind == T_INT || t->kind == T_REAL; }
 
 void type_name(Type *t, StrBuf *out) {
+    if (!t) { /* (a parameter of a generic function: any type) */
+        sb_puts(out, "any");
+        return;
+    }
     switch (t->kind) {
     case T_ERROR: sb_puts(out, "<error>"); break;
     case T_VOID: sb_puts(out, "nothing"); break;
@@ -194,6 +201,7 @@ typedef struct Checker {
     SymVec *locals;  /* frame of the current section/function */
     bool load;       /* in @global/@config outside functions */
     int loop_depth;
+    u64 ctx;         /* the instance of a generic function being checked (0: none): see TypeHint */
 } Checker;
 
 static Sym *new_sym(Checker *c, const char *name, Type *t, SymKind kind, int line, int col) {
@@ -204,6 +212,7 @@ static Sym *new_sym(Checker *c, const char *name, Type *t, SymKind kind, int lin
     s->line = line;
     s->col = col;
     s->viewer_index = -1;
+    s->hint_ctx = c->ctx;
     return s;
 }
 
@@ -232,10 +241,9 @@ static Expr *mk_convert(Checker *c, Expr *e, Type *to) {
 }
 
 static const char *narrowing_hint(Type *from, Type *to) {
-    if (from->kind == T_COMPLEX && type_is_scalar_real(to))
-        return " (use re(z), im(z) or |z| to get a real number; untyped variables are complex, so declare reals as `x : R = ...`)";
+    if (from->kind == T_COMPLEX && type_is_scalar_real(to)) return " (use re(z), im(z) or |z| to get a real number)";
     if (from->kind == T_REAL && to->kind == T_INT) return " (use floor, ceil or round to get an integer)";
-    if (from->kind == T_COMPLEX && to->kind == T_INT) return " (untyped variables are complex; declare integers as `n : Z = ...`)";
+    if (from->kind == T_COMPLEX && to->kind == T_INT) return " (use re(z), im(z) or |z|, then floor, ceil or round)";
     return "";
 }
 
@@ -263,31 +271,22 @@ static Type *join_numbers(Type *a, Type *b) {
     return type_number_of_rank(FS_MAX(type_number_rank(a), type_number_rank(b)));
 }
 
-/* a value written only with numbers and constants (0, 2.5, 1 + 2i, 2 pi) */
-static bool is_number_literal(Expr *e) {
-    if (!e) return false;
-    switch (e->kind) {
-    case E_INT: case E_REAL: case E_IMAG: return true;
-    case E_NAME: return e->sym && e->sym->kind == SYM_CONST && type_is_number(e->sym->type);
-    case E_CONVERT: return is_number_literal(e->a);
-    case E_UNARY: return e->op == TK_MINUS && is_number_literal(e->a);
-    case E_POWI: return is_number_literal(e->a);
-    case E_BINARY:
-        return (e->op == TK_PLUS || e->op == TK_MINUS || e->op == TK_STAR || e->op == TK_SLASH) && is_number_literal(e->a) &&
-               is_number_literal(e->b);
-    default: return false;
-    }
-}
-
-/* Type for an untyped declaration initialised with `value` (of type t): the type of the value, except
-   that plain numbers are complex (`z := 0` is the usual start of an iteration).  Vectors are at least real. */
+/* Type for an untyped declaration initialised with a value of type t: the type of the value (2 is Z, 2.5 is R);
+   vectors are at least real.  (It may get wider, see TypeHint.) */
 static Type *infer_decl_type(Type *t, Expr *value) {
-    if (type_is_number(t)) {
-        if (t->kind == T_QUAT) return t_quat;
-        return !value || is_number_literal(value) ? t_complex : t;
-    }
+    (void)value;
     if (t->kind == T_VEC && type_number_rank(t->elem) < 2) return type_vec(t_real, t->n);
     return t;
+}
+
+/* the type that holds values of both a and b (numbers: the wider one; vectors of the same length: elementwise), or
+   NULL */
+static Type *join_types(Type *a, Type *b) {
+    if (a == b) return a;
+    if (type_is_number(a) && type_is_number(b)) return join_numbers(a, b);
+    if (a->kind == T_VEC && b->kind == T_VEC && a->n == b->n && type_is_number(a->elem) && type_is_number(b->elem))
+        return type_vec(join_numbers(a->elem, b->elem), a->n);
+    return NULL;
 }
 
 /* ---- type syntax ------------------------------------------------------- */
@@ -295,11 +294,11 @@ static Type *resolve_tsyn(Checker *c, TypeSyntax *ts) {
     if (!ts) return t_complex;
     const char *b = ts->base;
     Type *base = NULL;
-    if (!strcmp(b, "Z") || !strcmp(b, "Integers") || !strcmp(b, "Integer") || !strcmp(b, "Int")) base = t_int;
-    else if (!strcmp(b, "R") || !strcmp(b, "Reals") || !strcmp(b, "Real")) base = t_real;
+    if (!strcmp(b, "Z") || !strcmp(b, "Integer")) base = t_int;
+    else if (!strcmp(b, "R") || !strcmp(b, "Real")) base = t_real;
     else if (!strcmp(b, "C") || !strcmp(b, "Complex")) base = t_complex;
-    else if (!strcmp(b, "H") || !strcmp(b, "Quaternions") || !strcmp(b, "Quaternion")) base = t_quat;
-    else if (!strcmp(b, "Bool") || !strcmp(b, "Boolean") || !strcmp(b, "Booleans") || !strcmp(b, "B")) base = t_bool;
+    else if (!strcmp(b, "H") || !strcmp(b, "Quaternion")) base = t_quat;
+    else if (!strcmp(b, "Bool") || !strcmp(b, "Boolean")) base = t_bool;
     else if (!strcmp(b, "Color") || !strcmp(b, "Colour")) base = t_color;
     else if (!strcmp(b, "List")) {
         Type *e = resolve_tsyn(c, ts->elem);
@@ -309,8 +308,19 @@ static Type *resolve_tsyn(Checker *c, TypeSyntax *ts) {
         }
         return type_list(e, ts->cap > 0 ? ts->cap : 64);
     } else {
+        static const char *plural[][2] = {{"Integers", "Integer"}, {"Reals", "Real"}, {"Quaternions", "Quaternion"},
+                                          {"Booleans", "Boolean"}, {"Int", "Integer"}, {"Colors", "Color"}};
+        for (int k = 0; k < ARRAY_COUNT(plural); k++)
+            if (!strcmp(b, plural[k][0])) {
+                prog_diag(c->prog, DIAG_ERROR, ts->line, ts->col, ts->col + (int)strlen(b),
+                          "unknown type '%s': write %s (or %s)", b, plural[k][1],
+                          !strcmp(plural[k][1], "Integer") ? "Z" : !strcmp(plural[k][1], "Real") ? "R" :
+                          !strcmp(plural[k][1], "Quaternion") ? "H" : !strcmp(plural[k][1], "Boolean") ? "Bool" : "Color");
+                return t_error;
+            }
         prog_diag(c->prog, DIAG_ERROR, ts->line, ts->col, ts->col + (int)strlen(b),
-                  "unknown type '%s' (types are Z, R, C, H, Bool, Color, R^n and List of T)", b);
+                  "unknown type '%s' (types are Z, R, C, H, Bool, Color, R^n and List of T; or Integer, Real, Complex, "
+                  "Quaternion)", b);
         return t_error;
     }
     if (ts->power) {
@@ -679,6 +689,180 @@ static Type *chk_generic_intrinsic(Checker *c, Expr *e, int id) {
     return t_void;
 }
 
+/* ---- type inference: variables declared without a type ------------------------------------------------------ */
+/* what an earlier run found out about the variable declared at (line, col) (in the instance ctx of a generic
+   function, 0 outside them), or NULL */
+static Type *hint_at(Program *p, int line, int col, u64 ctx) {
+    for (int i = 0; i < p->nhints; i++)
+        if (p->hints[i].line == line && p->hints[i].col == col && p->hints[i].ctx == ctx) return p->hints[i].type;
+    return NULL;
+}
+static Type *hint_for(Checker *c, int line, int col) { return hint_at(c->prog, line, col, c->ctx); }
+
+static bool storable(Type *t) {
+    return t && t != t_error && t != t_void && t != t_string && t->kind != T_TUPLE;
+}
+
+/* An assignment gives the untyped variable s a value of type vt that it can't hold: note that it must be wider (the
+   script is checked again).  False if it can't be (s has a type, or the types don't mix), or on the last run. */
+static bool widen_sym(Checker *c, Sym *s, Type *vt) {
+    Program *p = c->prog;
+    if (!s || !s->untyped || p->final_round || !storable(vt)) return false;
+    Type *w = s->unknown_type ? vt : join_types(s->type, vt); /* (an output with no value yet takes any) */
+    if (!w || w == s->type) return false;
+    for (int i = 0; i < p->nhints; i++)
+        if (p->hints[i].line == s->line && p->hints[i].col == s->col && p->hints[i].ctx == s->hint_ctx) {
+            Type *j = join_types(p->hints[i].type, w);
+            p->hints[i].type = j ? j : w;
+            p->new_hints = true;
+            return true;
+        }
+    if (p->nhints == p->cap_hints) {
+        p->cap_hints = p->cap_hints ? 2 * p->cap_hints : 16;
+        p->hints = (TypeHint *)xrealloc(p->hints, sizeof(TypeHint) * (size_t)p->cap_hints);
+    }
+    p->hints[p->nhints++] = (TypeHint){s->line, s->col, s->hint_ctx, w};
+    p->new_hints = true;
+    return true;
+}
+
+/* ---- generic functions: copies of a template ----------------------------------------------------------------- */
+static Expr *clone_expr(Arena *a, Expr *e) {
+    if (!e) return NULL;
+    Expr *n = ARENA_NEW(a, Expr);
+    *n = *e;
+    n->a = clone_expr(a, e->a);
+    n->b = clone_expr(a, e->b);
+    n->cont_from = clone_expr(a, e->cont_from);
+    if (e->args) {
+        n->args = ARENA_ARRAY(a, Expr *, e->nargs > 0 ? e->nargs : 1);
+        for (int i = 0; i < e->nargs; i++) n->args[i] = clone_expr(a, e->args[i]);
+    }
+    return n;
+}
+
+static Block clone_block(Arena *a, Block *b);
+static Stmt *clone_stmt(Arena *a, Stmt *s) {
+    Stmt *n = ARENA_NEW(a, Stmt);
+    *n = *s;
+    n->target = clone_expr(a, s->target);
+    n->value = clone_expr(a, s->value);
+    n->range_lo = clone_expr(a, s->range_lo);
+    n->range_hi = clone_expr(a, s->range_hi);
+    n->body = clone_block(a, &s->body);
+    n->else_body = clone_block(a, &s->else_body);
+    n->from = clone_expr(a, s->from);
+    n->to = clone_expr(a, s->to);
+    n->step = clone_expr(a, s->step);
+    if (s->targets) {
+        n->targets = ARENA_ARRAY(a, Expr *, s->ntargets > 0 ? s->ntargets : 1);
+        for (int i = 0; i < s->ntargets; i++) n->targets[i] = clone_expr(a, s->targets[i]);
+    }
+    n->p0 = clone_expr(a, s->p0);
+    n->p1 = clone_expr(a, s->p1);
+    n->radius = clone_expr(a, s->radius);
+    n->color = clone_expr(a, s->color);
+    n->width = clone_expr(a, s->width);
+    n->text = clone_expr(a, s->text);
+    return n;
+}
+
+static Block clone_block(Arena *a, Block *b) {
+    Block n = {0};
+    if (b->n <= 0) return n;
+    n.n = b->n;
+    n.stmts = ARENA_ARRAY(a, Stmt *, b->n);
+    for (int i = 0; i < b->n; i++) n.stmts[i] = clone_stmt(a, b->stmts[i]);
+    return n;
+}
+
+static u64 fnv_str(u64 h, const char *s) {
+    for (; *s; s++) {
+        h ^= (unsigned char)*s;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+/* an output declared without a type: the widest type assigned to it (a placeholder until something is) */
+static void untyped_output(Program *p, Sym *s, u64 ctx) {
+    Type *h = hint_at(p, s->line, s->col, ctx);
+    s->type = h ? h : t_int;
+    s->untyped = true;
+    s->unknown_type = !h;
+    s->hint_ctx = ctx;
+}
+
+/* The copy of the generic function t for arguments of types at (the existing one, or a new one) */
+static Func *instantiate(Checker *c, Func *t, Type **at, int call_line) {
+    for (Func *g = t->instances; g; g = g->next_instance) {
+        bool same = true;
+        for (int i = 0; i < t->nparams && same; i++)
+            if (g->arg_types[i] != at[i]) same = false;
+        if (same) return g;
+    }
+    Arena *a = &c->prog->arena;
+    Func *f = ARENA_NEW(a, Func);
+    *f = *t;
+    f->generic = false;
+    f->tmpl = t;
+    f->instances = f->next_instance = NULL;
+    f->next_overload = NULL;
+    f->locals = (SymVec){0};
+    f->check_state = 0;
+    f->failed = f->uses_draw = f->spv_emitted = f->probe = false;
+    f->ncalls = 0;
+    f->ret = NULL;
+    f->spv_fn = 0;
+    f->call_line = call_line;
+    f->arg_types = ARENA_ARRAY(a, Type *, t->nparams + 1);
+    u64 h = fnv_str(1469598103934665603ull, t->name);
+    for (int i = 0; i < t->nparams; i++) {
+        f->arg_types[i] = at[i];
+        h = fnv_str(fnv_str(h, ","), type_str(at[i]));
+    }
+    f->ctx = h ? h : 1;
+    f->params = ARENA_ARRAY(a, Sym *, t->nparams + 1);
+    for (int i = 0; i < t->nparams; i++) {
+        Sym *s = ARENA_NEW(a, Sym);
+        *s = *t->params[i];
+        s->owner = f;
+        s->hint_ctx = f->ctx;
+        if (!t->param_tsyn[i]) { /* the argument's type, or wider if the function assigns wider values to it */
+            Type *hh = hint_at(c->prog, s->line, s->col, f->ctx), *j = hh ? join_types(at[i], hh) : NULL;
+            s->type = j ? j : at[i];
+            s->untyped = true;
+        }
+        f->params[i] = s;
+    }
+    f->outputs = ARENA_ARRAY(a, Sym *, t->noutputs + 1);
+    for (int i = 0; i < t->noutputs; i++) {
+        Sym *s = ARENA_NEW(a, Sym);
+        *s = *t->outputs[i];
+        s->owner = f;
+        s->hint_ctx = f->ctx;
+        if (!t->output_tsyn[i]) untyped_output(c->prog, s, f->ctx);
+        f->outputs[i] = s;
+    }
+    f->body_expr = clone_expr(a, t->body_expr);
+    f->body = clone_block(a, &t->body);
+    Func **pp = &t->instances;
+    while (*pp) pp = &(*pp)->next_instance;
+    *pp = f;
+    vec_push(c->prog->funcs, f);
+    return f;
+}
+
+/* "f(z : C, n : Z)": an instance as the messages show it */
+static void instance_name(Func *f, StrBuf *sb) {
+    sb_printf(sb, "%s(", f->name);
+    for (int i = 0; i < f->nparams; i++) {
+        sb_printf(sb, "%s%s : ", i ? ", " : "", f->params[i]->name);
+        type_name(f->params[i]->type, sb);
+    }
+    sb_putc(sb, ')');
+}
+
 static Type *chk_call(Checker *c, Expr *e) {
     const char *name = e->name;
     if (name && !strcmp(name, "palette") && e->nargs == 2 && e->args[0]->kind == E_STRING) {
@@ -725,6 +909,7 @@ static Type *chk_call(Checker *c, Expr *e) {
             cost = ci < 0 ? -1 : cost + ci;
         }
         if (cost < 0) continue;
+        cost *= 2; /* (see below) */
         if (cost < best_cost) { best_cost = cost; nbest = 1; best_intr = k; best_fn = NULL; }
         else if (cost == best_cost) nbest++;
     }
@@ -738,10 +923,12 @@ static Type *chk_call(Checker *c, Expr *e) {
         if (f->nparams != e->nargs) continue;
         int cost = 0;
         for (int i = 0; i < e->nargs && cost >= 0; i++) {
-            int ci = conv_cost(e->args[i]->type, f->params[i]->type);
+            int ci = f->generic && !f->param_tsyn[i] ? (storable(e->args[i]->type) ? 0 : -1) /* (takes any value) */
+                                                     : conv_cost(e->args[i]->type, f->params[i]->type);
             cost = ci < 0 ? -1 : cost + ci;
         }
         if (cost < 0) continue;
+        cost = 2 * cost + (f->generic ? 1 : 0); /* when a generic function fits as well, the one with types wins */
         if (cost < best_cost) { best_cost = cost; nbest = 1; best_fn = f; best_intr = -1; }
         else if (cost == best_cost) nbest++;
     }
@@ -756,13 +943,20 @@ static Type *chk_call(Checker *c, Expr *e) {
         for (Func *f = head; f; f = f->next_overload)
             if (f->nparams == e->nargs) { only = f; ncand++; }
         if (ncand == 1) {
-            for (int i = 0; i < e->nargs; i++)
+            for (int i = 0; i < e->nargs; i++) {
+                if (only->generic && !only->param_tsyn[i]) {
+                    if (storable(e->args[i]->type)) continue;
+                    ERR(c, e->args[i], "argument %d of '%s' must be a value, but this is %s", i + 1, name,
+                        type_str(e->args[i]->type));
+                    return t_error;
+                }
                 if (conv_cost(e->args[i]->type, only->params[i]->type) < 0) {
                     ERR(c, e->args[i], "argument %d of '%s' must be %s, but this is %s%s", i + 1, name,
                         type_str(only->params[i]->type), type_str(e->args[i]->type),
                         narrowing_hint(e->args[i]->type, only->params[i]->type));
                     return t_error;
                 }
+            }
         }
         StrBuf sb = {0};
         for (int i = 0; i < e->nargs; i++) {
@@ -776,7 +970,8 @@ static Type *chk_call(Checker *c, Expr *e) {
             sb_printf(&alts, "%s(", name);
             for (int i = 0; i < f->nparams; i++) {
                 if (i) sb_puts(&alts, ", ");
-                type_name(f->params[i]->type, &alts);
+                if (f->generic && !f->param_tsyn[i]) sb_puts(&alts, "any");
+                else type_name(f->params[i]->type, &alts);
             }
             sb_putc(&alts, ')');
         }
@@ -801,6 +996,20 @@ static Type *chk_call(Checker *c, Expr *e) {
         return r == 'Z' ? t_int : r == 'R' ? t_real : r == 'C' ? t_complex : r == 'H' ? t_quat : t_bool;
     }
     Func *f = best_fn;
+    if (f->generic) { /* the copy of the function for these argument types */
+        for (Func *g = f->instances; g; g = g->next_instance)
+            if (g->check_state == 1) {
+                ERR(c, e, "'%s' calls itself; recursive functions are not supported", name);
+                return t_error;
+            }
+        Type *at[64];
+        if (e->nargs > 64) {
+            ERR(c, e, "too many arguments");
+            return t_error;
+        }
+        for (int i = 0; i < e->nargs; i++) at[i] = f->param_tsyn[i] ? f->params[i]->type : e->args[i]->type;
+        f = instantiate(c, f, at, e->line);
+    }
     for (int i = 0; i < e->nargs; i++) e->args[i] = mk_convert(c, e->args[i], f->params[i]->type);
     e->fn = f;
     if (f->check_state == 1) {
@@ -960,6 +1169,48 @@ static Type *chk(Checker *c, Expr *e) {
     }
     e->type = t;
     return t;
+}
+
+/* ---- "did you mean ...?" ------------------------------------------------------------------------------------- */
+static int edit_distance(const char *a, const char *b) {
+    int la = (int)strlen(a), lb = (int)strlen(b);
+    if (la > 40 || lb > 40) return 99;
+    int d[41][41];
+    for (int i = 0; i <= la; i++) d[i][0] = i;
+    for (int j = 0; j <= lb; j++) d[0][j] = j;
+    for (int i = 1; i <= la; i++)
+        for (int j = 1; j <= lb; j++) {
+            int sub = d[i - 1][j - 1] + (a[i - 1] != b[j - 1]);
+            d[i][j] = FS_MIN(sub, FS_MIN(d[i - 1][j] + 1, d[i][j - 1] + 1));
+        }
+    return d[la][lb];
+}
+
+static bool same_ignoring_case(const char *a, const char *b) {
+    for (; *a && *b; a++, b++)
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+    return *a == *b;
+}
+
+/* the variable visible here whose name is closest to `name` (a typo), or NULL */
+static const char *closest_name(Checker *c, const char *name) {
+    const char *best = NULL;
+    int len = (int)strlen(name), bestd = len <= 4 ? 2 : 3;
+    for (Scope *s = c->scope; s; s = s->parent)
+        for (int i = 0; i < s->syms.len; i++) {
+            Sym *x = s->syms.data[i];
+            if (x->name[0] == '_' || x->name[0] == '.' || x->kind == SYM_CONST) continue;
+            int xl = (int)strlen(x->name), d;
+            if (same_ignoring_case(name, x->name)) d = 0;
+            else if (len > 1 && xl > 1) d = edit_distance(name, x->name);
+            else if (xl == 1 && len == 2 && strchr(name, x->name[0])) d = 1; /* (wx for w; but not n for c) */
+            else continue;
+            if (d < bestd) {
+                bestd = d;
+                best = x->name;
+            }
+        }
+    return best;
 }
 
 /* ---- statements -------------------------------------------------------- */
@@ -1154,9 +1405,12 @@ static void chk_stmt(Checker *c, Stmt *s) {
             if (vt == t_error) { declare(c, tg, tg->name, t_error); return; }
             if (vt == t_void) { ERR(c, s->value, "this doesn't produce a value"); return; }
             t = infer_decl_type(vt, s->value);
+            Type *h = hint_for(c, tg->line, tg->col), *j = h ? join_types(t, h) : NULL; /* (assigned wider values) */
+            if (j) t = j;
             s->value = coerce(c, s->value, t, "the value");
         }
         Sym *sym = declare(c, tg, tg->name, t);
+        if (sym && !s->tsyn && sym->line == tg->line && sym->col == tg->col) sym->untyped = true;
         s->sym = sym;
         tg->sym = sym;
         tg->type = t;
@@ -1182,22 +1436,18 @@ static void chk_stmt(Checker *c, Stmt *s) {
         if (tg->kind == E_NAME) {
             Sym *sym = lookup_name(c, tg->name);
             if (sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym) sym = NULL; /* shadow pi, e */
-            if (!sym) {
-                if (s->op != TK_ASSIGN) {
-                    ERR(c, tg, "'%s' has no value yet; set it with '=' first", tg->name);
-                    return;
-                }
+            if (!sym) { /* (a typo would otherwise make a new variable) */
+                const char *near = closest_name(c, tg->name);
                 Type *vt = chk(c, s->value);
-                if (vt == t_error) { declare(c, tg, tg->name, t_error); return; }
-                if (vt == t_void) { ERR(c, s->value, "this doesn't produce a value"); return; }
-                Type *t = infer_decl_type(vt, s->value);
-                sym = declare(c, tg, tg->name, t);
-                s->value = coerce(c, s->value, t, "the value");
-                s->implicit_decl = true;
-                s->sym = sym;
-                tg->sym = sym;
-                tg->type = t;
-                chk_config_extras(c, s, sym, true);
+                if (near)
+                    ERR(c, tg, "'%s' isn't declared: did you mean '%s'? (A new variable is declared with %s := ...)",
+                        tg->name, near, tg->name);
+                else if (vt != t_error && vt != t_void && s->op == TK_ASSIGN)
+                    ERR(c, tg, "'%s' isn't declared: declare it with %s := ... (or with its type: %s : %s = ...)",
+                        tg->name, tg->name, tg->name, type_str(infer_decl_type(vt, s->value)));
+                else
+                    ERR(c, tg, "'%s' isn't declared: declare it with %s := ...", tg->name, tg->name);
+                declare(c, tg, tg->name, t_error); /* (no more errors about it) */
                 return;
             }
         }
@@ -1228,6 +1478,13 @@ static void chk_stmt(Checker *c, Stmt *s) {
         }
         Type *vt = chk(c, s->value);
         if (vt == t_error) return;
+        if (conv_cost(vt, tt) < 0) { /* an untyped variable gets wider (the script is checked again) */
+            if (tg == base && widen_sym(c, base->sym, vt)) return;
+            if (tg->kind == E_INDEX && tg->a == base && base->sym && base->sym->type->kind == T_VEC) {
+                Type *el = join_types(base->sym->type->elem, vt);
+                if (el && type_is_number(el) && widen_sym(c, base->sym, type_vec(el, base->sym->type->n))) return;
+            }
+        }
         s->value = coerce(c, s->value, tt, "the new value");
         if (s->range_lo || s->label || s->choices) {
             if (tg != base || !base->sym) ERR(c, tg, "only a whole variable can have a slider, choices or a label");
@@ -1320,9 +1577,15 @@ static void chk_stmt(Checker *c, Stmt *s) {
             if (tg->kind == E_NAME) {
                 Sym *sym = s->declare ? NULL : lookup_name(c, tg->name);
                 if (sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym) sym = NULL;
+                if (!sym && !s->declare) {
+                    ERR(c, tg, "'%s' isn't declared: declare the names with (...) := ...", tg->name);
+                    return;
+                }
                 if (!sym) {
-                    sym = declare(c, tg, tg->name, infer_decl_type(it, v)); /* (n, ok) := f(x) keeps f's types */
+                    Type *dt = infer_decl_type(it, v), *h = hint_for(c, tg->line, tg->col), *j = h ? join_types(dt, h) : NULL;
+                    sym = declare(c, tg, tg->name, j ? j : dt); /* (n, ok) := f(x) keeps f's types */
                     if (!sym) return;
+                    if (sym->line == tg->line && sym->col == tg->col) sym->untyped = true;
                 }
                 tg->sym = sym;
                 tg->type = sym->type;
@@ -1475,14 +1738,47 @@ static void layout_frame(SymVec *locals, int *frame_words) {
 }
 
 static void resolve_signature(Checker *c, Func *f) {
-    for (int i = 0; i < f->nparams; i++) {
-        f->params[i]->type = resolve_tsyn(c, f->param_tsyn[i]);
+    for (int i = 0; i < f->nparams; i++) { /* a parameter without a type makes the function generic */
+        f->params[i]->type = f->param_tsyn[i] ? resolve_tsyn(c, f->param_tsyn[i]) : NULL;
         f->params[i]->owner = f;
+        if (!f->param_tsyn[i]) f->generic = true;
     }
     for (int i = 0; i < f->noutputs; i++) {
-        f->outputs[i]->type = resolve_tsyn(c, f->output_tsyn[i]);
         f->outputs[i]->owner = f;
+        if (f->output_tsyn[i]) f->outputs[i]->type = resolve_tsyn(c, f->output_tsyn[i]);
+        else if (!f->generic) untyped_output(c->prog, f->outputs[i], 0);
+        else f->outputs[i]->type = NULL; /* (each instance has its own) */
     }
+}
+
+/* Errors found in an instance of a generic function: say which one (once for each place) */
+static void note_instance_errors(Checker *c, Func *f, int d0) {
+    Program *p = c->prog;
+    int w = d0;
+    for (int i = d0; i < p->diags.len; i++) {
+        Diag d = p->diags.data[i];
+        if (!d.noted) {
+            bool dup = false; /* the same error in another instance */
+            for (int k = 0; k < d0 && !dup; k++) {
+                Diag *o = &p->diags.data[k];
+                size_t n = strlen(d.msg);
+                if (o->line == d.line && o->col == d.col && o->noted && !strncmp(o->msg, d.msg, n) && o->msg[n] == ' ')
+                    dup = true;
+            }
+            if (dup) continue; /* (still counted in nerrors) */
+            StrBuf sb = {0};
+            sb_printf(&sb, "%s (%s ", d.msg, f->probe ? "checked as" : "in");
+            instance_name(f, &sb);
+            if (f->probe) sb_puts(&sb, ", since nothing calls it yet");
+            else if (f->call_line > 0 && f->call_line < PRELUDE_LINE0) sb_printf(&sb, ", called on line %d", f->call_line);
+            sb_putc(&sb, ')');
+            d.msg = arena_strndup(&p->arena, sb_cstr(&sb), (size_t)sb.len);
+            sb_free(&sb);
+            d.noted = true;
+        }
+        p->diags.data[w++] = d;
+    }
+    p->diags.len = w;
 }
 
 static void check_func(Checker *c, Func *f) {
@@ -1494,7 +1790,8 @@ static void check_func(Checker *c, Func *f) {
     c->locals = &f->locals;
     c->load = false;
     c->loop_depth = 0;
-    int errs = c->prog->nerrors;
+    c->ctx = f->tmpl ? f->ctx : 0;
+    int errs = c->prog->nerrors, d0 = c->prog->diags.len;
     for (int i = 0; i < f->nparams; i++) {
         for (int j = 0; j < i; j++)
             if (!strcmp(f->params[i]->name, f->params[j]->name))
@@ -1538,10 +1835,46 @@ static void check_func(Checker *c, Func *f) {
         }
     }
     if (c->prog->nerrors != errs || f->ret == t_error) f->failed = true;
+    if (f->tmpl) note_instance_errors(c, f, d0);
     layout_frame(&f->locals, &f->frame_words);
     vec_free(fscope.syms);
     f->check_state = 2;
     *c = saved;
+}
+
+/* A generic function nothing calls is checked anyway (for typos...), as if called with complex numbers, or real
+   numbers, or integers: its errors are shown when none of them works (those of the complex numbers). */
+static void probe_template(Checker *c, Func *t) {
+    Program *p = c->prog;
+    static Type **tries[3] = {&t_complex, &t_real, &t_int};
+    Diag *saved = NULL;
+    int nsaved = 0, saved_errors = 0;
+    for (int k = 0; k < 3; k++) {
+        Type *at[64];
+        for (int i = 0; i < t->nparams && i < 64; i++) at[i] = t->param_tsyn[i] ? t->params[i]->type : *tries[k];
+        int d0 = p->diags.len, e0 = p->nerrors;
+        Func *g = instantiate(c, t, at, 0);
+        g->probe = true;
+        if (g->check_state == 0) {
+            c->scope = &c->globals;
+            check_func(c, g);
+        }
+        if (!g->failed) {
+            free(saved);
+            return;
+        }
+        if (k == 0) { /* keep the complex numbers' errors */
+            nsaved = p->diags.len - d0;
+            saved_errors = p->nerrors - e0;
+            saved = (Diag *)xmalloc(sizeof(Diag) * (size_t)FS_MAX(nsaved, 1));
+            memcpy(saved, p->diags.data + d0, sizeof(Diag) * (size_t)nsaved);
+        }
+        p->diags.len = d0;
+        p->nerrors = e0;
+    }
+    for (int i = 0; i < nsaved; i++) vec_push(p->diags, saved[i]);
+    p->nerrors += saved_errors;
+    free(saved);
 }
 
 /* ---- sections ----------------------------------------------------------- */
@@ -1699,7 +2032,7 @@ bool check_program(Program *p) {
                 for (int q = 0; q < f->nparams && same; q++) {
                     char pc = in->params[q];
                     Type *pt = pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : t_bool;
-                    if (f->params[q]->type != pt) same = false;
+                    if (f->param_tsyn[q] && f->params[q]->type != pt) same = false; /* (no type: any) */
                 }
                 if (same) {
                     prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
@@ -1712,15 +2045,22 @@ bool check_program(Program *p) {
         if (!head) continue;
         bool dup = false;
         for (Func *g = head; g; g = g->next_overload) {
-            bool same = f->nparams == g->nparams && !g->shadowed;
-            for (int k = 0; same && k < f->nparams; k++)
-                if (f->params[k]->type != g->params[k]->type) same = false;
+            bool same = f->nparams == g->nparams && !g->shadowed, over = false; /* over: f takes what g takes */
+            for (int k = 0; same && k < f->nparams; k++) {
+                bool fa = !f->param_tsyn[k], ga = !g->param_tsyn[k]; /* (no type: any) */
+                if (fa && !ga) over = true;
+                else if (fa != ga || f->params[k]->type != g->params[k]->type) same = false;
+            }
             if (!same) continue;
             if (g->prelude && !f->prelude && replaceable_builtin(g->name)) {
                 g->shadowed = true; /* the script's own rainbow(t) replaces the built-in one (built-ins keep theirs) */
-            } else if (g->prelude && !f->prelude) {
+                continue;
+            }
+            if (g->prelude && !f->prelude) {
                 prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
                 dup = true;
+            } else if (over) { /* f(x) besides f(x : R): both (the one with types wins when both fit) */
+                continue;
             } else {
                 prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is already defined with the same parameter types (line %d)", f->name, g->line);
                 dup = true;
@@ -1739,7 +2079,7 @@ bool check_program(Program *p) {
     }
     for (int i = 0; i < p->funcs.len; i++) {
         Func *f = p->funcs.data[i];
-        if (!f->prelude && f->check_state == 0) {
+        if (!f->prelude && !f->generic && !f->tmpl && f->check_state == 0) {
             c->scope = &c->globals;
             check_func(c, f);
         }
@@ -1747,6 +2087,10 @@ bool check_program(Program *p) {
     for (int i = 0; i < p->sections.len; i++) {
         Section *s = p->sections.data[i];
         if (s->kind == SEC_VIEWER || s->kind == SEC_TOOL || s->kind == SEC_PREPARE) check_section(c, s);
+    }
+    for (int i = 0, n = p->funcs.len; i < n; i++) { /* generic functions nothing calls */
+        Func *f = p->funcs.data[i];
+        if (f->generic && !f->prelude && !f->instances) probe_template(c, f);
     }
     layout_globals(p);
     vec_free(c->builtin.syms);

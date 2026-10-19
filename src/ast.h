@@ -13,6 +13,7 @@ typedef struct Diag {
     DiagSeverity severity;
     int line, col, end_col; /* 1-based; end_col exclusive (0 = unknown) */
     char *msg;
+    bool noted;             /* (check.c: says which instance of a generic function it is about) */
 } Diag;
 typedef VEC(Diag) DiagVec;
 
@@ -174,7 +175,6 @@ struct Stmt {
     int op;             /* S_ASSIGN: TK_ASSIGN, TK_PLUSEQ, ... */
     TypeSyntax *tsyn;   /* S_DECL: annotation (NULL for :=) */
     Sym *sym;           /* declared symbol (S_DECL, S_FOR, S_FOREACH) */
-    bool implicit_decl; /* S_ASSIGN that declared a new variable */
     Expr *range_lo, *range_hi; /* @config slider range `in a..b` */
     char *label;               /* @config: the text after a declaration, shown instead of the name */
     char **choices; int nchoices; /* @config: `in ["a", "b"]`, a choice (the value is 1, 2, ...) */
@@ -211,6 +211,9 @@ struct Sym {
     bool is_config;    /* declared in @config: shown in the config panel */
     bool is_internal;  /* .name */
     bool readonly;
+    bool untyped;      /* declared without a type (x := e, untyped parameters and outputs): it can get wider (TypeHint) */
+    bool unknown_type; /* an untyped output nothing was assigned to yet (its type is a placeholder) */
+    u64 hint_ctx;      /* the instance of a generic function it belongs to (0: none), for its TypeHint */
     bool has_range;    /* config slider range */
     double range_lo, range_hi;
     char *label;       /* config label (NULL: the name) */
@@ -248,6 +251,15 @@ struct Func {
     u32 spv_fn;         /* codegen */
     bool spv_emitted;
     int ncalls;
+    /* generic functions: a parameter without a type takes the type of the argument.  The function as written is a
+       template that is never checked or run itself; each list of argument types gets its own copy, an instance. */
+    bool generic;       /* the template */
+    Func *tmpl;         /* an instance: its template */
+    Func *instances, *next_instance; /* the template's instances */
+    Type **arg_types;   /* an instance: the argument types it is for */
+    u64 ctx;            /* an instance: a key for the TypeHints of its variables */
+    int call_line;      /* an instance: the first call */
+    bool probe;         /* an instance made to check a template nothing calls */
 };
 typedef VEC(Func *) FuncVec;
 
@@ -318,7 +330,15 @@ typedef struct Program {
     Sym *s_double;          /* .doublePrecision: deep zooms in double-single precision (the app and the CLI read it) */
     char *title;
     int prelude_lines;   /* diagnostics inside the prelude are reported as internal errors */
+    /* type inference (check.c): a variable declared without a type takes the widest type assigned to it; the
+       checker runs again (program_load) with what an earlier run found out, as `hints` */
+    struct TypeHint *hints; int nhints, cap_hints;
+    bool new_hints;      /* this run found a variable that must be wider: run again */
+    bool final_round;    /* (the last run: report everything) */
 } Program;
+
+/* the variable declared at (line, col) holds `type` (or wider) */
+typedef struct TypeHint { int line, col; u64 ctx; Type *type; } TypeHint;
 
 void prog_diag(Program *p, DiagSeverity sev, int line, int col, int end_col, const char *fmt, ...) FS_PRINTF(6, 7);
 
