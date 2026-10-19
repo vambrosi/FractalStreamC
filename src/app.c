@@ -980,12 +980,13 @@ static void update_completions(Program *p) {
     static const char *words[] = {"critical", "root", "derivative", "seed", "continuing", "from", "erase", "all",
                                   "on", "press", "release", "click", "hover", "show", "hide", "button", "append",
                                   "clear", "line", "point", "circle", "disk", "text", "radius", "color", "width",
-                                  "List", "Integer", "Real", "Complex", "Quaternion", "Boolean", "Bool", "Color", "up"};
+                                  "List", "Integer", "Real", "Complex", "Quaternion", "Projective", "Boolean", "Bool",
+                                  "Color", "up"};
     static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick",
                                       ".mouse", ".dragStart", ".width", ".height", ".title", ".stuck",
                                       ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
                                       ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan",
-                                      ".magenta", ".orange", ".purple", ".pink", ".brown"};
+                                      ".magenta", ".orange", ".purple", ".pink", ".brown", ".infinity"};
     StrBuf sb = {0};
 #define ADD_NAME(name, detail) do { sb_clear(&sb); sb_printf(&sb, "%s\t%s", (name), (detail)); vec_push(names, xstrdup(sb_cstr(&sb))); } while (0)
     for (int k = 0; k < ARRAY_COUNT(keywords); k++) ADD_NAME(keywords[k].word, "keyword");

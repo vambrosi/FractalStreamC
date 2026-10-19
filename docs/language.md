@@ -43,8 +43,10 @@ end
   in it, see *Pick point* below), `NAME.center` and `NAME.radius` (the view: `NAME.radius` is the
   radius of the largest disk around the centre that fits in the view; defaults 0 and 2).
 - Adding `projective` at the end of a viewer header shows the whole **Riemann sphere**, seen from
-  its centre: `@viewer sphere z "Riemann sphere" "Ctrl + 3" projective`. The variable is still a
-  complex number (it can be huge near infinity). Dragging rotates the sphere, the wheel zooms around
+  its centre: `@viewer sphere z "Riemann sphere" "Ctrl + 3" projective`. The variable is a complex
+  number (it can be huge near infinity), or, written `z : P`, a point of the sphere exact at
+  infinity: `@viewer sphere z : P "Riemann sphere" projective` (see *Points of the Riemann sphere*).
+  Dragging rotates the sphere, the wheel zooms around
   the point under the mouse (a hyperbolic Möbius map fixing it and its antipode). `NAME.center` and
   `NAME.radius` set the initial view; the current view is the Möbius map `NAME.mobius`.
 - Shortcuts are written like `"Ctrl + 1"`, `"Shift + P"`, `"O"`. On macOS, Ctrl means Cmd.
@@ -58,6 +60,7 @@ end
 | `R` (`Real`) | real numbers (32-bit floats) | `2.5`, `1e-3`, `pi`, `e`, `tau` |
 | `C` (`Complex`) | complex numbers | `3i`, `2 + 0.5i`, `complex(x, y)`, `cis(t)`, `polar(r, t)` |
 | `H` (`Quaternion`) | quaternions | `quat(a, b, c, d)`, `.j`, `.k` |
+| `P` (`Projective`) | points of the Riemann sphere | `[a : b]`, `∞` (or `.infinity`), any complex number |
 | `Bool` (`Boolean`) | `true` / `false` | comparisons, `and`, `or`, `not` |
 | `R^3`, `C^2`, `Z^5`, ... | fixed-size vectors | `[1, 2, 3]` |
 | `Color` | same as `R^3` (red, green, blue in 0..1) | `rgb(r, g, b)`, `hsv(h, s, v)`, `gray(v)`, `.red` |
@@ -80,6 +83,31 @@ functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what col
 `@prepare` and `@global` run on the CPU in single precision. A view's centre written as numbers in
 `@config` (`mandel.center = -0.743643887037151 + 0.131825904205330i`, as Copy location writes it)
 keeps all its digits, so a script can open at a deep place.
+
+### Points of the Riemann sphere (`P`)
+
+A value of type `P` is a point `[a : b]` of the sphere: the complex number a/b, or `∞` when b = 0.
+Complex numbers become points by themselves (`p : P = 2i` is `[2i : 1]`). Arithmetic, powers,
+`==`, `escapes`, `vanishes` and `|p|` work as for complex numbers, and stay exact at infinity:
+
+```
+define f(z : P) = (z^2 + 1)/(z^2 - 1)
+f(∞)                      # 1, not [0 : 0]
+1/[0 : 1]                 # ∞
+p == q                    # closer than .epsilon in the chordal distance
+p escapes                 # |p| > .escapeRadius, as for complex numbers; ∞ escapes
+p[1], p[2]                # the coordinates a and b (complex), of one lift
+complex(p)                # a/b (a huge number near ∞)
+chordal(p, q)             # the chordal distance: 0 to 1 (0 and ∞ are at 1)
+L : List of P = [0, ∞, 1 + i]
+```
+
+A formula of a point `z` (sums, products, quotients and integer powers of `z` and of numbers) is
+computed with the coordinates of `z`, the common factors cancelled, so a rational map written as a
+formula is right everywhere, also where `z` or its value is `∞`. (A value kept in a variable along the
+way loses that: `w := z^2` then `w / z` is `[0 : 0]` at infinity, where `z^2 / z` is `∞`. Write maps as
+one formula, or as a function of `z`.) Transcendental functions (`exp`, `sin`, ...) take complex
+numbers: use `complex(p)`. `derivative`, `root` and `critical` work on points too (see below).
 
 ## Variables
 
@@ -230,6 +258,24 @@ Other variables in the expression are constants for the derivative. Conditions m
 (`|w|`, `re`, comparisons, `escapes`), but the values computed from the variable must stay
 holomorphic: `re`, `im`, `conj`, `|z|` and `arg` can't be differentiated.
 
+**On the sphere.** With a point of `P` after `at` or `with seed`, the variable is a point too, and
+`f` may be a map to the sphere:
+
+```
+define f(z : P) = (z^2 + a)/(z^2 - 1)
+d := derivative f at w                   # in the natural charts of w and of f(w)
+c := critical t -> f(t) with seed ∞      # a critical point of f, a point (0 and ∞ too)
+r := root t -> f(t) with seed [1 : 0.1]  # a point where f is 0
+mu := (derivative f at x) * (derivative f at f(x))   # the multiplier of the 2-cycle x, f(x)
+```
+
+Derivatives use the *natural chart* of each point: the coordinate z near points with |z| ≤ 1 and
+1/z near the others (so near ∞, s = 1/z). Their product along a cycle is its multiplier, whatever the
+charts. Newton's method moves the point in its chart and changes chart when it leaves the unit disk;
+critical points are where the derivative of the map vanishes in any chart, so they are found at poles
+and at ∞ too. (Only maps written as formulas, or as one-line functions of points, can be
+differentiated; see `examples/attractors.fstream`.)
+
 After `root` and `critical`, `.stuck` is true if Newton's method did not converge within
 `.maxIterations` steps, and `.iterations` is the number of steps. Newton's method also gives up
 when evaluating the expression gets stuck (one of its loops reaches `.maxIterations`: the value
@@ -274,7 +320,12 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 | vectors / lists | `dot(u, v)`, `length(v)`, `append(L, x)`, `clear(L)` |
 | colours | `rgb(r, g, b)`, `hsv(h, s, v)` (hue in turns: 0 red, 1/3 green, 2/3 blue), `gray(v)`, `mix(a, b, t)` |
 | palettes | `rainbow(t)`, `palette("name", t)` with the maps `rainbow arenberg romao bamo broco corko viko` (cyclic) and `ice fire wheat rose forest ocean winter spring summer fall` (there and back); all repeat with period 1 in `t` |
-| from the first FractalStream | `cycle(t, a, b)` (b, then a at t = 1/2, back to b), `blend(t, a, b)` (= `mix(b, a, t)`), `dark(c)`, `light(c)`, `invert(c)`; a script may define its own versions of these and of `rainbow` |
+| from the first FractalStream | `cycle(t, a, b)` (b, then a at t = 1/2, back to b), `blend(t, a, b)` (= `mix(b, a, t)`), `dark(c)`, `light(c)`, `invert(c)` |
+| points of the sphere | `complex(p)`, `conj(p)`, `chordal(p, q)`, `p[1]`, `p[2]` |
+
+A script may define its own version of any of these (a function with the same name, and the same
+parameter types or none): its own is used instead. Only `re`, `im`, `complex(x, y)`, `quat`,
+`isnan`, `isinf`, `dot`, `length`, `append` and `clear` can't be replaced.
 
 Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.red .green .blue
 .black .white .gray .yellow .cyan .magenta .orange .purple .pink .brown .violet`, quaternion units

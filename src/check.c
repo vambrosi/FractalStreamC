@@ -1218,10 +1218,19 @@ static Type *chk(Checker *c, Expr *e) {
             break;
         }
         Type *el = t_int;
-        bool ok = true;
+        bool ok = true, points = false;
         for (int i = 0; i < e->nargs; i++) {
             Type *ti = chk(c, e->args[i]);
             if (ti == t_error) { ok = false; continue; }
+            if (ti == t_proj) points = true;
+        }
+        if (ok && points) { /* [0, ∞, 1 + i]: a list of points of the sphere */
+            for (int i = 0; i < e->nargs; i++) e->args[i] = coerce(c, e->args[i], t_proj, "an item of a list of points");
+            t = type_list(t_proj, FS_MAX(e->nargs, 64));
+            break;
+        }
+        for (int i = 0; i < e->nargs && ok; i++) {
+            Type *ti = e->args[i]->type;
             if (!type_is_number(ti)) {
                 ERR(c, e->args[i], "vector entries must be numbers, not %s", type_str(ti));
                 ok = false;

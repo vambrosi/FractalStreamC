@@ -58,8 +58,11 @@ end
   Ctrl+0 make everything bigger, smaller or normal (for a talk, say).
 
 Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
-the parameter space of complex Hénon maps after the program SaddleDrop); the language is
-described in [`docs/language.md`](docs/language.md).
+the parameter space of complex Hénon maps after the program SaddleDrop, and
+[`attractors.fstream`](examples/attractors.fstream), the attracting cycles of a rational map on the
+Riemann sphere with the parameter plane of Per_2(0)); the language is described in
+[`docs/language.md`](docs/language.md). Points of the sphere have their own type, `P`, exact at
+infinity, with derivatives and Newton's method in charts.
 
 ## Command line (for scripts, agents and tests)
 
@@ -69,6 +72,7 @@ fractalstream --render OUT.png [--viewer NAME] [--size WxH] [--cpu] [--set NAME=
 fractalstream --spirv DIR SCRIPT              write the SPIR-V of each viewer
 fractalstream --state SCRIPT                  print the initial value of every global
 fractalstream --tool NAME --at X+Yi SCRIPT    run a tool once; print its drawings and the state
+fractalstream --builtins                      print how the built-in functions are defined
 ```
 
 ## Building

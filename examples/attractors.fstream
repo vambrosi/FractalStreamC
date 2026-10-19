@@ -1,0 +1,193 @@
+# Attracting cycles of a rational map, on the Riemann sphere.
+#
+# The map is f below: edit it in the config panel. @prepare
+# finds its critical points (Newton's method from points all
+# over the sphere), follows each one to the attracting cycle
+# it falls into, and keeps the cycles: their points, period
+# and multiplier. Every attracting cycle attracts a critical
+# point, so these are all of them. The sphere is coloured by
+# the cycle each point goes to (darker: slower), black where
+# none is in sight. The Attractor tool (A) prints what
+# happens to the point you click; the Info pane (i) shows the
+# critical points and cycles.
+#
+# The default map a/(z^2 + 2z) has the critical point
+# infinity on the superattracting 2-cycle 0 -> inf -> 0 for
+# every a: it is the family Per_2(0). The parameter plane
+# shows what the other critical point, -1, does: grey where
+# it falls into the 2-cycle (bands count the steps),
+# coloured by period where it finds another attracting
+# cycle, black otherwise. Pick a in it with "Pick point".
+
+@config
+.title = "Attractors on the Riemann sphere"
+.maxIterations = 300
+parameter.center = 1.6
+parameter.radius = 2.2
+sphere.radius = 1.6
+
+@config "The map"
+"f(z, a), for a point z of the sphere and the parameter a " +
+"(picked in the parameter plane)."
+define f(z : P, a : C) = a / (z^2 + 2 z)
+
+@global
+.a = 1.51 + 0.92i
+crit : List of P = []           # the critical points
+cyc : List of P up to 256 = []  # the points of the cycles
+first : List of Z = []          # where each cycle starts in cyc
+period : List of Z = []
+mult : List of C = []           # multipliers
+
+@prepare
+clear(crit)
+clear(cyc)
+clear(first)
+clear(period)
+clear(mult)
+# the critical points: Newton's method on f' = 0 from
+# points spread over the sphere
+seeds : List of P = [0, ∞, 1, -1, i, -i, 0.5, -0.5,
+                     0.5i, -0.5i, 2 + 2i, -2 + 2i,
+                     2 - 2i, -2 - 2i]
+for s in seeds do
+    c := critical t -> f(t, .a) with seed s
+    if not .stuck then
+        new := true
+        for x in crit do
+            if chordal(x, c) < 1e-4 then
+                new = false
+            end
+        end
+        if new then
+            append(crit, c)
+        end
+    end
+end
+# the attracting cycle of each one: far along its orbit,
+# the first return close to where it was
+for c in crit do
+    w := c
+    for k in 1..3000 do
+        w = f(w, .a)
+    end
+    p := 0
+    v := w
+    for k in 1..64 do
+        v = f(v, .a)
+        if p == 0 and chordal(v, w) < 1e-5 then
+            p = k
+        end
+    end
+    known := false
+    for x in cyc do
+        if chordal(x, w) < 1e-3 then
+            known = true
+        end
+    end
+    if p > 0 and not known then
+        append(first, |cyc| + 1)
+        append(period, p)
+        m := 1 + 0i     # the multiplier: the product of the
+        v = w           # derivatives along the cycle
+        for k in 1..p do
+            append(cyc, v)
+            m = m * (derivative t -> f(t, .a) at v)
+            v = f(v, .a)
+        end
+        append(mult, m)
+    end
+end
+print "a = " + .a + ": critical points " + crit
+for k in 1..|first| do
+    print "cycle " + k + ": period " + period[k] +
+          ", multiplier " + mult[k] + ", |multiplier| " +
+          |mult[k]| + ", through " + cyc[first[k]]
+end
+
+@viewer sphere z : P "Riemann sphere" "Ctrl + 1" projective
+# follow the orbit until it is close to a point of a cycle
+w := z
+j := 0          # that point (its index in cyc)
+n := 0
+d := 1.0        # how close
+while j == 0 and n < .maxIterations do
+    w = f(w, .a)
+    n = n + 1
+    for k in 1..|cyc| do
+        if chordal(w, cyc[k]) < 1e-3 then
+            j = k
+            d = chordal(w, cyc[k])
+        end
+    end
+end
+if j == 0 then
+    color = .black
+else
+    which := 1      # its cycle
+    for k in 1..|first| do
+        if first[k] <= j then
+            which = k
+        end
+    end
+    # smooth steps: how much closer the next step would be
+    s : R = n + log(d / 1e-3) / log(2)
+    color = hsv(0.6 + (which - 1) * 0.37, 0.65,
+                0.45 + 0.55 / (1 + s / 12))
+end
+
+@viewer parameter a "Parameter plane" "Ctrl + 2"
+w : P = -1      # the free critical point
+n := 0
+landed := false
+while n < .maxIterations and not landed do
+    w = f(w, a)
+    n = n + 1
+    if chordal(w, 0) < 1e-3 or chordal(w, ∞) < 1e-3 then
+        landed = true
+    end
+end
+if landed then
+    color = gray(0.35 + 0.6 fract(n / 20))
+else
+    p := 0      # the period of the cycle it found, if any
+    v := w
+    for k in 1..24 do
+        v = f(v, a)
+        if p == 0 and chordal(v, w) < 1e-4 then
+            p = k
+        end
+    end
+    color = if p > 0 then hsv(p / 7, 0.7, 1) else .black
+end
+
+@sphere.tool "Attractor" "A" "radar"
+# z is the point clicked (a complex number)
+w : P = z
+n := 0
+j := 0
+while j == 0 and n < 5000 do
+    w = f(w, .a)
+    n = n + 1
+    for k in 1..|cyc| do
+        if chordal(w, cyc[k]) < 1e-4 then
+            j = k
+        end
+    end
+    if n <= 200 and w != ∞ then
+        draw point at complex(w) with color .white
+    end
+end
+if j == 0 then
+    print "z = " + z + ": no attracting cycle after 5000 steps"
+else
+    which := 1
+    for k in 1..|first| do
+        if first[k] <= j then
+            which = k
+        end
+    end
+    print "z = " + z + " reaches cycle " + which + " (period " +
+          period[which] + ", multiplier " + mult[which] +
+          ") after " + n + " steps"
+end
