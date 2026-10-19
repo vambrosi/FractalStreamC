@@ -470,6 +470,129 @@ TEST(app_hover_info) {
     app_test_end();
 }
 
+/* ---- the bars at the window's edges ---------------------------------------------------------------------------- */
+/* one frame of the bars with the test input (tests/test_ui.c), 800 x 600, no window */
+static void app_test_bars_frame(void) {
+    A.in = T;
+    tu_begin();
+    layout_panes(800, 600);
+    A.nvis = 0;
+    layout_compute(A.root, A.area);
+    for (int c = 0; c < MAX_FLOATS; c++)
+        if (A.floats[c] >= 0) {
+            VisTile t = {A.floats[c], float_rect(c), -1, c};
+            A.vis[A.nvis++] = t;
+        }
+    bars();
+    tu_end();
+}
+
+/* the centre of a bar's item (kind, viewer, what), or false if the bar doesn't have it */
+static bool app_test_bar_item(bool left, int kind, int viewer, int what, float *x, float *y) {
+    BarItem items[BAR_ITEMS];
+    float total;
+    int n = left ? left_bar_items(items, &total) : right_bar_items(items, &total);
+    Rect r = left ? A.lbar_r : A.rbar_r;
+    for (int i = 0; i < n; i++)
+        if (items[i].kind == kind && items[i].viewer == viewer && items[i].what == what) {
+            *x = r.x + r.w / 2;
+            *y = r.y + items[i].y + bar_button() / 2;
+            return true;
+        }
+    return false;
+}
+
+static bool app_test_bar_click(bool left, int kind, int viewer, int what) {
+    float x, y;
+    if (!app_test_bar_item(left, kind, viewer, what, &x, &y)) return false;
+    tu_move(x, y);
+    app_test_bars_frame();
+    tu_press(0, 1);
+    app_test_bars_frame();
+    tu_release(0);
+    app_test_bars_frame();
+    return true;
+}
+
+TEST(app_bars) {
+    Program *p = program_load("@viewer mandel c \"Parameter plane\"\n"
+                              "color = .black\n"
+                              "@viewer julia z \"Julia set\"\n"
+                              "color = .white\n"
+                              "@julia.tool \"Orbit\" \"O\" \"timeline\"\n"
+                              "draw point at z\n"
+                              "@tool \"Mark\" \"M\"\n"
+                              "draw point at .lastClick\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    for (int v = 0; v < p->nviewers; v++) A.vrt[v].tool = TOOL_PAN;
+    A.hover_viewer = A.hover_tile = -1;
+    layout_reset(0);
+    tu_reset(1.0f);
+    app_test_bars_frame();
+    /* left: the script, then view 1 with its tools (Pan, Pick point, Mark), then view 2 alone (hidden) */
+    BarItem it[BAR_ITEMS];
+    float total;
+    int n = left_bar_items(it, &total);
+    static const int kinds[] = {BI_SCRIPT, BI_SEP, BI_VIEW, BI_TOOL, BI_TOOL, BI_TOOL, BI_SEP, BI_VIEW};
+    CHECK_INT(n, ARRAY_COUNT(kinds));
+    for (int i = 0; i < n && i < ARRAY_COUNT(kinds); i++) CHECK_INT(it[i].kind, kinds[i]);
+    if (n == ARRAY_COUNT(kinds)) {
+        CHECK(it[3].what == TOOL_PAN && it[4].what == TOOL_PICK && it[5].what == 1); /* (Mark is tool 1: for every view) */
+        CHECK_INT(it[7].viewer, 1);
+    }
+    /* the script's button opens and closes it; the bar stays where it is */
+    float x0 = A.lbar_r.x;
+    CHECK(app_test_bar_click(true, BI_SCRIPT, -1, 0));
+    CHECK(A.editor_open);
+    CHECK(A.lbar_r.x == x0 && A.editor_r.x == A.lbar_r.x + A.lbar_r.w && A.area.x == A.editor_r.x + A.editor_r.w);
+    CHECK(app_test_bar_click(true, BI_SCRIPT, -1, 0));
+    CHECK(!A.editor_open);
+    /* a tool */
+    CHECK(app_test_bar_click(true, BI_TOOL, 0, 1));
+    CHECK_INT(A.vrt[0].tool, 1);
+    /* a hidden view: a click shows it in place of the focused one */
+    CHECK(app_test_bar_click(true, BI_VIEW, 1, 0));
+    CHECK(viewer_visible(1) && !viewer_visible(0));
+    CHECK_INT(A.focus_viewer, 1);
+    float x, y;
+    CHECK(!app_test_bar_item(true, BI_TOOL, 0, TOOL_PAN, &x, &y)); /* (the hidden view's tools are gone) */
+    CHECK(app_test_bar_click(true, BI_TOOL, 1, 0));                 /* Orbit, in the Julia set */
+    CHECK_INT(A.vrt[1].tool, 0);
+    /* the right bar: the config; nothing to hide while one view is shown */
+    CHECK(app_test_bar_click(false, BI_CONFIG, -1, 0));
+    CHECK(A.config_open);
+    CHECK(A.rbar_r.x + A.rbar_r.w == 800 && A.config_r.x + A.config_r.w == A.rbar_r.x);
+    CHECK(!app_test_bar_item(false, BI_ACTION, 1, ACT_HIDE, &x, &y));
+    CHECK(app_test_bar_item(false, BI_FOCUS, 1, 0, &x, &y));
+    /* dragging a view's number starts placing it; dropped on the right half of the view, it splits it */
+    CHECK(app_test_bar_item(true, BI_VIEW, 0, 0, &x, &y));
+    tu_move(x, y);
+    app_test_bars_frame();
+    tu_press(0, 1);
+    app_test_bars_frame();
+    tu_move(x + 30, y + 5);
+    app_test_bars_frame();
+    CHECK(A.drag == DRAG_VIEWER && A.drag_viewer == 0);
+    tu_release(0);
+    apply_drop(A.drag_viewer, A.area.x + A.area.w * 0.9f, A.area.y + A.area.h * 0.5f);
+    A.drag = DRAG_NONE;
+    app_test_bars_frame();
+    CHECK(viewer_visible(0) && viewer_visible(1));
+    CHECK_INT(count_leaves(A.root), 2);
+    /* the focused view can be hidden now; the focus goes to the other one */
+    A.focus_viewer = 0;
+    app_test_bars_frame();
+    CHECK(app_test_bar_click(false, BI_ACTION, 0, ACT_HIDE));
+    CHECK(!viewer_visible(0) && viewer_visible(1));
+    CHECK_INT(A.focus_viewer, 1);
+    /* the axes and grid of the focused view */
+    CHECK(app_test_bar_click(false, BI_ACTION, 1, ACT_GRID));
+    CHECK(A.vrt[1].grid);
+    app_test_end();
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -480,4 +603,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_settings_and_prepare),
     TESTCASE(app_reference_parse),
     TESTCASE(app_hover_info),
+    TESTCASE(app_bars),
 };
