@@ -116,7 +116,8 @@ static void cli_print_value(Type *t, const u32 *v) {
     case T_QUAT: printf("quat(%.9g, %.9g, %.9g, %.9g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
     case T_PROJ: { /* the point's complex number (or inf) */
         double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
-        if (d == 0) printf("%s", ar == 0 && ai == 0 ? "[0 : 0]" : "inf");
+        if (isnan(ar) || isnan(ai) || isnan(d)) printf("nan");
+        else if (d == 0) printf("%s", ar == 0 && ai == 0 ? "[0 : 0]" : "inf");
         else printf("%.9g%+.9gi", (ar * br + ai * bi) / d, (ai * br - ar * bi) / d);
         break;
     }

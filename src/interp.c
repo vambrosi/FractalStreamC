@@ -169,13 +169,23 @@ static float norm2(Type *t, const u32 *v) {
     }
 }
 
-/* the point [a : b] of the Riemann sphere (a, b complex), scaled so that its largest component is 1 (codegen.c
-   does the same) */
+/* 2^k as a float, for -126 <= k <= 127 */
+static float pow2f(int k) { return wf((u32)(127 + k) << 23); }
+
+/* The point [a : b] of the Riemann sphere (a, b complex), scaled by a power of two so that its largest component is
+   in [0.5, 1): exact, and the same on the GPU (codegen.c proj_scale), whatever the size of the components (no
+   reciprocal that would be flushed to 0). Infinite components become +-1 and the others 0. */
 static void proj_make(const u32 *a, const u32 *b, u32 *out) {
     float v[4] = {wf(a[0]), wf(a[1]), wf(b[0]), wf(b[1])};
     float m = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
-    float s = 1.0f / fmaxf(m, 1e-30f);
-    for (int k = 0; k < 4; k++) out[k] = fw(v[k] * s);
+    if (isinf(m)) {
+        for (int k = 0; k < 4; k++) out[k] = fw(isinf(v[k]) ? (v[k] > 0 ? 1.0f : -1.0f) : 0.0f);
+        return;
+    }
+    int e = (int)((fw(m) >> 23) & 0xff) - 126; /* m = f 2^e with 0.5 <= f < 1 (for normal m) */
+    int k1 = (130 - e) / 2 - 65, k2 = -e - k1;  /* 2^-e in two factors that are normal floats */
+    float f1 = pow2f(k1), f2 = pow2f(k2);
+    for (int k = 0; k < 4; k++) out[k] = fw(v[k] * f1 * f2);
 }
 
 static void convert_value(Type *from, Type *to, const u32 *a, u32 *r) {
@@ -690,6 +700,10 @@ static void format_value(Type *t, const u32 *v, StrBuf *sb) {
     case T_QUAT: sb_printf(sb, "quat(%.4g, %.4g, %.4g, %.4g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
     case T_PROJ: { /* a point of the sphere: its complex number a/b, or ∞ */
         double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]);
+        if (isnan(ar) || isnan(ai) || isnan(br) || isnan(bi)) {
+            sb_puts(sb, "NaN");
+            break;
+        }
         if (br == 0 && bi == 0) {
             sb_puts(sb, ar == 0 && ai == 0 ? "[0 : 0]" : "∞");
             break;

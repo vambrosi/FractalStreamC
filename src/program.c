@@ -62,21 +62,29 @@ static bool parse_complex_literal_d(const char *s, double *re, double *im) {
 
 /* a point of the Riemann sphere written as a complex number, or as ∞ (or inf, infinity); out: 4 words (a lift) */
 static bool parse_proj_literal(const char *s, u32 *out) {
-    while (*s == ' ') s++;
-    if (!strcmp(s, "∞") || !strcmp(s, "inf") || !strcmp(s, "infinity") || !strcmp(s, "Infinity") || !strcmp(s, ".infinity")) {
+    char buf[96];
+    int n = 0;
+    for (; *s && n < (int)sizeof buf - 1; s++) /* (spaces don't matter: "0.5 - 2i", " inf ") */
+        if (*s != ' ') buf[n++] = *s;
+    buf[n] = 0;
+    const char *t = buf[0] == '-' || buf[0] == '+' ? buf + 1 : buf; /* (-inf is ∞ too: there is only one) */
+    if (!strcmp(t, "∞") || !strcmp(t, "inf") || !strcmp(t, "infinity") || !strcmp(t, "Infinity") || !strcmp(t, ".infinity")) {
         out[0] = fw(1);
         out[1] = out[2] = out[3] = fw(0);
         return true;
     }
     double re, im;
-    char buf[96];
-    int n = 0;
-    for (; *s && n < (int)sizeof buf - 1; s++)
-        if (*s != ' ') buf[n++] = *s;
-    buf[n] = 0;
     if (!parse_complex_literal_d(buf, &re, &im) || !isfinite(re) || !isfinite(im)) return false;
-    u32 a[2] = {fw((float)re), fw((float)im)}, b[2] = {fw(1), fw(0)};
-    proj_make(a, b, out);
+    /* [z : 1], or [1 : 1/z] when z is big (it may not fit in a float), computed in double precision */
+    double m = fmax(fabs(re), fabs(im));
+    if (m <= 1) {
+        u32 a[2] = {fw((float)re), fw((float)im)}, b[2] = {fw(1), fw(0)};
+        proj_make(a, b, out);
+    } else {
+        double d = re * (re / m) + im * (im / m); /* |z|^2 / m */
+        u32 a[2] = {fw(1), fw(0)}, b[2] = {fw((float)((re / m) / d)), fw((float)(-(im / m) / d))};
+        proj_make(a, b, out);
+    }
     return true;
 }
 

@@ -135,12 +135,14 @@ typedef struct App {
     float config_scroll;
     const char *choice_open;  /* config choice whose list is open (points to choice_name), NULL none */
     char choice_name[128];
-    char list_buf[1024];    /* the list being edited in the config pane */
-    bool list_editing;
+    /* a value edited as text in the config panel (a list, a point): its name and the text typed, from the moment its
+       field gets the focus until Enter, or until the focus leaves it; then text_apply reads the text into the value */
+    char text_name[128];
+    char text_buf[1024];
+    void (*text_apply)(Sym *s, const char *text);
     /* the formula being edited in the config pane: its text, and where it is in the script */
     char formula_buf[512];
     int formula_start, formula_end;
-    char proj_buf[96];      /* the point of the sphere being typed in the config panel */
     int modal;              /* 0, 1 save as, 2 open, 3 save a picture, 4 new from a template, 5 unsaved changes */
     int pending;            /* what waits for the answer about unsaved changes (PENDING_*) */
     char pending_path[1024];
@@ -255,7 +257,7 @@ static const char *df_check_src =
     "color = [add, mul, if |div - 0.5| < 0.1 and |sq - 0.5| < 0.1 and |cm - 1| < 0.01 then 1 else 0]\n";
 
 static bool df_check_gpu(void) {
-    char err[256];
+    char err[256] = "";
     Program *p = program_load(df_check_src, "df check");
     bool ok = false;
     if (p->nerrors == 0) {
@@ -265,9 +267,13 @@ static bool df_check_gpu(void) {
         int vid = words ? gfx_viewer_create(words, n, err, sizeof err) : 0;
         free(words);
         if (vid > 0) {
-            u8 px[16];
-            ok = gfx_render_to_memory(vid, 2, 2, 0, px, err, sizeof err) && px[0] == 255 && px[1] == 255 && px[2] == 255;
-            if (getenv("FS_DEBUG")) fprintf(stderr, "df check: %d %d %d %s\n", px[0], px[1], px[2], err);
+            u8 px[16] = {0};
+            bool rendered = gfx_render_to_memory(vid, 2, 2, 0, px, err, sizeof err);
+            ok = rendered && px[0] == 255 && px[1] == 255 && px[2] == 255;
+            if (getenv("FS_DEBUG")) {
+                if (rendered) fprintf(stderr, "df check: %d %d %d\n", px[0], px[1], px[2]);
+                else fprintf(stderr, "df check: %s\n", err);
+            }
             gfx_viewer_destroy(vid);
         }
     }
@@ -1363,6 +1369,7 @@ static bool load_source(const char *src, int mode) {
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
     outs_init();
     A.choice_open = NULL;
+    A.text_name[0] = 0; /* (a value being typed belongs to the old program) */
     free(A.prepare_snap);
     A.prepare_snap = NULL;
     interp_init(&A.interp, p, A.state);
@@ -1832,17 +1839,25 @@ static void inspect_at(int v, float re, float im) {
     I.step_limit = 3e7;
     StrBuf printed = {0}, sb = {0};
     I.out = &printed;
+    float lift[4] = {re, im, 1, 0}; /* (a view of points of the sphere: the pixel's point, exact at infinity) */
     for (int i = 0; i < A.nvis; i++)
         if (A.vis[i].viewer == v) {
             Rect r = A.vis[i].r;
             float x = FS_CLAMP(A.in.mouse_x - r.x, 0.0f, r.w), y = FS_CLAMP(A.in.mouse_y - r.y, 0.0f, r.h);
             I.pixel = viewer_pixel_size(p, st, s, r.w, r.h, x, y);
+            if (s->var_proj) viewer_pixel_to_lift(p, st, s, r.w, r.h, x, y, lift);
         }
     float rgb[3];
-    bool ok = interp_eval_viewer(&I, s, re, im, rgb);
-    u32 at[2] = {fw(re), fw(im)};
+    bool ok = s->var_proj ? interp_eval_viewer_lift(&I, s, lift, rgb) : interp_eval_viewer(&I, s, re, im, rgb);
     sb_printf(&sb, "View %d, %s, at %s = ", v + 1, s->display ? s->display : s->name, s->var ? s->var : "z");
-    format_value(t_complex, at, &sb);
+    if (s->var_proj) {
+        u32 a[2] = {fw(lift[0]), fw(lift[1])}, b[2] = {fw(lift[2]), fw(lift[3])}, pt[4];
+        proj_make(a, b, pt);
+        format_value(t_proj, pt, &sb);
+    } else {
+        u32 at[2] = {fw(re), fw(im)};
+        format_value(t_complex, at, &sb);
+    }
     sb_putc(&sb, '\n');
     if (s->flood) sb_puts(&sb, "(The picture carries its solve from pixel to pixel; here it starts from the seed.)\n");
     if (!ok) sb_printf(&sb, "Stopped: %s\n", I.error);
@@ -2975,6 +2990,7 @@ static bool value_literal(StrBuf *sb, Type *t, const u32 *v) {
         return true;
     case T_PROJ: { /* the point's complex number, or ∞ */
         double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+        if (isnan(ar) || isnan(ai) || isnan(d)) return false;
         if (d == 0) {
             if (ar == 0 && ai == 0) return false;
             sb_puts(sb, "∞");
@@ -3219,72 +3235,103 @@ static bool parse_number_text(const char *s, float *re, float *im) {
     return *end == 0;
 }
 
-/* a list of numbers, edited as text: "0, 1, 1 + i" (Enter applies it) */
+/* A value edited as text (see A.text_name): the field shows `shown` (the value) until it gets the focus, then the text
+   typed, which `apply` reads into the value on Enter or when the focus leaves the field (Escape: nothing changes). One
+   such field at a time: one that gets the focus first applies the one edited before. */
+static void config_text_apply_pending(void) {
+    if (!A.text_name[0]) return;
+    for (int i = 0; A.prog && i < A.prog->globals.len; i++) {
+        Sym *g = A.prog->globals.data[i];
+        if (g->kind == SYM_GLOBAL && !g->is_internal && !strcmp(g->name, A.text_name)) {
+            if (A.text_apply) A.text_apply(g, A.text_buf);
+            break;
+        }
+    }
+    A.text_name[0] = 0;
+}
+
+static void config_text_value(Sym *s, const char *id, float x, float y, float w, float h, const char *shown, int flags,
+                              const char *placeholder, void (*apply)(Sym *s, const char *text)) {
+    u32 fid = ui_id(id);
+    bool editing = A.text_name[0] && !strcmp(A.text_name, s->name) && A.text_apply == apply;
+    static char copy[1024];
+    char *buf = editing ? A.text_buf : copy;
+    if (!editing) snprintf(copy, sizeof copy, "%s", shown);
+    int r = ui_text_field_ex(id, x, y, w, h, buf, (int)(editing ? sizeof A.text_buf : sizeof copy), flags, placeholder);
+    if (!editing) {
+        if (ui_focus_id() == fid) { /* just focused: edit a copy */
+            config_text_apply_pending();
+            snprintf(A.text_buf, sizeof A.text_buf, "%s", copy);
+            snprintf(A.text_name, sizeof A.text_name, "%s", s->name);
+            A.text_apply = apply;
+        }
+    } else if (r & UI_TEXT_CANCEL) {
+        A.text_name[0] = 0;
+    } else if ((r & (UI_TEXT_SUBMIT | UI_TEXT_BLURRED)) || ui_focus_id() != fid) {
+        config_text_apply_pending();
+    }
+}
+
+/* a list of numbers, edited as text: "0, 1, 1 + i" */
+static void apply_list_text(Sym *s, const char *text) {
+    Type *lt = s->type, *et = lt->elem;
+    u32 *v = A.state + s->slot;
+    /* parse the items; a bad one leaves the list as it was */
+    u32 *tmp = (u32 *)xcalloc((size_t)lt->size, sizeof(u32));
+    int n = 0;
+    bool ok = true;
+    char *copy = xstrdup(text);
+    for (char *tok = strtok(copy, ","); tok && ok; tok = strtok(NULL, ",")) {
+        float re, im;
+        if (!parse_number_text(tok, &re, &im)) { ok = false; break; }
+        if (n >= lt->n) break; /* past the capacity */
+        u32 *it = tmp + lt->data_off + n * lt->stride;
+        if (et->kind == T_INT || et->kind == T_BOOL) it[0] = (u32)(i32)floorf(re + 0.5f);
+        else if (et->kind == T_REAL) it[0] = fw(re);
+        else { it[0] = fw(re); it[1] = fw(im); }
+        n++;
+    }
+    free(copy);
+    if (ok) {
+        tmp[0] = (u32)n;
+        memcpy(v, tmp, sizeof(u32) * (size_t)lt->size);
+    } else {
+        set_status(true, "%s: write numbers separated by commas, as in 0, 1.5, 2 - i", s->name);
+    }
+    free(tmp);
+}
+
 static void config_list(Sym *s, float x, float y, float w, float h) {
     Type *lt = s->type, *et = lt->elem;
     u32 *v = A.state + s->slot;
     char id[200];
     snprintf(id, sizeof id, "##cfglist_%s", s->name);
-    u32 fid = ui_id(id);
-    static char shown[1024];
-    char *buf = shown;
-    if (ui_focus_id() == fid && A.list_editing) {
-        buf = A.list_buf;
-    } else {
-        StrBuf sb = {0};
-        int n = FS_CLAMP((i32)v[0], 0, lt->n);
-        for (int k = 0; k < n; k++) {
-            const u32 *it = v + lt->data_off + k * lt->stride;
-            if (k) sb_puts(&sb, ", ");
-            if (et->kind == T_INT) sb_printf(&sb, "%d", (i32)it[0]);
-            else if (et->kind == T_REAL) sb_printf(&sb, "%.6g", wf(it[0]));
-            else if (et->kind == T_COMPLEX) {
-                float re = wf(it[0]), im = wf(it[1]);
-                char ims[40];
-                if (fabsf(im) == 1) snprintf(ims, sizeof ims, "i");
-                else snprintf(ims, sizeof ims, "%.6gi", fabsf(im));
-                if (im == 0) sb_printf(&sb, "%.6g", re);
-                else if (re == 0) sb_printf(&sb, "%s%s", im < 0 ? "-" : "", ims);
-                else sb_printf(&sb, "%.6g %c %s", re, im < 0 ? '-' : '+', ims);
-            } else if (et->kind == T_BOOL) sb_puts(&sb, it[0] ? "1" : "0");
-        }
-        snprintf(shown, sizeof shown, "%s", sb_cstr(&sb));
-        sb_free(&sb);
+    StrBuf sb = {0};
+    int n = FS_CLAMP((i32)v[0], 0, lt->n);
+    for (int k = 0; k < n; k++) {
+        const u32 *it = v + lt->data_off + k * lt->stride;
+        if (k) sb_puts(&sb, ", ");
+        if (et->kind == T_INT) sb_printf(&sb, "%d", (i32)it[0]);
+        else if (et->kind == T_REAL) sb_printf(&sb, "%.6g", wf(it[0]));
+        else if (et->kind == T_COMPLEX) {
+            float re = wf(it[0]), im = wf(it[1]);
+            char ims[40];
+            if (fabsf(im) == 1) snprintf(ims, sizeof ims, "i");
+            else snprintf(ims, sizeof ims, "%.6gi", fabsf(im));
+            if (im == 0) sb_printf(&sb, "%.6g", re);
+            else if (re == 0) sb_printf(&sb, "%s%s", im < 0 ? "-" : "", ims);
+            else sb_printf(&sb, "%.6g %c %s", re, im < 0 ? '-' : '+', ims);
+        } else if (et->kind == T_BOOL) sb_puts(&sb, it[0] ? "1" : "0");
     }
-    bool before = ui_focus_id() == fid;
-    int r = ui_text_field_ex(id, x, y, w, h, buf, buf == shown ? (int)sizeof shown : (int)sizeof A.list_buf, 0, "1, 2, 3");
-    if (!before && ui_focus_id() == fid) { /* just focused: edit a copy */
-        snprintf(A.list_buf, sizeof A.list_buf, "%s", shown);
-        A.list_editing = true;
-    }
-    if ((r & UI_TEXT_SUBMIT) || (r & UI_TEXT_BLURRED)) {
-        if (!(r & UI_TEXT_CANCEL) && buf == A.list_buf) {
-            /* parse the items; a bad one leaves the list as it was */
-            u32 *tmp = (u32 *)xcalloc((size_t)lt->size, sizeof(u32));
-            int n = 0;
-            bool ok = true;
-            char *copy = xstrdup(A.list_buf);
-            for (char *tok = strtok(copy, ","); tok && ok; tok = strtok(NULL, ",")) {
-                float re, im;
-                if (!parse_number_text(tok, &re, &im)) { ok = false; break; }
-                if (n >= lt->n) break; /* past the capacity */
-                u32 *it = tmp + lt->data_off + n * lt->stride;
-                if (et->kind == T_INT || et->kind == T_BOOL) it[0] = (u32)(i32)floorf(re + 0.5f);
-                else if (et->kind == T_REAL) it[0] = fw(re);
-                else { it[0] = fw(re); it[1] = fw(im); }
-                n++;
-            }
-            free(copy);
-            if (ok) {
-                tmp[0] = (u32)n;
-                memcpy(v, tmp, sizeof(u32) * (size_t)lt->size);
-            } else {
-                set_status(true, "%s: write numbers separated by commas, as in 0, 1.5, 2 - i", s->name);
-            }
-            free(tmp);
-        }
-        A.list_editing = false;
-    }
+    config_text_value(s, id, x, y, w, h, sb_cstr(&sb), 0, "1, 2, 3", apply_list_text);
+    sb_free(&sb);
+}
+
+/* a point of the sphere, typed as a complex number or inf */
+static void apply_point_text(Sym *s, const char *text) {
+    u32 p[4];
+    if (parse_proj_literal(text, p)) memcpy(A.state + s->slot, p, sizeof p);
+    else set_status(true, "%s: write a complex number (like 0.5 - 2i) or inf", s->name);
 }
 
 static void config_number(Sym *s, float x, float y, float w) {
@@ -3334,26 +3381,12 @@ static void config_number(Sym *s, float x, float y, float w) {
         if (ui_toggle(id, x, y, h, h, &b)) v[0] = b;
         break;
     }
-    case T_PROJ: { /* a point of the sphere: its complex number or ∞, typed (Enter sets it) */
+    case T_PROJ: { /* a point of the sphere: its complex number or ∞, typed */
         snprintf(id, sizeof id, "##cfg_%s", s->name);
-        u32 fid = ui_id(id);
-        static char shown[96];
-        bool focused_before = ui_focus_id() == fid;
-        char *buf = focused_before ? A.proj_buf : shown;
-        if (!focused_before) {
-            StrBuf sb = {0};
-            if (!value_literal(&sb, t_proj, v)) sb_puts(&sb, "?");
-            snprintf(shown, sizeof shown, "%s", sb_cstr(&sb));
-            sb_free(&sb);
-        }
-        int r = ui_text_field_ex(id, x, y, w, h, buf, (int)(buf == shown ? sizeof shown : sizeof A.proj_buf),
-                                 UI_TF_SELECT_ALL, "a complex number, or inf");
-        if (!focused_before && ui_focus_id() == fid) snprintf(A.proj_buf, sizeof A.proj_buf, "%s", shown);
-        if ((r & (UI_TEXT_SUBMIT | UI_TEXT_BLURRED)) && buf == A.proj_buf) {
-            u32 p[4];
-            if (parse_proj_literal(A.proj_buf, p)) memcpy(v, p, sizeof p);
-            else set_status(true, "%s: write a complex number (like 0.5 - 2i) or inf", s->name);
-        }
+        StrBuf sb = {0};
+        if (!value_literal(&sb, t_proj, v)) sb_puts(&sb, "?");
+        config_text_value(s, id, x, y, w, h, sb_cstr(&sb), UI_TF_SELECT_ALL, "a complex number, or inf", apply_point_text);
+        sb_free(&sb);
         break;
     }
     case T_VEC:

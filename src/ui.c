@@ -125,6 +125,8 @@ typedef struct UiCtx {
 
     /* text editing */
     UipTextEdit te;
+    u32 te_lost;                      /* a text field whose editing ended because another one took the focus: its next
+                                         call reports UI_TEXT_BLURRED */
     u32 num_edit_id;                  /* drag widget currently in "type a number" mode */
     char num_buf[64];
     int num_flags;
@@ -1070,7 +1072,7 @@ bool ui_has_focus(u32 id) {
 void ui_reset_interaction(void) {
     free(ui.te.orig);
     memset(&ui.te, 0, sizeof ui.te);
-    ui.active = ui.focus = ui.num_edit_id = 0;
+    ui.active = ui.focus = ui.num_edit_id = ui.te_lost = 0;
     ui.hover_track_id = 0;
     ui.nocc = ui.nocc_prev = 0;
 }
@@ -1420,6 +1422,7 @@ static int uip_textedit(u32 id, float x, float y, float w, float h, char *buf, i
     double now = in->time;
 
     if (te->id == id && !ui_has_focus(id)) { ev |= UI_TEXT_BLURRED; uip_te_end(te); } /* lost the focus since last frame */
+    else if (ui.te_lost == id && !ui_has_focus(id)) { ev |= UI_TEXT_BLURRED; ui.te_lost = 0; } /* (to another field) */
 
     UiInteract r = ui_interact_id(id, x, y, w, h);
     if (r.hovered) ui_set_cursor(UI_CURSOR_IBEAM);
@@ -1431,7 +1434,10 @@ static int uip_textedit(u32 id, float x, float y, float w, float h, char *buf, i
     }
     bool select_all_now = false;
     if (ui_has_focus(id) && te->id != id) { /* gained the focus (click, or ui_set_focus from outside) */
-        if (te->id) uip_te_end(te);
+        if (te->id) {
+            ui.te_lost = te->id;
+            uip_te_end(te);
+        }
         te->id = id;
         te->orig = xstrdup(buf);
         te->cursor = (int)strlen(buf);

@@ -655,13 +655,26 @@ static u32 f2i_clamped(Gen *g, u32 x) {
 }
 
 /* a point of the sphere (a vec4 (a, b)) scaled so that its largest component is 1 (as proj_make in interp.c) */
+/* A lift of a point scaled by a power of two so that its largest component is in [0.5, 1): exact, and the same as on
+   the CPU (interp.c proj_make) whatever the size of the components (a reciprocal of a huge one would be flushed to 0).
+   Infinite components become +-1, the others 0. */
 static u32 proj_scale(Gen *g, u32 v) {
-    u32 f = g->tfloat;
+    u32 f = g->tfloat, I = g->tint;
     u32 av = ext1(g, g->tvec4, GLSLFAbs, v);
     u32 m = ext2(g, f, GLSLFMax, ext2(g, f, GLSLFMax, extract(g, f, av, 0), extract(g, f, av, 1)),
                  ext2(g, f, GLSLFMax, extract(g, f, av, 2), extract(g, f, av, 3)));
-    u32 s = op2(g, SpvOpFDiv, f, cf(g, 1), ext2(g, f, GLSLFMax, m, cf(g, 1e-30f)));
-    return op2(g, SpvOpVectorTimesScalar, g->tvec4, v, s);
+    /* m = f 2^e with 0.5 <= f < 1, e from the exponent bits; 2^-e as two factors that are normal floats */
+    u32 bits = op1(g, SpvOpBitcast, I, m);
+    u32 e = op2(g, SpvOpISub, I, op2(g, SpvOpBitwiseAnd, I, op2(g, SpvOpShiftRightLogical, I, bits, ci(g, 23)), ci(g, 255)),
+                ci(g, 126));
+    u32 k1 = op2(g, SpvOpISub, I, op2(g, SpvOpSDiv, I, op2(g, SpvOpISub, I, ci(g, 130), e), ci(g, 2)), ci(g, 65));
+    u32 k2 = op2(g, SpvOpISub, I, op1(g, SpvOpSNegate, I, e), k1);
+    u32 f1 = op1(g, SpvOpBitcast, f, op2(g, SpvOpShiftLeftLogical, I, op2(g, SpvOpIAdd, I, k1, ci(g, 127)), ci(g, 23)));
+    u32 f2 = op1(g, SpvOpBitcast, f, op2(g, SpvOpShiftLeftLogical, I, op2(g, SpvOpIAdd, I, k2, ci(g, 127)), ci(g, 23)));
+    u32 scaled = op2(g, SpvOpVectorTimesScalar, g->tvec4, op2(g, SpvOpVectorTimesScalar, g->tvec4, v, f1), f2);
+    u32 inf = op1(g, SpvOpIsInf, spv_type_vec(&g->s, g->tbool, 4), v);
+    u32 vi = spv_op3(&g->s, SpvOpSelect, g->tvec4, inf, ext1(g, g->tvec4, GLSLFSign, v), cnull(g, t_proj));
+    return sel4(g, op1(g, SpvOpIsInf, g->tbool, m), vi, scaled);
 }
 
 /* the intrinsics on reals in double-single precision (0: not one of them) */
@@ -2047,8 +2060,9 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         } else {
             z = flat_plane_point(g, px, py, w, h);
             store(g, g->pxsize_var, flat_pixel_size(g, w, h));
-            if (v->var_proj) {
-                u32 p[4] = {extract(g, f, z, 0), extract(g, f, z, 1), cf(g, 1), cf(g, 0)};
+            if (v->var_proj) { /* (points are single precision: the high parts of a double-single z) */
+                u32 zr = g->df ? df_hi(g, c_re(g, z)) : extract(g, f, z, 0), zi = g->df ? df_hi(g, c_im(g, z)) : extract(g, f, z, 1);
+                u32 p[4] = {zr, zi, cf(g, 1), cf(g, 0)};
                 lift = construct(g, g->tvec4, p, 4);
             }
         }

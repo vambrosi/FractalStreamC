@@ -470,47 +470,83 @@ TEST(app_hover_info) {
     app_test_end();
 }
 
-/* a point of the sphere in the config panel: shown as a complex number or ∞, typed (Enter sets it) */
-static void app_test_point_field(Sym *s) {
+/* points of the sphere in the config panel: shown as a complex number or ∞, typed; Enter or leaving the field sets
+   the value, Escape doesn't. The fields of p1 and p2 are at y = 20 and y = 60 (one frame each call). */
+static Sym *app_test_p1, *app_test_p2;
+static void app_test_point_fields(void) {
     A.in = T;
     tu_begin();
-    config_number(s, 20, 20, 200);
+    config_number(app_test_p1, 20, 20, 200);
+    if (app_test_p2) config_number(app_test_p2, 20, 60, 200);
     tu_end();
+}
+static void app_test_point_click(float x, float y) {
+    tu_move(x, y);
+    app_test_point_fields();
+    tu_press(0, 1);
+    tu_release(0);
+    app_test_point_fields();
+}
+static bool app_test_point_is(Sym *s, double re, double im) {
+    const u32 *v = A.state + s->slot;
+    double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+    if (!(d > 0)) {
+        printf("    %s is not a finite point\n", s->name);
+        return false;
+    }
+    double xr = (ar * br + ai * bi) / d, xi = (ai * br - ar * bi) / d;
+    if (fabs(xr - re) > 1e-6 || fabs(xi - im) > 1e-6) {
+        printf("    %s = %g%+gi, expected %g%+gi\n", s->name, xr, xi, re, im);
+        return false;
+    }
+    return true;
 }
 
 TEST(app_config_point) {
-    Program *p = program_load("@config\np : P = ∞\n@viewer v z\ncolor = .black\n", "t");
+    Program *p = program_load("@config\np1 : P = ∞\np2 : P = 1\n@viewer v z\ncolor = .black\n", "t");
     CHECK_INT(p->nerrors, 0);
     if (p->nerrors) { program_free(p); return; }
     tu_reset(1.0f);
     app_test_begin(p);
-    Sym *s = NULL;
-    for (int i = 0; i < p->globals.len; i++)
-        if (!strcmp(p->globals.data[i]->name, "p")) s = p->globals.data[i];
-    CHECK(s && s->type == t_proj);
-    if (s) {
+    app_test_p1 = app_test_p2 = NULL;
+    for (int i = 0; i < p->globals.len; i++) {
+        if (!strcmp(p->globals.data[i]->name, "p1")) app_test_p1 = p->globals.data[i];
+        if (!strcmp(p->globals.data[i]->name, "p2")) app_test_p2 = p->globals.data[i];
+    }
+    CHECK(app_test_p1 && app_test_p1->type == t_proj && app_test_p2);
+    if (app_test_p1 && app_test_p2) {
+        Sym *s1 = app_test_p1, *s2 = app_test_p2;
         StrBuf sb = {0};
-        CHECK(value_literal(&sb, t_proj, A.state + s->slot) && !strcmp(sb_cstr(&sb), "∞"));
+        CHECK(value_literal(&sb, t_proj, A.state + s1->slot) && !strcmp(sb_cstr(&sb), "∞"));
         sb_free(&sb);
-        app_test_point_field(s);
-        tu_move(60, 30); /* click in the field (it selects all), type, Enter */
-        app_test_point_field(s);
-        tu_press(0, 1);
-        tu_release(0);
-        app_test_point_field(s);
+        app_test_point_fields();
+        app_test_point_click(60, 30); /* the click selects everything: typing replaces it; Enter sets it */
         tu_type("0.5-2i");
-        app_test_point_field(s);
-        CHECK_STR(A.proj_buf, "0.5-2i");
+        app_test_point_fields();
+        CHECK_STR(A.text_buf, "0.5-2i");
         tu_key(UI_KEY_ENTER, 0);
-        app_test_point_field(s);
-        app_test_point_field(s);
-        const u32 *v = A.state + s->slot;
-        double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
-        CHECK(d > 0);
-        if (d > 0) {
-            CHECK_NEAR((ar * br + ai * bi) / d, 0.5, 1e-6);
-            CHECK_NEAR((ai * br - ar * bi) / d, -2, 1e-6);
-        }
+        app_test_point_fields();
+        app_test_point_fields();
+        CHECK(app_test_point_is(s1, 0.5, -2));
+        app_test_point_click(60, 30); /* leaving the field (a click elsewhere) sets it too */
+        tu_type("7");
+        app_test_point_fields();
+        app_test_point_click(400, 400);
+        app_test_point_fields();
+        CHECK(app_test_point_is(s1, 7, 0));
+        app_test_point_click(60, 70); /* from one point to the other: the first is set, its text isn't lost */
+        tu_type("9i");
+        app_test_point_fields();
+        app_test_point_click(60, 30);
+        app_test_point_fields();
+        CHECK(app_test_point_is(s2, 0, 9));
+        tu_type("3");
+        app_test_point_fields();
+        tu_key(UI_KEY_ESCAPE, 0); /* Escape: as it was */
+        app_test_point_fields();
+        app_test_point_fields();
+        CHECK(app_test_point_is(s1, 7, 0));
+        CHECK(!A.text_name[0]);
         u32 inf[4];
         CHECK(parse_proj_literal("inf", inf) && wf(inf[0]) == 1 && wf(inf[2]) == 0);
         CHECK(!parse_proj_literal("not a number", inf));
@@ -694,6 +730,30 @@ TEST(app_info_and_inspect) {
     interp_free(&A.interp);
     outs_free();
     for (int t = 0; t < p->ntools; t++) vec_free(A.draws[t]);
+    free(A.draws);
+    app_test_end();
+    /* a view of points of the sphere: Inspect looks at the pixel's point, exact at infinity (here the centre of the
+       view, turned by the Möbius map z = 1/w) */
+    p = program_load("@viewer sphere z : P \"sphere\" projective\n"
+                     "color = if z == ∞ then .red else .blue\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    interp_init(&A.interp, p, A.state);
+    A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
+    outs_init();
+    layout_reset(0);
+    float m8[8] = {0, 0, 1, 0, 1, 0, 0, 0};
+    for (int k = 0; k < 8; k++) A.state[p->viewers[0]->mobius->slot + k] = fw(m8[k]);
+    A.nvis = 1;
+    A.vis[0].viewer = 0;
+    A.vis[0].r = (Rect){0, 0, 65, 65};
+    A.in.mouse_x = A.in.mouse_y = 32.5f;
+    inspect_at(0, NAN, NAN);
+    s = sb_cstr(&A.outs[out_inspect()]);
+    CHECK_MSG(strstr(s, "at z = ∞") && strstr(s, "color = [1, 0, 0]"), "%s", s);
+    interp_free(&A.interp);
+    outs_free();
     free(A.draws);
     app_test_end();
 }

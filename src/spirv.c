@@ -34,7 +34,7 @@ enum { SpvSCInput = 1, SpvSCUniform = 2, SpvSCOutput = 3, SpvSCPrivate = 6, SpvS
 enum { SpvDecBlock = 2, SpvDecBufferBlock = 3, SpvDecArrayStride = 6, SpvDecBuiltIn = 11, SpvDecNonWritable = 24,
        SpvDecLocation = 30, SpvDecBinding = 33, SpvDecDescriptorSet = 34, SpvDecOffset = 35 };
 enum { SpvBuiltInFragCoord = 15, SpvBuiltInGlobalInvocationId = 28 };
-enum { SpvOpShiftLeftLogical = 196, SpvOpBitwiseOr = 197 };
+enum { SpvOpShiftRightLogical = 194, SpvOpShiftLeftLogical = 196, SpvOpBitwiseOr = 197, SpvOpBitwiseAnd = 199 };
 /* GLSL.std.450 */
 enum {
     GLSLTrunc = 3, GLSLFAbs = 4, GLSLSAbs = 5, GLSLFSign = 6, GLSLSSign = 7, GLSLFloor = 8, GLSLCeil = 9,
