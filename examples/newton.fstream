@@ -1,6 +1,6 @@
-# Newton's method for the polynomial with the given roots.
-# Use the "Add root" tool to click new roots into the picture,
-# and "Clear roots" to start over.
+# Newton's method for the polynomial with the given
+# roots. Use the "Add root" tool to click new roots into
+# the picture, and "Clear roots" to start over.
 
 @config
 .title = "Newton's method"
@@ -11,7 +11,8 @@ plane.radius = 1.5
 roots : List of C = [1, cis(tau / 3), cis(2 tau / 3)]
 
 @viewer plane z "Newton basins" "Ctrl + 1"
-# z <- z - p(z)/p'(z), and p'/p is the sum of 1/(z - r) over the roots
+# z <- z - p(z)/p'(z), and p'/p is the sum of 1/(z - r)
+# over the roots
 for k in 1..100 do
     s := 0
     arrived := false
@@ -27,7 +28,8 @@ for k in 1..100 do
     z -= 1 / s
 end
 steps : Z = .iterations
-# colour by the nearest root, darker when convergence was slow
+# colour by the nearest root, darker when convergence
+# was slow
 best : Z = 1
 for j in 1..|roots| do
     if |z - roots[j]| < |z - roots[best]| then

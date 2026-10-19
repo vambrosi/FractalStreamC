@@ -1,5 +1,7 @@
-# Outlines of the Mandelbrot set and of a Julia set: a point is on the boundary when a
-# distance estimate (orbit divided by its derivative) drops below a fraction of a pixel.
+# Outlines of the Mandelbrot set and of a Julia set: a
+# point is on the boundary when a distance estimate
+# (orbit divided by its derivative) drops below a
+# fraction of a pixel.
 # Ported from FractalStream examples/outline.yaml
 
 @config
@@ -8,7 +10,8 @@
 .height = 512
 
 @config "Configuration"
-.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.C = -0.1226 + 0.7449i "Selected value of C"
 .maxIterations = 100 "Max. iterations"
 .escapeRadius = 10 "Max. radius"
 .epsilon = 0.001 "Min. radius"

@@ -1,7 +1,10 @@
-# Tour of the colour maps of the old FractalStream: pick one in the config panel and see it
-# on a linear gradient, a cyclic gradient, the Mandelbrot set and a Julia set (escape time,
-# optionally smooth, optionally with a phase shift above the real axis: "checkers").
-# The old setup dialog held the `colorize` code; here it is a function in @global.
+# Tour of the colour maps of the old FractalStream: pick
+# one in the config panel and see it on a linear
+# gradient, a cyclic gradient, the Mandelbrot set and a
+# Julia set (escape time, optionally smooth, optionally
+# with a phase shift above the real axis: "checkers").
+# The old setup dialog held the `colorize` code; here it
+# is a function in @global.
 # Ported from FractalStream examples/color-test.fs
 
 @config
@@ -9,19 +12,24 @@
 .width = 640
 .height = 480
 .escapeRadius = 10
-mandelbrot.radius = 1.34      # 1/150 per pixel in the old 450x402 window
-julia.radius = 1.31           # 1/150 per pixel in the old 429x393 window
+# 1/150 per pixel in the old 450x402 window
+mandelbrot.radius = 1.34
+# 1/150 per pixel in the old 429x393 window
+julia.radius = 1.31
 
 @config "Pick a color scheme"
-index : Z = 1 in ["rainbow", "arenberg", "romao", "bamo", "broco", "corko", "viko", "ice",
-                  "fire", "rose", "wheat", "forest", "ocean", "winter", "spring", "summer",
-                  "fall"] "Color scheme"
+index : Z = 1 in ["rainbow", "arenberg", "romao",
+                  "bamo", "broco", "corko", "viko",
+                  "ice", "fire", "rose", "wheat",
+                  "forest", "ocean", "winter", "spring",
+                  "summer", "fall"] "Color scheme"
 .maxIterations = 100 "Iterations limit"
 speed : Z = 20 in 1..100 "Iterations per color cycle"
 smooth : Bool = true "Use smooth coloring?"
 checkers : Bool = false "Use checkers?"
 checker_shift : R = 0.333 "Checker phase shift"
-.C = -0.11 + 0.78i "C"        # (pick it in the Mandelbrot set)
+# (pick it in the Mandelbrot set)
+.C = -0.11 + 0.78i "C"
 
 @global
 define colorize(t : R) = c : Color where
@@ -64,7 +72,8 @@ define colorize(t : R) = c : Color where
     end
 end
 
-# escape-time parameter of an escaped orbit (z after n steps)
+# escape-time parameter of an escaped orbit
+# (z after n steps)
 define escape_t(z, n : Z) = t : R where
     t = n
     if smooth then

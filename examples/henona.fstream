@@ -1,21 +1,27 @@
-# The complex Hénon map (x, y) -> (x^2 + b - a y, x), in the style of FractalStream 1.0:
-# the parameter plane is the a-plane (a = c, b fixed). Each orbit starts at the fixed
-# point (p, p) moved by zoom z along the expanding eigenvector (lambda, 1), with z = 0 in
-# the parameter plane and z = the pixel in the dynamical plane, and is coloured by escape
-# time (1.0 coloured the reported x with settings kept in the app, not in the script).
-# Ported from FractalStream notes/fractalstream-1.0-scripts/henona.txt
+# The complex Hénon map (x, y) -> (x^2 + b - a y, x), in
+# the style of FractalStream 1.0: the parameter plane is
+# the a-plane (a = c, b fixed). Each orbit starts at the
+# fixed point (p, p) moved by zoom z along the expanding
+# eigenvector (lambda, 1), with z = 0 in the parameter
+# plane and z = the pixel in the dynamical plane, and is
+# coloured by escape time (1.0 coloured the reported x
+# with settings kept in the app, not in the script).
+# Ported from FractalStream
+# notes/fractalstream-1.0-scripts/henona.txt
 
 @config
 .title = "Hénon map, a-plane"
 .maxIterations = 100
 .escapeRadius = 10
-.c = 0.3                      # the a of the dynamical plane (pick it in the a-plane)
-b := 0.6 + 0.2i               # "default b to 0.6 + 0.2i."
+# the a of the dynamical plane (pick it in the a-plane)
+.c = 0.3
+b := 0.6 + 0.2i  # "default b to 0.6 + 0.2i."
 zoom : R = 0.001              # "default zoom to 0.001."
 
 @global
-# iterate from the fixed point moved by `step` along the unstable direction; the result
-# is the number of steps before x escapes (.maxIterations if it does not)
+# iterate from the fixed point moved by `step` along the
+# unstable direction; the result is the number of steps
+# before x escapes (.maxIterations if it does not)
 define henon(a, b, step) = n : Z where
     aa := (a + 1) / 2
     disc := aa^2 - b

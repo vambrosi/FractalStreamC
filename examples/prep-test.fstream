@@ -1,21 +1,25 @@
-# Test of the "preparation" step (code run once before the pixels, whose results the viewer
-# can read; here @prepare): a blue disk of the configured radius on a background of the
-# configured colour.
+# Test of the "preparation" step (code run once before
+# the pixels, whose results the viewer can read; here
+# @prepare): a blue disk of the configured radius on a
+# background of the configured colour.
 # Ported from FractalStream examples/prep-test.yaml
 
 @config
 .title = "Voronoi"
 .width = 150
 .height = 150
-plane.radius = 0.5859        # 1/128 per pixel in a 150x150 window
+# 1/128 per pixel in a 150x150 window
+plane.radius = 0.5859
 
 @config "Configuration"
-myList : List of C = [0, 1, i] "Centers"     # (unused, as in the original)
+# (unused, as in the original)
+myList : List of C = [0, 1, i] "Centers"
 radius : R = 0.2 "Radius"
 myColor : Color = .yellow "My color"
 
 @global
-computed : Color = .pink         # the output of the preparation step
+# the output of the preparation step
+computed : Color = .pink
 
 @prepare
 computed = myColor

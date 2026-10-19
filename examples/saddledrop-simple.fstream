@@ -1,26 +1,35 @@
-# SaddleDrop as first written for FractalStream: the Hénon map H(x, y) = (x^2 + c - a y, x)
-# with a fixed.
-#   Dynamical plane: the unstable manifold W^u(p) of the saddle fixed point p, parametrized by
-#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)), coloured by the escape rate G+.
-#   Parameter plane (c): Newton's method, started at "Critical seed" in every pixel, finds a
-#     critical point of G+ on W^u(p); c is coloured by how fast it escapes.
-# White: Newton's method failed; gray: it ran off to a huge critical point; black: the critical
-# point does not escape. "Color by imaginary part" shows the sign of im x when it escapes.
-# Each pixel starts afresh from the seed, so neighbouring pixels may find different critical
-# points (examples/saddledrop.fstream follows one from pixel to pixel instead).
-# The tool "Pick critical seed" (C) of the dynamical plane sets the seed.
+# SaddleDrop as first written for FractalStream: the
+# Hénon map H(x, y) = (x^2 + c - a y, x) with a fixed.
+#   - Dynamical plane: the unstable manifold W^u(p) of
+#     the saddle fixed point p, parametrized by
+#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)),
+#     coloured by the escape rate G+.
+#   - Parameter plane (c): Newton's method, started at
+#     "Critical seed" in every pixel, finds a critical
+#     point of G+ on W^u(p); c is coloured by how fast
+#     it escapes.
+# White: Newton's method failed; gray: it ran off to a
+# huge critical point; black: the critical point does
+# not escape. "Color by imaginary part" shows the sign
+# of im x when it escapes. Each pixel starts afresh from
+# the seed, so neighbouring pixels may find different
+# critical points (examples/saddledrop.fstream follows
+# one from pixel to pixel instead). The tool "Pick
+# critical seed" (C) of the dynamical plane sets the
+# seed.
 # Ported from FractalStream examples/saddledrop.yaml
 
 @config
 .title = "SaddleDrop (Newton from a seed)"
 .width = 1024
 .height = 512
-dyn.radius = 2                # 1/128 per pixel in a 512 x 512 view
+dyn.radius = 2  # 1/128 per pixel in a 512 x 512 view
 param.radius = 2
 
 @config "Configuration"
 a : C = 0.3 "a ="
-.c = 0.6 + 0.2i "c ="         # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.c = 0.6 + 0.2i "c ="
 n : Z = 0 "γ iterations:"
 critSeed : C = 0.001 "Critical seed:"
 .maxIterations = 100 "Critical max iterations:"
@@ -29,8 +38,9 @@ escapeR : R = 10 "Escape radius:"
 imColor : Bool = false "Color by imaginary part"
 
 @global
-# the saddle fixed point p (x = y = p, p^2 - (1 + a) p + c = 0) and its expanding eigenvalue:
-# of the two fixed points, the one with the larger eigenvalue
+# the saddle fixed point p (x = y = p, p^2 - (1 + a)
+# p + c = 0) and its expanding eigenvalue: of the two
+# fixed points, the one with the larger eigenvalue
 define saddle(c) = (p, lambda) where
     b := (1 + a) / 2
     disc := sqrt(b^2 - c)
@@ -51,7 +61,8 @@ define saddle(c) = (p, lambda) where
     end
 end
 
-# gamma(w) pushed forward until it escapes (at most maxIters times): its first coordinate
+# gamma(w) pushed forward until it escapes
+# (at most maxIters times): its first coordinate
 define escape_x(w, c) = x where
     (p, lambda) := saddle(c)
     s := w / lambda^n
@@ -60,7 +71,8 @@ define escape_x(w, c) = x where
     for k in 1..n do              # lift onto W^u(p)
         (x, y) = (x^2 + c - a y, x)
     end
-    for m in 1..maxIters do       # then iterate until it escapes
+    # then iterate until it escapes
+    for m in 1..maxIters do
         if |x| >= escapeR then
             break
         end
@@ -68,8 +80,9 @@ define escape_x(w, c) = x where
     end
 end
 
-# The escape rate, packed with the sign of im x: +-(m - log2 log|x|) after m steps, 0 for a
-# bounded orbit
+# The escape rate, packed with the sign of im x:
+# +-(m - log2 log|x|) after m steps, 0 for a bounded
+# orbit
 define rate(w, c) = r : R where
     (p, lambda) := saddle(c)
     s := w / lambda^n
@@ -104,7 +117,8 @@ end
 color = shade(rate(z, .c))
 
 @viewer param c "Parameter plane (c)" "Ctrl + 2"
-# a critical point of G+ on W^u(p): a zero of the derivative of log x along gamma
+# a critical point of G+ on W^u(p): a zero of the
+# derivative of log x along gamma
 w := critical t -> log(escape_x(t, c)) with seed critSeed
 if .stuck then
     color = .white

@@ -1,4 +1,5 @@
-# The simplest picture: red inside the unit circle, green above it, blue below.
+# The simplest picture: red inside the unit circle,
+# green above it, blue below.
 # Ported from FractalStream examples/circle.yaml
 
 @config

@@ -1,9 +1,14 @@
-# The family z -> (z^2 - C) / (z^2 - 1) (critical points 0 and infinity; infinity -> 1 ->
-# infinity is a superattracting 2-cycle), studied by pulling paths back. C-plane: escape
-# time of the critical value C. Dynamics: escape time of z. Tools: "Preimages" marks a point
-# and its two preimages; "Mark orbit of critical point" draws the orbit of 0 and the point
-# 1; "Pullback" drags paths and draws their two lifts (preimages followed continuously).
-# Ported from FractalStream examples/pullbacks-mating.yaml
+# The family z -> (z^2 - C) / (z^2 - 1) (critical points
+# 0 and infinity; infinity -> 1 -> infinity is a
+# superattracting 2-cycle), studied by pulling paths
+# back. C-plane: escape time of the critical value C.
+# Dynamics: escape time of z. Tools: "Preimages" marks a
+# point and its two preimages; "Mark orbit of critical
+# point" draws the orbit of 0 and the point 1;
+# "Pullback" drags paths and draws their two lifts
+# (preimages followed continuously).
+# Ported from FractalStream
+# examples/pullbacks-mating.yaml
 
 @config
 .title = "Pullbacks"
@@ -11,7 +16,7 @@
 .height = 512
 
 @config "Configuration"
-.C = 0.5 + 0.8660254038i "C"       # (pick it in the C-plane)
+.C = 0.5 + 0.8660254038i "C"  # (pick it in the C-plane)
 .maxIterations = 100 "Max. iterations"
 .escapeRadius = 10 "Escape radius"
 .epsilon = 0.0001 "Tolerance"
@@ -84,18 +89,20 @@ on show do
     while w != 0 end
 end
 
-@dynamics.tool "Erase postcritical points" "Shift + O" "delete_sweep" button
+@dynamics.tool "Erase postcritical points" "Shift + O" ...
+    "delete_sweep" button
 erase "Mark orbit of critical point"
 
 @dynamics.tool "Pullback" "U" "gesture"
-.keep = true                  # the paths build up until "Erase"
+.keep = true  # the paths build up until "Erase"
 on drag do
     pre_1 := sqrt((z - .C) / (z - 1))
     pre_2 := -pre_1
     if follow then
         draw line between last_z and z with color color1
         last_z = z
-        # make sure that pre_1 is the preimage closest to last_pre1
+        # make sure that pre_1 is the preimage closest
+        # to last_pre1
         if |last_pre1 - pre_2| < |last_pre1 - pre_1| then
             (pre_1, pre_2) = (pre_2, pre_1)
         end

@@ -1,7 +1,10 @@
-# The complex Hénon map (x, y) -> (x^2 + b - a y, x), started at the fixed point (p, p)
-# moved by a step along its unstable eigenvector (lambda, 1): coloured by escape time.
-# In the a- and b-planes the step is 0 (only rounding errors move the orbit); in the
-# dynamical plane it is zoom z, which shows the unstable manifold of the fixed point.
+# The complex Hénon map (x, y) -> (x^2 + b - a y, x),
+# started at the fixed point (p, p) moved by a step
+# along its unstable eigenvector (lambda, 1): coloured
+# by escape time. In the a- and b-planes the step is 0
+# (only rounding errors move the orbit); in the
+# dynamical plane it is zoom z, which shows the unstable
+# manifold of the fixed point.
 # Ported from FractalStream examples/henon.yaml
 
 @config
@@ -17,8 +20,9 @@ zoom : R = 0.001
 .escapeRadius = 10 "Escape radius"
 
 @global
-# iterate the Hénon map from the fixed point moved by `step` along the unstable direction;
-# returns whether it escaped and after how many steps
+# iterate the Hénon map from the fixed point moved by
+# `step` along the unstable direction; returns whether
+# it escaped and after how many steps
 define henon(a, b, step) = (escaped : Bool, n : Z) where
     aa := (a + 1) / 2
     disc := aa^2 - b

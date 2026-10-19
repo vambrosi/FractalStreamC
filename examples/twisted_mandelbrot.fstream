@@ -1,8 +1,11 @@
-# z -> z^2 + C composed with a Dehn twist of the annulus r0 < |z - twist_center| < r1, in
-# the parameter space and in the dynamical plane, with smooth escape-time colouring
-# (blue/green above the real axis, yellow/red below). "Trace" draws an orbit; "Dehn twist"
-# drags the centre of the twist or either of its circles.
-# Ported from FractalStream examples/twisted_mandelbrot.yaml
+# z -> z^2 + C composed with a Dehn twist of the annulus
+# r0 < |z - twist_center| < r1, in the parameter space
+# and in the dynamical plane, with smooth escape-time
+# colouring (blue/green above the real axis, yellow/red
+# below). "Trace" draws an orbit; "Dehn twist" drags the
+# centre of the twist or either of its circles.
+# Ported from FractalStream
+# examples/twisted_mandelbrot.yaml
 
 @config
 .title = "Twisted Mandelbrot set"
@@ -15,7 +18,8 @@ define f(z, C) = z^2 + C
 define stop(z, C) = |z| > .escapeRadius
 
 @config "Configuration"
-.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter space)
+# (pick it in the parameter space)
+.C = -0.1226 + 0.7449i "Selected value of C"
 .maxIterations = 100 "Max. iterations"
 .escapeRadius = 10 "Max. radius"
 
@@ -25,7 +29,9 @@ r0 : R = 0.2 "Inner radius"
 r1 : R = 0.5 "Outer radius"
 
 @global
-drag_target : Z = 0           # what "Dehn twist" drags: 1 the centre, 2 the inner, 3 the outer circle
+# what "Dehn twist" drags: 1 the centre, 2 the inner, 3
+# the outer circle
+drag_target : Z = 0
 
 # one step: f, then the Dehn twist
 define step(z, C) = w where
@@ -82,7 +88,8 @@ on hide do
 end
 
 @dynamical.tool "Dehn twist" "D" "rotate_right"
-.keep = true                  # drawings stay until erased, as in the old tool
+# drawings stay until erased, as in the old tool
+.keep = true
 on show do
     erase
     draw point at twist_center with color .red
@@ -91,7 +98,8 @@ on show do
 end
 on drag do
     eps : R = 5 px
-    if drag_target == 0 then      # grab what the drag started on
+    # grab what the drag started on
+    if drag_target == 0 then
         d0 : R = |.dragStart - twist_center|
         if d0 < eps then
             drag_target = 1

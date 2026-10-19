@@ -1,6 +1,9 @@
-# The Mandelbrot set tiled by Julia sets: the plane is cut into small squares, and each
-# square shows (a zoom of) the Julia set of the parameter at its centre.
-# Ported from FractalStream examples/tiled-mandelbrot.yaml
+# The Mandelbrot set tiled by Julia sets: the plane is
+# cut into small squares, and each square shows
+# (a zoom of) the Julia set of the parameter at its
+# centre.
+# Ported from FractalStream
+# examples/tiled-mandelbrot.yaml
 
 @config
 .title = "Mandelbrot set tiled by Julia sets"
@@ -27,6 +30,7 @@ end
 if .stuck then
     color = .black
 else
-    m : R = .iterations + 1 - log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
+    m : R = .iterations + 1 -
+            log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
     color = rainbow(m / 20)
 end

@@ -1,6 +1,9 @@
-# The default session of the old app: the parameter plane and the dynamical plane of
-# z -> f(z) = z^2 + C, iterated until stop(z) holds, with a tool that traces orbits.
-# Ported from FractalStream examples/mandelbrot-default.fs
+# The default session of the old app: the parameter
+# plane and the dynamical plane of z -> f(z) = z^2 + C,
+# iterated until stop(z) holds, with a tool that traces
+# orbits.
+# Ported from FractalStream
+# examples/mandelbrot-default.fs
 
 @config
 .title = "Parametric complex dynamics"
@@ -13,7 +16,8 @@ define f(z, C) = z^2 + C
 define stop(z, C) = |z| > .escapeRadius
 
 @config "Configuration"
-.C = 1.4140625 - 0.7890625i "Selected value of C"    # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.C = 1.4140625 - 0.7890625i "Selected value of C"
 .maxIterations = 100 "Max. iterations"
 .escapeRadius = 10 "Max. radius"
 

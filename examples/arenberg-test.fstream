@@ -1,5 +1,7 @@
-# Compares two cyclic colour maps, the old "rainbow" and the "Arenberg" phase wheel, on a
-# reference strip and on the Mandelbrot and Julia sets (smooth escape-time colouring).
+# Compares two cyclic colour maps, the old "rainbow" and
+# the "Arenberg" phase wheel, on a reference strip and
+# on the Mandelbrot and Julia sets (smooth escape-time
+# colouring).
 # Ported from FractalStream examples/arenberg-test.yaml
 
 @config
@@ -12,7 +14,8 @@
 @config "Configuration"
 use_arenberg : Bool = false "Use Arenberg rainbow"
 speed : R = 20 in 1..100 "Iterations per color cycle"
-.C = -0.11 + 0.78i "f(z) = z² +"     # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.C = -0.11 + 0.78i "f(z) = z² +"
 
 @viewer parameter C "Parameter plane" "Ctrl + 1"
 z := 0
@@ -22,7 +25,8 @@ end
 color = .black
 if z escapes then
     m : R = .iterations + 1 - log(log(|z|^2) / (2 log(10))) / log(2)
-    color = if use_arenberg then palette("arenberg", m / speed) else rainbow(m / speed)
+    color = if use_arenberg then palette("arenberg", m / speed) ...
+            else rainbow(m / speed)
 end
 
 @viewer dynamical z "Dynamical plane" "Ctrl + 2"
@@ -32,8 +36,10 @@ end
 color = .black
 if z escapes then
     m : R = .iterations + 1 - log(log(|z|^2) / (2 log(10))) / log(2)
-    color = if use_arenberg then palette("arenberg", m / speed) else rainbow(m / speed)
+    color = if use_arenberg then palette("arenberg", m / speed) ...
+            else rainbow(m / speed)
 end
 
 @viewer reference x "Reference" "Ctrl + 3"
-color = if use_arenberg then palette("arenberg", re x / 4) else rainbow(re x / 4)
+color = if use_arenberg then palette("arenberg", re x / 4) ...
+        else rainbow(re x / 4)

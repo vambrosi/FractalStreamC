@@ -1,7 +1,9 @@
-# Newton's method for the cubic with roots a, b and c: the basins of the three roots
-# (red, green, blue; yellow if it converges elsewhere, black if it does not), shaded by
-# the number of steps. "Trace" draws the Newton orbit of a point, "Move roots" drags the
-# roots around.
+# Newton's method for the cubic with roots a, b and c:
+# the basins of the three roots (red, green, blue;
+# yellow if it converges elsewhere, black if it does
+# not), shaded by the number of steps. "Trace" draws the
+# Newton orbit of a point, "Move roots" drags the roots
+# around.
 # Ported from FractalStream examples/newton3.yaml
 
 @config
@@ -20,7 +22,9 @@ rad : R = 5 in 1..30 "grab radius (px)"
 .maxIterations = 100 "Max. iterations"
 
 @global
-drag_target : Z = 0           # the root being dragged by "Move roots": 1, 2, 3 (0: none)
+# the root being dragged by "Move roots": 1, 2, 3
+# (0: none)
+drag_target : Z = 0
 
 define p(z) = (z - a) (z - b) (z - c)
 define newton(z) = z - p(z) / derivative p at z
@@ -60,7 +64,8 @@ on hide do
 end
 
 @plane.tool "Move roots" "M" "open_with"
-.keep = true                  # drawings stay until erased, as in the old tool
+# drawings stay until erased, as in the old tool
+.keep = true
 on show do
     erase
     draw point at a

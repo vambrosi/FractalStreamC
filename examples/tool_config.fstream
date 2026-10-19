@@ -1,6 +1,7 @@
-# A Julia set with two tools: "Demo" draws a circle and a radius set in its own group of
-# the config panel (redrawn whenever they change), and "Trace" draws the orbit of the
-# clicked point.
+# A Julia set with two tools: "Demo" draws a circle and
+# a radius set in its own group of the config panel
+# (redrawn whenever they change), and "Trace" draws the
+# orbit of the clicked point.
 # Ported from FractalStream examples/tool_config.yaml
 
 @config
@@ -25,7 +26,8 @@ end
 if .stuck then
     color = .black
 else
-    color = blend((.iterations / .maxIterations)^p, dark(.blue), .white)
+    color = blend((.iterations / .maxIterations)^p,
+                  dark(.blue), .white)
 end
 
 @plane.tool "Demo" "X" "architecture"

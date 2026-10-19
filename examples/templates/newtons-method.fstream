@@ -1,20 +1,26 @@
-# Template: Newton's method for f(z) = 0, colouring each point by the root it converges
-# to (basin_color, optionally shaded by the number of steps) or on_failure, with a Trace
-# tool. f and the colours are formulas of the config panel (the old app asked for them,
-# and for the title, in a setup dialog).
-# Ported from FractalStream examples/templates/newtons-method.yaml
+# Template: Newton's method for f(z) = 0, colouring each
+# point by the root it converges to (basin_color,
+# optionally shaded by the number of steps) or
+# on_failure, with a Trace tool. f and the colours are
+# formulas of the config panel (the old app asked for
+# them, and for the title, in a setup dialog).
+# Ported from FractalStream
+# examples/templates/newtons-method.yaml
 
 @config
 .title = "Newton's method on ℂ"
 .width = 600
 .height = 600
-plane.radius = 2.34           # 1/128 per pixel in a 600x600 window
+# 1/128 per pixel in a 600x600 window
+plane.radius = 2.34
 
 @config "Solve for..."
 define f(z) = z^3 - 1
 
 @config "Coloring"
-"Color expressions can use color names like .red or .black, and color functions involving the variables z and .iterations."
+"Color expressions can use color names like .red or " +
+".black, and color functions involving the variables " +
+"z and .iterations."
 define basin_color(z) = rainbow(arg z / (2 pi))
 define on_failure(z) = .black
 
@@ -53,7 +59,8 @@ do
     z = newton(z)
     draw line between z and prevZ with color .white
 while z != prevZ end
-on show do                    # (selected, or the config or the view changed)
+# (selected, or the config or the view changed)
+on show do
     erase
 end
 on hide do

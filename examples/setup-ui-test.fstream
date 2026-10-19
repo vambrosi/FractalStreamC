@@ -1,5 +1,7 @@
-# Only a test of the old setup dialog (check boxes and text boxes laid out in rows).
-# The four values are config variables here; the viewer shows them in the four quadrants.
+# Only a test of the old setup dialog (check boxes and
+# text boxes laid out in rows). The four values are
+# config variables here; the viewer shows them in the
+# four quadrants.
 # Ported from FractalStream examples/setup-ui-test.yaml
 
 @config

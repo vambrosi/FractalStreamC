@@ -1,7 +1,10 @@
-# Parameter plane and dynamical plane of z -> f(z) = z^2 + C, iterated until stop(z):
-# escaping points get a smooth escape-time colouring (blue/green above the real axis,
-# yellow/red below). The Trace tool draws orbits in the dynamical plane.
-# Ported from FractalStream examples/parameter-plane.yaml
+# Parameter plane and dynamical plane of
+# z -> f(z) = z^2 + C, iterated until stop(z): escaping
+# points get a smooth escape-time colouring (blue/green
+# above the real axis, yellow/red below). The Trace tool
+# draws orbits in the dynamical plane.
+# Ported from FractalStream
+# examples/parameter-plane.yaml
 
 @config
 .title = "Parametric complex dynamics"
@@ -14,7 +17,8 @@ define f(z, C) = z^2 + C
 define stop(z, C) = |z| > .escapeRadius
 
 @config "Configuration"
-.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.C = -0.1226 + 0.7449i "Selected value of C"
 .maxIterations = 100 "Max. iterations"
 .escapeRadius = 10 "Max. radius"
 

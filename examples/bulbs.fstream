@@ -1,7 +1,9 @@
-# The Mandelbrot set, with a "Bulb info" tool: click a point of the Mandelbrot set to find
-# the period of its attracting cycle, which is written at the point ("X": outside the
-# Mandelbrot set, "?": period larger than the maximum period). The labels stay until
-# "Erase annotations".
+# The Mandelbrot set, with a "Bulb info" tool: click a
+# point of the Mandelbrot set to find the period of its
+# attracting cycle, which is written at the point ("X":
+# outside the Mandelbrot set, "?": period larger than
+# the maximum period). The labels stay until "Erase
+# annotations".
 # Ported from FractalStream examples/bulbs.yaml
 
 @config
@@ -14,9 +16,12 @@
 .escapeRadius = 10 "Escape radius"
 
 @config "Bulb period finder"
-"Click on points of the Mandelbrot set to find the period of the attracting cycle."
-"Points outside of the Mandelbrot set will result in \"X\""
-"Cycles exceeding the maximum period will result in \"?\""
+"Click on points of the Mandelbrot set to find the " +
+"period of the attracting cycle."
+"Points outside of the Mandelbrot set will result in " +
+"\"X\""
+"Cycles exceeding the maximum period will result in " +
+"\"?\""
 
 @config "Settings"
 warmup : Z = 10000 "Warmup iterations"
@@ -35,10 +40,10 @@ else
 end
 
 @plane.tool "Bulb info" "B" "info"
-.panning = true               # clicks only: dragging pans
+.panning = true  # clicks only: dragging pans
 .keep = true                  # the labels build up
-# Iterate z^2 + C many times so that we end up with z close to one of the points on
-# the attracting cycle.
+# Iterate z^2 + C many times so that we end up with z
+# close to one of the points on the attracting cycle.
 z := 0
 for k in 1..warmup do
     if z escapes then
@@ -47,8 +52,9 @@ for k in 1..warmup do
     z = z^2 + C
 end
 
-# Now that z is on the attracting cycle (or at least very near it), count how many times
-# we need to apply z^2 + C until we get back to z again.
+# Now that z is on the attracting cycle (or at least
+# very near it), count how many times we need to apply
+# z^2 + C until we get back to z again.
 if z escapes then
     draw text "X" at C
 else

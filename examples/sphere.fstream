@@ -1,5 +1,6 @@
 # Newton's method for z^3 - 1 on the Riemann sphere.
-# Drag to rotate the sphere, use the wheel to zoom around the mouse.
+# Drag to rotate the sphere, use the wheel to zoom
+# around the mouse.
 @config
 .title = "Newton's method on the Riemann sphere"
 .maxIterations = 60

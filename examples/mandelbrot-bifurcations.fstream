@@ -1,17 +1,23 @@
-# The Mandelbrot set with the bifurcation diagram of the logistic map x -> r x (1 - x)
-# drawn over it (inverted colours), lined up so that the real parameter c of z^2 + c and
-# the r of the logistic map are conjugate (r = 1 + sqrt(1 - 4c)).
-# Ported from FractalStream examples/mandelbrot-bifurcations.yaml
+# The Mandelbrot set with the bifurcation diagram of the
+# logistic map x -> r x (1 - x) drawn over it
+# (inverted colours), lined up so that the real
+# parameter c of z^2 + c and the r of the logistic map
+# are conjugate (r = 1 + sqrt(1 - 4c)).
+# Ported from FractalStream
+# examples/mandelbrot-bifurcations.yaml
 
 @config
 .title = "Mandelbrot set + logistic map bifurcations"
 .width = 700
 .height = 500
 plane.center = -0.8 + 0.3i
-plane.radius = 1.25           # 0.005 per pixel in a 700x500 window
+# 0.005 per pixel in a 700x500 window
+plane.radius = 1.25
 
 @config "Configuration"
-"Use the \"Vertical line\" tool (shortcut V) to compare points between the Mandelbrot set and the logistic map bifurcation diagram."
+"Use the \"Vertical line\" tool (shortcut V) to " +
+"compare points between the Mandelbrot set and the " +
+"logistic map bifurcation diagram."
 
 @config "Mandelbrot set"
 .maxIterations = 1000 "Max. iterations"
@@ -29,10 +35,13 @@ z := 0
 while z not escapes do
     z = z^2 + C
 end
-color = if z escapes then blend(0.2, rainbow(.iterations / 20), .white) else .black
+color = if z escapes then ...
+            blend(0.2, rainbow(.iterations / 20), .white) ...
+        else .black
 
 # Overlay a bifurcation diagram for the logistic map
-if re C >= -2 and re C <= 1/4 and im C > offset and im C < offset + 1 then
+if re C >= -2 and re C <= 1/4 and
+   im C > offset and im C < offset + 1 then
     r : R = 1 + sqrt(1 - 4 re C)
     x : R = im C - offset
     x0 : R = x

@@ -1,5 +1,7 @@
-# The Douady rabbit again, written with a long line split over several lines
-# (the old script tested the `...` line continuation; here an open parenthesis does it).
+# The Douady rabbit again, written with a long line
+# split over several lines (the old script tested the
+# `...` line continuation; here an open parenthesis does
+# it).
 # Ported from FractalStream examples/ellipsis.yaml
 
 @config
@@ -17,7 +19,8 @@ while |z| < 10 do
               i)
 end
 
-# If we didn't escape in 100 loops, draw a black point. Otherwise, draw a white point.
+# If we didn't escape in 100 loops, draw a black point.
+# Otherwise, draw a white point.
 if .iterations == 100 then
     color = .black
 else

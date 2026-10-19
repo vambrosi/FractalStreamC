@@ -1,5 +1,7 @@
-# The Douady rabbit: the filled Julia set of z^2 - 0.12256 + 0.74486i, black on white.
-# Ported from FractalStream examples/very_simple_rabbit.yaml
+# The Douady rabbit: the filled Julia set of
+# z^2 - 0.12256 + 0.74486i, black on white.
+# Ported from FractalStream
+# examples/very_simple_rabbit.yaml
 
 @config
 .title = "Douady rabbit"
@@ -7,7 +9,8 @@
 .height = 425
 .maxIterations = 100
 .escapeRadius = 10
-plane.radius = 1.5625        # 1/128 per pixel in a 400x425 window
+# 1/128 per pixel in a 400x425 window
+plane.radius = 1.5625
 
 @viewer plane z "Douady rabbit" "Ctrl + 1"
 while z not escapes do

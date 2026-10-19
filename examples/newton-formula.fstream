@@ -1,7 +1,10 @@
-# Newton's method for a function f entered by the user (z^3 - 1 by default): each point is
-# coloured by the argument of the root it converges to, with bands counting the steps;
-# black where it does not converge. The Trace tool draws the Newton orbit of a point.
-# Ported from FractalStream examples/newton.yaml (renamed: examples/newton.fstream exists)
+# Newton's method for a function f entered by the user
+# (z^3 - 1 by default): each point is coloured by the
+# argument of the root it converges to, with bands
+# counting the steps; black where it does not converge.
+# The Trace tool draws the Newton orbit of a point.
+# Ported from FractalStream examples/newton.yaml
+# (renamed: examples/newton.fstream exists)
 
 @config
 .title = "Roots of f"

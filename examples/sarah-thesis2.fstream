@@ -1,13 +1,17 @@
-# A parameter picture from a thesis: for each p, a rational recursion (x, y) is run from
-# (p + 1, p (p + 1)^2 + 1) until it reaches (0, 1); the number of steps sets the shade,
-# and the hue tells whether the critical orbit of z -> p z^2 + 1 escapes (red) or not (green).
+# A parameter picture from a thesis: for each p, a
+# rational recursion (x, y) is run from
+# (p + 1, p (p + 1)^2 + 1) until it reaches (0, 1); the
+# number of steps sets the shade, and the hue tells
+# whether the critical orbit of z -> p z^2 + 1 escapes
+# (red) or not (green).
 # Ported from FractalStream examples/sarah-thesis2.yaml
 
 @config
 .title = "Sarah thing"
 .width = 600
 .height = 600
-plane.radius = 2.34           # 1/128 per pixel in a 600x600 window
+# 1/128 per pixel in a 600x600 window
+plane.radius = 2.34
 
 @config "Standard settings"
 .maxIterations = 100 "Iteration limit"

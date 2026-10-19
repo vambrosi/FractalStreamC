@@ -1,27 +1,37 @@
-# SaddleDrop with a list of seeds, as written for FractalStream: the Hénon map
+# SaddleDrop with a list of seeds, as written for
+# FractalStream: the Hénon map
 # H(x, y) = (x^2 + c - a y, x) with a fixed.
-#   Dynamical plane: the unstable manifold W^u(p) of the saddle fixed point p, parametrized by
-#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)), coloured by the escape rate G+.
-#   Parameter plane (c): Newton's method runs from each seed of "Seeds", in order, and keeps the
-#     first critical point of G+ on W^u(p) it finds (no larger than "Max. |solution|"); c is
-#     coloured by how fast that critical point escapes.
-# White: Newton's method failed from every seed; gray: it only found huge critical points; black:
-# the critical point does not escape. "Color by imaginary part" shows the sign of im x.
-# The tool "Push critical seed" (C) of the dynamical plane runs Newton's method from the click,
-# draws its steps, and puts the critical point it finds at the front of the seeds (unless a seed
-# is already that close to it).
-# Ported from FractalStream examples/saddledrop-seed-list.yaml
+#   - Dynamical plane: the unstable manifold W^u(p) of
+#     the saddle fixed point p, parametrized by
+#     gamma(w) = H^n(p + (w / lambda^n) (lambda, 1)),
+#     coloured by the escape rate G+.
+#   - Parameter plane (c): Newton's method runs from
+#     each seed of "Seeds", in order, and keeps the
+#     first critical point of G+ on W^u(p) it finds
+#     (no larger than "Max. |solution|"); c is coloured
+#     by how fast that critical point escapes.
+# White: Newton's method failed from every seed; gray:
+# it only found huge critical points; black: the
+# critical point does not escape. "Color by imaginary
+# part" shows the sign of im x. The tool "Push critical
+# seed" (C) of the dynamical plane runs Newton's method
+# from the click, draws its steps, and puts the critical
+# point it finds at the front of the seeds (unless a
+# seed is already that close to it).
+# Ported from FractalStream
+# examples/saddledrop-seed-list.yaml
 
 @config
 .title = "SaddleDrop (seed list)"
 .width = 1024
 .height = 512
-dyn.radius = 2                # 1/128 per pixel in a 512 x 512 view
+dyn.radius = 2  # 1/128 per pixel in a 512 x 512 view
 param.radius = 2
 
 @config "Configuration"
 a : C = 0.3 "a ="
-.c = 0.6 + 0.2i "c ="         # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.c = 0.6 + 0.2i "c ="
 n : Z = 0 "γ iterations:"
 seeds : List of C = [0.001, 0.01, 0.1, 1] "Seeds (tried in order):"
 minSep : R = 0.05 "Min. seed separation:"
@@ -32,8 +42,9 @@ escapeR : R = 10 "Escape radius:"
 imColor : Bool = false "Color by imaginary part"
 
 @global
-# the saddle fixed point p (x = y = p, p^2 - (1 + a) p + c = 0) and its expanding eigenvalue:
-# of the two fixed points, the one with the larger eigenvalue
+# the saddle fixed point p (x = y = p, p^2 - (1 + a)
+# p + c = 0) and its expanding eigenvalue: of the two
+# fixed points, the one with the larger eigenvalue
 define saddle(c) = (p, lambda) where
     b := (1 + a) / 2
     disc := sqrt(b^2 - c)
@@ -54,7 +65,8 @@ define saddle(c) = (p, lambda) where
     end
 end
 
-# gamma(w) pushed forward until it escapes (at most maxIters times): its first coordinate
+# gamma(w) pushed forward until it escapes
+# (at most maxIters times): its first coordinate
 define escape_x(w, c) = x where
     (p, lambda) := saddle(c)
     s := w / lambda^n
@@ -63,7 +75,8 @@ define escape_x(w, c) = x where
     for k in 1..n do              # lift onto W^u(p)
         (x, y) = (x^2 + c - a y, x)
     end
-    for m in 1..maxIters do       # then iterate until it escapes
+    # then iterate until it escapes
+    for m in 1..maxIters do
         if |x| >= escapeR then
             break
         end
@@ -71,8 +84,9 @@ define escape_x(w, c) = x where
     end
 end
 
-# The escape rate packed with the sign of im x: +-(m - log2 log|x| + 8) after m steps (the 8
-# keeps it away from 0), 0 for a bounded orbit
+# The escape rate packed with the sign of im x:
+# +-(m - log2 log|x| + 8) after m steps (the 8 keeps it
+# away from 0), 0 for a bounded orbit
 define packed(w, c) = r : R where
     (p, lambda) := saddle(c)
     s := w / lambda^n
@@ -99,7 +113,8 @@ define shade(r : R) = col : Color where
     else if imColor then
         col = if r > 0 then .purple else .green
     else
-        col = rainbow(|r| - 8)    # level sets of G+ (without the 8)
+        # level sets of G+ (without the 8)
+        col = rainbow(|r| - 8)
     end
 end
 
@@ -107,8 +122,9 @@ end
 color = shade(packed(z, .c))
 
 @viewer param c "Parameter plane (c)" "Ctrl + 2"
-# a critical point of G+ on W^u(p) (a zero of the derivative of log x along gamma), from each
-# seed in turn until one is found
+# a critical point of G+ on W^u(p) (a zero of the
+# derivative of log x along gamma), from each seed in
+# turn until one is found
 best := 0
 ok := false
 ran_away := false
@@ -134,11 +150,12 @@ else
 end
 
 @dyn.tool "Push critical seed" "C" "add_location"
-.panning = true               # (the old tool ran on clicks)
+.panning = true  # (the old tool ran on clicks)
 (p, lambda) := saddle(.c)
 draw disk at z with radius 2 px and color .white
-# Newton's method for the derivative of log x, with the first and second derivatives (v, u)
-# of (x, y) along gamma, drawing each step
+# Newton's method for the derivative of log x, with the
+# first and second derivatives (v, u) of (x, y) along
+# gamma, drawing each step
 w := z
 good := false
 for j in 1..(.maxIterations) do
@@ -150,11 +167,15 @@ for j in 1..(.maxIterations) do
     ux := 0
     uy := 0
     for k in 1..n do
-        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x, 2 x vx - a vy, vx, 2 (x ux + vx^2) - a uy, ux)
+        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x,
+                                  2 x vx - a vy, vx,
+                                  2 (x ux + vx^2) - a uy, ux)
     end
     m : Z = 0
     while |x| < escapeR and m < maxIters do
-        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x, 2 x vx - a vy, vx, 2 (x ux + vx^2) - a uy, ux)
+        (x, y, vx, vy, ux, uy) = (x^2 + .c - a y, x,
+                                  2 x vx - a vy, vx,
+                                  2 (x ux + vx^2) - a uy, ux)
         m += 1
     end
     w_next := w - vx x / (ux x - vx^2)
@@ -163,7 +184,8 @@ for j in 1..(.maxIterations) do
     good = |x| >= escapeR
 end
 draw disk at w with radius 2 px and color .white
-# put w at the front of the seeds, unless a seed is already close to it
+# put w at the front of the seeds, unless a seed is
+# already close to it
 if good and |w| <= maxSol then
     near := false
     for old in seeds do

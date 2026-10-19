@@ -1,36 +1,46 @@
-# Template: the parameter plane and the dynamical plane of z -> f(z, C), iterated until
-# done(z, C), colouring by success or failure, with a Trace tool. f, done, the initial z
-# of the parameter plane and the two colours are formulas of the config panel (the old
-# app asked for them, and for the title, in a setup dialog).
-# Ported from FractalStream examples/templates/simple-parametric-complex-dynamics.yaml
-# (by Matt Noonan: "Single-variable complex dynamics, with an additional complex parameter C.")
+# Template: the parameter plane and the dynamical plane
+# of z -> f(z, C), iterated until done(z, C), colouring
+# by success or failure, with a Trace tool. f, done, the
+# initial z of the parameter plane and the two colours
+# are formulas of the config panel (the old app asked
+# for them, and for the title, in a setup dialog).
+# Ported from FractalStream
+# examples/templates/simple-parametric-complex-dynamics.yaml
+# (by Matt Noonan: "Single-variable complex dynamics,
+# with an additional complex parameter C.")
 
 @config
 .title = "Parametric complex dynamics"
 .width = 600
 .height = 600
-parameter.radius = 2.34       # 1/128 per pixel in a 600x600 window
+# 1/128 per pixel in a 600x600 window
+parameter.radius = 2.34
 dynamical.radius = 2.34
 
 @config "Dynamical system"
-"Iterate z ↦ f(z, C) until done(z, C); in the parameter plane z starts at initial_z(C)."
+"Iterate z ↦ f(z, C) until done(z, C); in the " +
+"parameter plane z starts at initial_z(C)."
 define f(z, C) = z^2 + C
 define done(z, C) = z escapes
 define initial_z(C) = 0
 
 @config "Coloring"
-"Color expressions can use color names like .red or .black, and color functions involving the variables z, C and .iterations."
+"Color expressions can use color names like .red or " +
+".black, and color functions involving the variables " +
+"z, C and .iterations."
 define on_success(z, C) = rainbow(.iterations / 20)
 define on_failure(z, C) = .black
 
 @config "Configuration"
-.C = -0.1226 + 0.7449i "Selected value of C"    # (pick it in the parameter plane)
+# (pick it in the parameter plane)
+.C = -0.1226 + 0.7449i "Selected value of C"
 .maxIterations = 100 "Iteration limit"
 .escapeRadius = 10 "Escape radius"
 .epsilon = 0.0001 "Vanishing radius"
 
 @global
-@viewer parameter C "Parametric complex dynamics parameter plane" "Ctrl + 1"
+@viewer parameter C ...
+    "Parametric complex dynamics parameter plane" "Ctrl + 1"
 z : C = initial_z(C)
 while not done(z, C) do
     z = f(z, C)
@@ -51,7 +61,8 @@ while not done(z, .C) do
     z = f(z, .C)
     draw line between z and prevZ with color .white
 end
-on show do                    # (selected, or the config or the view changed)
+# (selected, or the config or the view changed)
+on show do
     erase
 end
 on hide do

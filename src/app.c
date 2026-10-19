@@ -4546,7 +4546,7 @@ int app_run(const char *script_path) {
     A.t0 = fs_time_seconds();
     A.band_rows = 8192;
     A.flood_passes = 64;
-    A.editor_frac = 0.4f;
+    A.editor_frac = 0.45f;
     A.config_frac = 0.27f;
     A.info_frac = 0.4f;
     A.live = true;

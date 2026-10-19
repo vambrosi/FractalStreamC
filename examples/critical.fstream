@@ -1,5 +1,7 @@
-# Parameter plane of the cubic family z -> z^3 + c z^2 + 1, coloured by what happens to
-# the orbit of its free critical point (found by Newton's method with `critical`).
+# Parameter plane of the cubic family z -> z^3 + c
+# z^2 + 1, coloured by what happens to the orbit of its
+# free critical point (found by Newton's method with
+# `critical`).
 
 @config
 .title = "Critical orbits of cubics"
@@ -9,7 +11,7 @@ plane.radius = 3
 
 @viewer plane c "Parameter plane" "Ctrl + 1"
 w := critical z -> z^3 + c z^2 + 1 with seed -c
-if .stuck then           # Newton's method did not converge
+if .stuck then  # Newton's method did not converge
     color = .gray
     return
 end
@@ -23,7 +25,8 @@ else
 end
 
 @tool "Critical orbit" "O"
-# click a parameter: draw the free critical point and the start of its orbit
+# click a parameter: draw the free critical point and
+# the start of its orbit
 c := .lastClick
 w := critical z -> z^3 + c z^2 + 1 with seed -c
 for k in 1..30 do

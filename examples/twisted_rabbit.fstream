@@ -1,6 +1,8 @@
-# The Douady rabbit composed with a Dehn twist: after each step of z -> z^2 + C, the
-# annulus r0 < |z - twist_center| < r1 is twisted once around. Escaping points are
-# coloured by smooth escape time, in blue/green above the real axis and yellow/red below.
+# The Douady rabbit composed with a Dehn twist: after
+# each step of z -> z^2 + C, the annulus
+# r0 < |z - twist_center| < r1 is twisted once around.
+# Escaping points are coloured by smooth escape time, in
+# blue/green above the real axis and yellow/red below.
 # Ported from FractalStream examples/twisted_rabbit.yaml
 
 @config

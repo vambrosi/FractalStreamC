@@ -1,4 +1,5 @@
-# The Julia set of z^2 + C for a C set in the config panel, with a tool that traces orbits.
+# The Julia set of z^2 + C for a C set in the config
+# panel, with a tool that traces orbits.
 # Ported from FractalStream examples/basic_julia.yaml
 
 @config
@@ -19,7 +20,8 @@ end
 if .stuck then
     color = .black
 else
-    color = blend((.iterations / .maxIterations)^p, dark(.blue), .white)
+    color = blend((.iterations / .maxIterations)^p,
+                  dark(.blue), .white)
 end
 
 @plane.tool "Trace" "T" "timeline"

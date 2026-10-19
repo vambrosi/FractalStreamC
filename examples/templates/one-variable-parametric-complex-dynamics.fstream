@@ -1,25 +1,35 @@
-# Template: a script drawn both in the z-plane and in the C-plane of a complex parameter
-# C. Write it once, as the function `picture` below: it gets the starting z, the parameter
-# C and `dynamic` (true in the z-plane), and returns the colour. In the C-plane z starts
-# at z0. (The old app asked for this code, the title, z0 and the initial C in a setup
+# Template: a script drawn both in the z-plane and in
+# the C-plane of a complex parameter C. Write it once,
+# as the function `picture` below: it gets the starting
+# z, the parameter C and `dynamic`
+# (true in the z-plane), and returns the colour. In the
+# C-plane z starts at z0. (The old app asked for this
+# code, the title, z0 and the initial C in a setup
 # dialog.)
-# Ported from FractalStream examples/templates/one-variable-parametric-complex-dynamics.yaml
+# Ported from FractalStream
+# examples/templates/one-variable-parametric-complex-dynamics.yaml
 
 @config
 .title = "Parametric complex dynamics"
 .width = 600
 .height = 600
-parameter.radius = 3          # 1/100 per pixel in a 600x600 window
+# 1/100 per pixel in a 600x600 window
+parameter.radius = 3
 dynamical.radius = 3
 
 @config "One-variable parametric complex dynamics"
-"This template can be used to make a script that draws in the z-plane and in the C-plane, where C is a complex parameter."
-"The script (the function picture in @global) runs once per pixel in the view, and should set color to indicate what color to use for that pixel."
-"Use the dynamic variable to test if the script is running in the z-plane."
+"This template can be used to make a script that " +
+"draws in the z-plane and in the C-plane, where C is " +
+"a complex parameter."
+"The script (the function picture in @global) runs " +
+"once per pixel in the view, and should set color to " +
+"indicate what color to use for that pixel."
+"Use the dynamic variable to test if the script is " +
+"running in the z-plane."
 z0 := 0 "Initial value for z in the C plane"
 
 @config "Parameter value"
-.C = 0 "C"                    # (pick it in the parameter plane)
+.C = 0 "C"  # (pick it in the parameter plane)
 
 @config "Settings"
 .maxIterations = 100 "Iteration limit"
@@ -42,8 +52,10 @@ define picture(z, C, dynamic : Bool) = color : Color where
     end
 end
 
-@viewer parameter C "Parametric complex dynamics parameter plane" "Ctrl + 1"
+@viewer parameter C ...
+    "Parametric complex dynamics parameter plane" "Ctrl + 1"
 color = picture(z0, C, false)
 
-@viewer dynamical z "Parametric complex dynamics dynamical plane" "Ctrl + 2"
+@viewer dynamical z ...
+    "Parametric complex dynamics dynamical plane" "Ctrl + 2"
 color = picture(z, .C, true)

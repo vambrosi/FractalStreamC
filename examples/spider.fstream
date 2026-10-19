@@ -1,7 +1,9 @@
-# Thurston's spider algorithm for θ = p/q (an unfinished experiment in the original).
-# "Draw standard spider" draws the legs at the angles 2^k θ and the kneading sequence of θ;
-# "Reset spider" moves the first foot to 0 and draws the contour γ (the preimage of the
-# first leg); "Apply spider map" pulls the spider back once.
+# Thurston's spider algorithm for θ = p/q (an unfinished
+# experiment in the original). "Draw standard spider"
+# draws the legs at the angles 2^k θ and the kneading
+# sequence of θ; "Reset spider" moves the first foot to
+# 0 and draws the contour γ (the preimage of the first
+# leg); "Apply spider map" pulls the spider back once.
 # Ported from FractalStream examples/spider.yaml
 
 @config
@@ -14,7 +16,8 @@ p : Z = 9
 q : Z = 56
 
 @config "Computed values"
-kneading : List of Z up to 1024 = [] "Kneading sequence (0: ★₁, 1: ★₂, 2: A, 3: B)"
+kneading : List of Z up to 1024 = [] ...
+    "Kneading sequence (0: ★₁, 1: ★₂, 2: A, 3: B)"
 preperiod : Z = 0 "Preperiod"
 period : Z = 0 "Period"
 
@@ -25,24 +28,30 @@ encloses_zero : Bool = false "Encloses 0?"
 foot : R = 0.03 "Foot radius"
 
 @global
-# The spider: a list of legs, each going from its foot outwards. There are no lists of
-# lists, so the legs follow each other in `spider`: leg j is spider[leg_start[j]] up to
+# The spider: a list of legs, each going from its foot
+# outwards. There are no lists of lists, so the legs
+# follow each other in `spider`: leg j is
+# spider[leg_start[j]] up to
 # spider[leg_start[j + 1] - 1].
 spider : List of C up to 4096 = []
 leg_start : List of Z up to 1024 = []
 contour : List of C up to 256 = []      # γ
-spider_p : Z = 0                        # the θ the spider was made for
+spider_p : Z = 0  # the θ the spider was made for
 spider_q : Z = 0
-redraw_spider : Bool = false            # set by "Apply spider map"
-# what the original wrote in the view after applying the spider map (for the first leg)
+# set by "Apply spider map"
+redraw_spider : Bool = false
+# what the original wrote in the view after applying the
+# spider map (for the first leg)
 shown_w := 0
 shown_zero_winding : Z = 0
 shown_sqrt_sign : Z = 0
 shown_last_pre := 0
 
-# The preperiod and period of θ = p/q under doubling, and the kneading sequence of
-# 2^k θ (k = 0 .. preperiod + period - 1). Works with 2p / 2q, so that the two preimages
-# of θ are h1 / 2q and h2 / 2q. The result is the number of legs.
+# The preperiod and period of θ = p/q under doubling,
+# and the kneading sequence of 2^k θ
+# (k = 0 .. preperiod + period - 1). Works with 2p / 2q,
+# so that the two preimages of θ are h1 / 2q and
+# h2 / 2q. The result is the number of legs.
 define analyse_theta() = n : Z where
     P2 : Z = 2 p
     Q2 : Z = 2 q
@@ -76,8 +85,8 @@ define analyse_theta() = n : Z where
         preperiod += 1
     end
 
-    # Now period is the length of the periodic part, and preperiod the length of the
-    # preperiodic part.
+    # Now period is the length of the periodic part, and
+    # preperiod the length of the preperiodic part.
     n = preperiod + period
     clear(kneading)
     t : Z = P2
@@ -96,25 +105,29 @@ define analyse_theta() = n : Z where
     end
 end
 
-# the preimage of w under P(z) = z2 (1 + z/2)^2 closest to `near`
+# the preimage of w under P(z) = z2 (1 + z/2)^2 closest
+# to `near`
 define pullback(w, z2, near) = pre where
     pre1 := -2 + 2 sqrt(w / z2)
     pre2 := -2 - 2 sqrt(w / z2)
     pre = if |pre1 - near| < |pre2 - near| then pre1 else pre2
 end
 
-# The contour γ: the inverse image of the first leg γ_1 under P(z) = z2 (1 + z/2)^2.
-# Since γ_1 starts at z_1 = 0 and 0 is the critical value of P, it is a curve that splits
-# the sphere in half, through infinity and -2. We compute a hopefully-big-enough part of
-# it, from the points of γ_1 from the k0-th on, and close it with a rectangle on the right:
+# The contour γ: the inverse image of the first leg γ_1
+# under P(z) = z2 (1 + z/2)^2. Since γ_1 starts at
+# z_1 = 0 and 0 is the critical value of P, it is a
+# curve that splits the sphere in half, through infinity
+# and -2. We compute a hopefully-big-enough part of it,
+# from the points of γ_1 from the k0-th on, and close it
+# with a rectangle on the right:
 #   ____________________________________
 #   \                                   |
 #    \__                                |
 #       \                               |
 #        \______________________________|
 #
-# With k0 = 2 (after the spider map) -2 itself is added in the middle. Also finds whether
-# γ winds around 0.
+# With k0 = 2 (after the spider map) -2 itself is added
+# in the middle. Also finds whether γ winds around 0.
 define make_contour(z2, k0 : Z) = n : Z where
     a : Z = leg_start[1] + k0 - 1
     e : Z = leg_start[2] - 1
@@ -154,7 +167,8 @@ end
 # draw γ in light grey, with -2 marked
 define draw_contour() = n : Z where
     for k in 2..|contour| do
-        draw line between contour[k - 1] and contour[k] with color light(.gray)
+        draw line between contour[k - 1] and contour[k] ...
+            with color light(.gray)
     end
     draw point at -2 with color light(.gray)
     draw text "-2" at -2.2 with color light(.gray)
@@ -162,16 +176,19 @@ define draw_contour() = n : Z where
     n = |contour|
 end
 
-# The old "activated" event of "Reset spider": the standard spider with its first foot
-# moved to 0 (leg j is t -> R^(1 - t) omega_j + b t), drawn as it is made, then γ.
+# The old "activated" event of "Reset spider": the
+# standard spider with its first foot moved to 0 (leg j
+# is t -> R^(1 - t) omega_j + b t), drawn as it is made,
+# then γ.
 define reset_spider() = n : Z where
     n = analyse_theta()
     R : R = 10
     N : Z = 100                       # points per leg
-    if n (N + 1) > 4096 then          # (lists hold at most 4096 points)
+    # (lists hold at most 4096 points)
+    if n (N + 1) > 4096 then
         N = floor(4096 / n) - 1
     end
-    b := -cis(2 pi p / q)             # moves the first foot to 0
+    b := -cis(2 pi p / q)  # moves the first foot to 0
     omega := cis(2 pi p / q)
     clear(spider)
     clear(leg_start)
@@ -187,7 +204,8 @@ define reset_spider() = n : Z where
         end
         draw disk at omega + b with radius foot and color light(c)
         draw circle at omega + b with radius foot and color dark(c)
-        # the leg, from the foot outwards: gamma((N - 1)/N) .. gamma(0)
+        # the leg, from the foot outwards:
+        # gamma((N - 1)/N) .. gamma(0)
         append(leg_start, |spider| + 1)
         for k in N - 1..0 by -1 do
             t : R = k / N
@@ -205,20 +223,23 @@ define reset_spider() = n : Z where
     spider_ready = true
 end
 
-# the old "Apply spider map" button: pull the spider back by P(z) = z_2 (1 - z/2)^2
+# the old "Apply spider map" button: pull the spider
+# back by P(z) = z_2 (1 - z/2)^2
 define apply_spider_map() = n : Z where
     n = |leg_start| - 1
     z_2 := spider[leg_start[2]]
     new_spider : List of C up to 4096 = []
     new_start : List of Z up to 1024 = []
     for j in 1..n do
-        # To compute the new z_j and γ_j, we need to pick one of the two preimages of
-        # z_(j+1) and γ_(j+1) under P (leg j + 1, cyclically).
+        # To compute the new z_j and γ_j, we need to
+        # pick one of the two preimages of z_(j+1) and
+        # γ_(j+1) under P (leg j + 1, cyclically).
         a : Z = leg_start[(j mod n) + 1]
         e : Z = leg_start[(j mod n) + 2] - 1
         z_jp1 := spider[a]
 
-        # See which preimage -2 +/- 2 sqrt(z_(j+1) / z_2) is inside the contour
+        # See which preimage -2 +/- 2
+        # sqrt(z_(j+1) / z_2) is inside the contour
         w := -2 + 2 sqrt(z_jp1 / z_2)
         integral := 0
         for k in 2..|contour| do
@@ -227,10 +248,13 @@ define apply_spider_map() = n : Z where
         zero_winding : Z = if encloses_zero then 1 else -1
         sqrt_sign : Z = if im integral > 0 then 1 else -1
 
-        # Determine if we should pick the preimage inside or outside the contour based on
-        # the jth term of the kneading sequence. If it was A, pick the preimage with
-        # sqrt_sign. If it was B, pick the preimage with negated sqrt_sign.
-        # TODO (in the original): deal with the ★s in the kneading sequence
+        # Determine if we should pick the preimage
+        # inside or outside the contour based on the jth
+        # term of the kneading sequence. If it was A,
+        # pick the preimage with sqrt_sign. If it was B,
+        # pick the preimage with negated sqrt_sign. TODO
+        # (in the original): deal with the ★s in the
+        # kneading sequence
         symbol : Z = kneading[j]
         last_pre := 0
         if symbol == 2 then
@@ -245,7 +269,8 @@ define apply_spider_map() = n : Z where
             shown_last_pre = last_pre
         end
 
-        # Try to rescale the new spider so that it is roughly the same size as the old one
+        # Try to rescale the new spider so that it is
+        # roughly the same size as the old one
         scale : R = sqrt(10)
         append(new_start, |new_spider| + 1)
         append(new_spider, scale last_pre)
@@ -253,7 +278,8 @@ define apply_spider_map() = n : Z where
             last_pre = pullback(spider[k], z_2, last_pre)
             append(new_spider, scale last_pre)
         end
-        # Add one more segment to the leg so that we reach at least radius 10
+        # Add one more segment to the leg so that we
+        # reach at least radius 10
         if |last_pre| < 10 then
             append(new_spider, 10 scale last_pre / |last_pre|)
         end
@@ -266,22 +292,29 @@ define apply_spider_map() = n : Z where
     m : Z = make_contour(spider[leg_start[2]], 2)
 end
 
-# draw the spider, γ, and the values the original wrote (the spider after the map)
+# draw the spider, γ, and the values the original wrote
+# (the spider after the map)
 define draw_spider() = n : Z where
     n = |leg_start| - 1
     for j in 1..n do
         c := rainbow((j - 1) / n)
         for k in leg_start[j] + 1..leg_start[j + 1] - 1 do
-            draw line between spider[k - 1] and spider[k] with color dark(c)
+            draw line between spider[k - 1] and spider[k] ...
+                with color dark(c)
         end
-        draw disk at spider[leg_start[j]] with radius foot and color light(c)
-        draw circle at spider[leg_start[j]] with radius foot and color dark(c)
+        draw disk at spider[leg_start[j]] with radius foot ...
+            and color light(c)
+        draw circle at spider[leg_start[j]] with radius foot ...
+            and color dark(c)
     end
     m : Z = draw_contour()
     draw text "w: " + shown_w at 1 with color .black
-    draw text "zero_winding: " + shown_zero_winding at 1 - 0.3i with color .black
-    draw text "sqrt_sign: " + shown_sqrt_sign at 1 - 0.6i with color .black
-    draw text "last_pre: " + shown_last_pre at 1 - 0.9i with color .black
+    draw text "zero_winding: " + shown_zero_winding ...
+        at 1 - 0.3i with color .black
+    draw text "sqrt_sign: " + shown_sqrt_sign ...
+        at 1 - 0.6i with color .black
+    draw text "last_pre: " + shown_last_pre ...
+        at 1 - 0.9i with color .black
 end
 
 @viewer standard z "Standard spider" "Ctrl + 1"
@@ -301,7 +334,8 @@ on show do
     draw text "A" at i star2 / 2 with color .black
     draw text "B" at -i star2 / 2 with color .black
 
-    # the legs at the angles 2^k θ, coloured around the rainbow
+    # the legs at the angles 2^k θ, coloured around the
+    # rainbow
     t : Z = 2 p
     for k in 1..n do
         omega := cis(2 pi t / (2 q))
@@ -312,8 +346,9 @@ on show do
         t = (2 t) mod (2 q)
     end
 
-    # the kneading sequence, written under the circle (the old app showed it in the
-    # config panel), with its periodic part in brackets
+    # the kneading sequence, written under the circle
+    # (the old app showed it in the config panel), with
+    # its periodic part in brackets
     dx : R = 2 / (n + 2)
     draw text "[" at -1 + dx (preperiod + 0.5) - 1.3i with color .black
     draw text "]" at -1 + dx (n + 1.5) - 1.3i with color .black
@@ -337,8 +372,9 @@ end
 
 @iterated.tool "Reset spider" "R" "restart_alt"
 .panning = true
-.keep = true                  # drawings stay until erased, as in the old tool
-on show do                    # (the old "activated" and "refresh")
+# drawings stay until erased, as in the old tool
+.keep = true
+on show do  # (the old "activated" and "refresh")
     if not spider_ready or spider_p != p or spider_q != q then
         erase
         n := reset_spider()
@@ -349,7 +385,8 @@ on show do                    # (the old "activated" and "refresh")
     end
 end
 on hide do
-    spider_ready = false      # selecting the tool again resets the spider
+    # selecting the tool again resets the spider
+    spider_ready = false
 end
 
 @iterated.tool "Apply spider map" "A" "redo" button

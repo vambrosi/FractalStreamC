@@ -1,6 +1,8 @@
-# Bifurcation diagram of the logistic map x -> r x (1 - x): the horizontal axis is r, the
-# vertical axis is x. A point (r, x0) is dark when the orbit of x0, after a warm-up, comes
-# back close to x0, that is when x0 is (near) the attractor.
+# Bifurcation diagram of the logistic map x -> r x
+# (1 - x): the horizontal axis is r, the vertical axis
+# is x. A point (r, x0) is dark when the orbit of x0,
+# after a warm-up, comes back close to x0, that is when
+# x0 is (near) the attractor.
 # Ported from FractalStream examples/logistic.yaml
 
 @config
@@ -9,8 +11,10 @@
 .height = 512
 
 @config "Configuration"
-.epsilon = 0.0001 "tolerance"            # the orbit is back when |x - x0| < .epsilon
-outer : R = 0.01 "outer tolerance"       # distances above this are white
+# the orbit is back when |x - x0| < .epsilon
+.epsilon = 0.0001 "tolerance"
+# distances above this are white
+outer : R = 0.01 "outer tolerance"
 .maxIterations = 1000 "Max. iterations"
 warmup : Z = 1000 "Warmup iterations"
 

@@ -1,7 +1,10 @@
-# One step of the "Monsieur Mathieu" rational map of degree 12, colouring each point by
-# where it lands: near 0 (blue), near 1 (red), on the segment (0, 1) (green), in the upper
-# half plane (white) or in the lower half plane (black).
-# Ported from FractalStream examples/monsieur-mathieu.yaml
+# One step of the "Monsieur Mathieu" rational map of
+# degree 12, colouring each point by where it lands:
+# near 0 (blue), near 1 (red), on the segment (0, 1)
+# (green), in the upper half plane (white) or in the
+# lower half plane (black).
+# Ported from FractalStream
+# examples/monsieur-mathieu.yaml
 
 @config
 .title = "Monsieur Mathieu"
@@ -22,7 +25,8 @@ k := -16192 a / 301327047 + 10880 / 903981141
 @viewer plane z "Monsieur Mathieu" "Ctrl + 1"
 z = (z^3 - z^2 + a z + b)^3 (z^3 + f z^2 + d z + ee) / (k z)
 
-# (the original tests `z = tol`, that is |z - tol| < tol)
+# (the original tests `z = tol`, that is
+# |z - tol| < tol)
 if |z - tol| < tol then
     color = .blue
 else if |z - 1| < tol then

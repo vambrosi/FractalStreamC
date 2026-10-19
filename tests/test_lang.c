@@ -1134,7 +1134,55 @@ TEST(print_statement) {
     EXPECT_ERROR("@global\nprint\n@viewer v z\ncolor = .red\n", "what to print");
 }
 
+/* a statement goes on to the next line after an operator, a comma, "..." / "…", and inside ( ) and [ ] */
+TEST(line_continuations) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "a := 1 +\n"
+        "     2\n"
+        "b := 2 ...   # a comment\n"
+        "     * 5\n"
+        "c := 3 \xe2\x80\xa6\n"
+        "     - 1\n"
+        "d := max(1,\n"
+        "         7)\n"
+        "ok : Bool = a == 3 and\n"
+        "            b == 10\n"
+        "@viewer v z\n"
+        "draw_me : Z = 0\n"
+        "color = if ok then .red else ...\n"
+        "        .blue\n");
+    CHECK_NEAR(gnum(p, "a", 0), 3, 0);
+    CHECK_NEAR(gnum(p, "b", 0), 10, 0);
+    CHECK_NEAR(gnum(p, "c", 0), 2, 0);
+    CHECK_NEAR(gnum(p, "d", 0), 7, 0);
+    CHECK_NEAR(gnum(p, "ok", 0), 1, 0);
+    program_free(p);
+    /* "abc " + "def" is one text: a long note goes on after a + at the end of a line */
+    p = LOAD_OK("@config\n"
+                "\"A note that goes on \" +\n"
+                "\"on the next line.\"\n"
+                "x : R = 1 \"A label \" + ...\n"
+                "    \"in two parts\"\n"
+                "@viewer v z \"A view\" \"Ctrl + 1\"\n"
+                "color = .red\n");
+    bool note = false;
+    for (int k = 0; k < p->config.len; k++)
+        if (p->config.data[k].kind == CFG_NOTE && !strcmp(p->config.data[k].text, "A note that goes on on the next line."))
+            note = true;
+    CHECK(note);
+    Sym *x = find_global(p, "x");
+    CHECK(x && x->label && !strcmp(x->label, "A label in two parts"));
+    CHECK_STR(p->viewers[0]->display, "A view"); /* (texts next to each other on a line stay apart) */
+    program_free(p);
+    /* the line numbers after a continuation are still right */
+    p = load_src("@global\nx := 1 +\n  2\ny := nope\n@viewer v z\ncolor = .red\n");
+    CHECK(p->diags.len > 0 && p->diags.data[0].line == 4);
+    program_free(p);
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(line_continuations),
     TESTCASE(print_statement),
     TESTCASE(prepare_sections),
     TESTCASE(list_capacity_and_negative_indices),

@@ -142,6 +142,19 @@ for x in L do ... end              # items of a list or vector
 break    continue    return
 ```
 
+A statement ends at the end of its line, unless the line ends with an operator or a comma
+(`+ - * / ^ = := == < and or not mod ->` ...), or with `...` (or `…`), or a parenthesis or
+bracket is still open: then it goes on on the next line.
+
+```
+m : R = .iterations + 1 -
+        log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
+color = if use_arenberg then palette("arenberg", m) ...
+        else rainbow(m)
+"A long note in the config panel " +          # texts in quotes joined with + are one text
+"goes on on the next line."
+```
+
 `while` and `do` loops stop after `.maxIterations` iterations; `for` loops run their whole range
 (up to a million steps). After a loop, `.stuck` tells whether it was stopped by its limit, and
 `.iterations` how many times its body ran.

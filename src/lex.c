@@ -40,6 +40,19 @@ typedef struct Lexer {
 
 static int lx_col(Lexer *lx, int pos) { return pos - lx->line_start + 1; }
 
+/* A line continues on the next one when it ends with an operator or a comma (it can't end a statement: `x = a +`),
+ * after "..." or "…" at its end (as in FractalStream and Matlab), and inside ( ) and [ ]. */
+static bool continues_line(TokKind k) {
+    switch (k) {
+    case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH: case TK_CARET: case TK_COMMA: case TK_ASSIGN:
+    case TK_DECLARE: case TK_PLUSEQ: case TK_MINUSEQ: case TK_STAREQ: case TK_SLASHEQ: case TK_EQ: case TK_NE: case TK_LT:
+    case TK_LE: case TK_GT: case TK_GE: case TK_ARROW: case TK_DOTDOT: case TK_AND: case TK_OR: case TK_NOT: case TK_MOD:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void lex_program(Program *prog, const char *src, int first_line) {
     Lexer lx = {prog, src, 0, first_line, 0, 0};
     bool space = true;
@@ -67,12 +80,29 @@ void lex_program(Program *prog, const char *src, int first_line) {
             vec_push(prog->tokens, t);
             break;
         }
+        if ((c == '.' && s[lx.pos + 1] == '.' && s[lx.pos + 2] == '.') || (c == 0xE2 && s[lx.pos + 1] == 0x80 && s[lx.pos + 2] == 0xA6)) {
+            int q = lx.pos + 3; /* "..." or "…": only spaces or a comment may follow, then the line goes on */
+            while (s[q] == ' ' || s[q] == '\t' || s[q] == '\r') q++;
+            if (s[q] == '#')
+                while (s[q] && s[q] != '\n') q++;
+            if (s[q] == '\n' || s[q] == 0) {
+                lx.pos = q;
+                if (s[q] == '\n') {
+                    lx.pos++;
+                    lx.line++;
+                    lx.line_start = lx.pos;
+                }
+                space = true;
+                continue;
+            }
+        }
         if (c == '\n') {
             lx.pos++;
             lx.line++;
             lx.line_start = lx.pos;
             space = true;
             if (lx.depth > 0) continue;
+            if (prog->tokens.len > 0 && continues_line(vec_last(prog->tokens).kind)) continue;
             if (prog->tokens.len == 0 || vec_last(prog->tokens).kind == TK_NEWLINE) continue;
             t.kind = TK_NEWLINE;
             t.len = 1;
@@ -138,9 +168,21 @@ void lex_program(Program *prog, const char *src, int first_line) {
             else
                 lx.pos++;
             t.kind = TK_STRING;
+            t.len = lx.pos - start;
+            int nt = prog->tokens.len; /* "abc " + "def" is one text (a long note: "abc " + at the end of a line) */
+            if (nt >= 2 && prog->tokens.data[nt - 1].kind == TK_PLUS && prog->tokens.data[nt - 2].kind == TK_STRING) {
+                prog->tokens.len--;
+                Token *prev = &vec_last(prog->tokens);
+                StrBuf all = {0};
+                sb_puts(&all, prev->str);
+                sb_puts(&all, sb_cstr(&sb));
+                prev->str = arena_strndup(&prog->arena, sb_cstr(&all), (size_t)all.len);
+                sb_free(&all);
+                sb_free(&sb);
+                continue;
+            }
             t.str = arena_strndup(&prog->arena, sb_cstr(&sb), (size_t)sb.len);
             sb_free(&sb);
-            t.len = lx.pos - start;
             vec_push(prog->tokens, t);
             continue;
         }

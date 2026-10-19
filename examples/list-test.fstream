@@ -1,5 +1,6 @@
-# Test of list values: the circle picture, plus a tool that draws a unit circle around
-# each point of a list of centres.
+# Test of list values: the circle picture, plus a tool
+# that draws a unit circle around each point of a list
+# of centres.
 # Ported from FractalStream examples/list-test.yaml
 
 @config
@@ -21,7 +22,8 @@ end
 
 @plane.tool "Show circles" "S" "bubble_chart"
 .panning = true
-on show do                    # when selected, and whenever the config changes
+# when selected, and whenever the config changes
+on show do
     for center in myList do
         draw circle at center with radius 1
     end

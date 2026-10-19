@@ -1,5 +1,7 @@
-# The Mandelbrot set with smooth (continuous) escape-time colouring, from red to white.
-# Ported from FractalStream examples/smooth_mandelbrot.yaml
+# The Mandelbrot set with smooth (continuous)
+# escape-time colouring, from red to white.
+# Ported from FractalStream
+# examples/smooth_mandelbrot.yaml
 
 @config
 .title = "Mandelbrot set with smooth coloring"
@@ -17,7 +19,8 @@ while z not escapes do
 end
 if z escapes then
     # see https://linas.org/art-gallery/escape/ray.html
-    m : R = .iterations + 1 - log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
+    m : R = .iterations + 1 -
+            log(log(|z|^2) / (2 log(.escapeRadius))) / log(2)
     color = blend(2 atan(m / 20) / pi, .red, .white)
 else
     color = .black

@@ -1,17 +1,24 @@
-# Template: a picture of the z-plane. The viewer code runs once per pixel, with z the
-# pixel's point, and sets `color`. Replace it with your own (the old app asked for this
-# code, and for the title, in a setup dialog).
-# Ported from FractalStream examples/templates/one-variable-complex-dynamics.yaml
+# Template: a picture of the z-plane. The viewer code
+# runs once per pixel, with z the pixel's point, and
+# sets `color`. Replace it with your own (the old app
+# asked for this code, and for the title, in a setup
+# dialog).
+# Ported from FractalStream
+# examples/templates/one-variable-complex-dynamics.yaml
 
 @config
 .title = "One-variable complex dynamics"
 .width = 600
 .height = 600
-plane.radius = 3              # 1/100 per pixel in a 600x600 window
+plane.radius = 3  # 1/100 per pixel in a 600x600 window
 
 @config "One-variable complex dynamics"
-"This template can be used to make a script that draws in the z-plane."
-"The script (the @viewer section) runs once per pixel in the view, and should use the color variable to indicate what color to use for that pixel."
+"This template can be used to make a script that " +
+"draws in the z-plane."
+"The script (the @viewer section) runs once per " +
+"pixel in the view, and should use the color " +
+"variable to indicate what color to use for that " +
+"pixel."
 
 @config "Configuration"
 .maxIterations = 100 "Iteration limit"

@@ -1,7 +1,10 @@
-# Internal rays of hyperbolic components: the orbit is followed onto its attracting cycle,
-# whose period and multiplier lambda are measured; the parameter space is coloured by
-# arg(lambda), the dynamical plane by the angle in the linearising coordinate (den sectors),
-# escaping points are blue/yellow. The Trace tool draws the orbit of a point onto its cycle.
+# Internal rays of hyperbolic components: the orbit is
+# followed onto its attracting cycle, whose period and
+# multiplier lambda are measured; the parameter space is
+# coloured by arg(lambda), the dynamical plane by the
+# angle in the linearising coordinate (den sectors),
+# escaping points are blue/yellow. The Trace tool draws
+# the orbit of a point onto its cycle.
 # Ported from FractalStream examples/internal_rays.yaml
 
 @config
@@ -17,21 +20,23 @@ define critical_point(c) = 0
 degree : Z = 2 "Degree"
 
 @config "Internal Rays"
-continuous : Bool = false               # continuous colouring of the angle, or den sectors
+# continuous colouring of the angle, or den sectors
+continuous : Bool = false
 den : Z = 3 in 1..24 "denominator"
 
 @config "Dynamics"
-.c = 0 "c"                              # (pick it in the parameter space)
+.c = 0 "c"  # (pick it in the parameter space)
 .maxIterations = 300 "max iterations"
 .escapeRadius = 100 "escape radius"
 .epsilon = 0.00001 "vanishing radius"
 extra_iterations : Z = 1 "extra iterations"
 
 @config "Orbit Tracker"
-start := 0 "orbit start"                # (set by the Trace tool)
+start := 0 "orbit start"  # (set by the Trace tool)
 
 @global
-# the colour of the orbit of z0 under f_c; `dynamic` chooses the angle to show
+# the colour of the orbit of z0 under f_c; `dynamic`
+# chooses the angle to show
 define picture(z0, c, dynamic : Bool) = col : Color where
     z := z0
     w := z
@@ -54,8 +59,10 @@ define picture(z0, c, dynamic : Bool) = col : Color where
         while not (|z - w| vanishes) end
         period : Z = .iterations
 
-        # (the original's loop here never increased its counter, so it ran until
-        # .maxIterations; this runs the intended extra_iterations * period steps)
+        # (the original's loop here never increased its
+        # counter, so it ran until .maxIterations; this
+        # runs the intended extra_iterations * period
+        # steps)
         for k in 1..extra_iterations period do
             w = f2(w, c)
         end
@@ -76,7 +83,8 @@ define picture(z0, c, dynamic : Bool) = col : Color where
         if continuous then
             col = rainbow((ptheta den) mod 1)
         else
-            col = if ptheta mod (1 / den) > 0.5 / den then .red else rgb(0, 1, 1)
+            col = if ptheta mod (1 / den) > 0.5 / den then .red ...
+                  else rgb(0, 1, 1)
         end
 
         s_adjusted : R = s + 1 - log(|z - w|) / log(|lambda|)
@@ -84,8 +92,9 @@ define picture(z0, c, dynamic : Bool) = col : Color where
     end
 end
 
-# draw the orbit of z0 onto its attracting cycle, and mark the point w of the cycle that
-# was found (the Trace tool)
+# draw the orbit of z0 onto its attracting cycle, and
+# mark the point w of the cycle that was found
+# (the Trace tool)
 define trace(z0, c) where
     z := z0
     w := z0
@@ -122,6 +131,10 @@ on drag do
     start = z
     trace(start, .c)
 end
-on show do                    # redraw the orbit of start when the configuration changes
-    trace(start, .c)          # (the original's redraw restarted from 0 instead of start)
+# redraw the orbit of start when the configuration
+# changes
+on show do
+    # (the original's redraw restarted from 0 instead of
+    # start)
+    trace(start, .c)
 end

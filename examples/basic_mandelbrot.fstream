@@ -1,5 +1,7 @@
-# The Mandelbrot set, coloured by escape time with a red/yellow cycle.
-# Ported from FractalStream examples/basic_mandelbrot.yaml
+# The Mandelbrot set, coloured by escape time with a
+# red/yellow cycle.
+# Ported from FractalStream
+# examples/basic_mandelbrot.yaml
 
 @config
 .title = "Mandelbrot set"

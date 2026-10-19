@@ -1,13 +1,17 @@
-# Template: iterate z -> f(z) until done(z), colouring by success or failure, with a
-# Trace tool. f, done and the two colours are formulas of the config panel (the old app
-# asked for them, and for the title, in a setup dialog).
-# Ported from FractalStream examples/templates/simple-complex-dynamics.yaml
+# Template: iterate z -> f(z) until done(z), colouring
+# by success or failure, with a Trace tool. f, done and
+# the two colours are formulas of the config panel (the
+# old app asked for them, and for the title, in a setup
+# dialog).
+# Ported from FractalStream
+# examples/templates/simple-complex-dynamics.yaml
 
 @config
 .title = "Complex dynamics of z^2 + i"
 .width = 600
 .height = 600
-plane.radius = 2.34           # 1/128 per pixel in a 600x600 window
+# 1/128 per pixel in a 600x600 window
+plane.radius = 2.34
 
 @config "Dynamical system"
 "Iterate z ↦ f(z) until done(z)."
@@ -15,7 +19,9 @@ define f(z) = z^2 + i
 define done(z) = z escapes
 
 @config "Coloring"
-"Color expressions can use color names like .red or .black, and color functions involving the variables z and .iterations."
+"Color expressions can use color names like .red or " +
+".black, and color functions involving the variables " +
+"z and .iterations."
 define on_success(z) = rainbow(.iterations / 20)
 define on_failure(z) = .black
 
@@ -39,7 +45,8 @@ while not done(z) do
     z = f(z)
     draw line between z and prevZ with color .white
 end
-on show do                    # (selected, or the config or the view changed)
+# (selected, or the config or the view changed)
+on show do
     erase
 end
 on hide do
