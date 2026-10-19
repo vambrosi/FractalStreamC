@@ -1282,6 +1282,11 @@ static bool load_source(const char *src, int mode) {
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
         vrt[v].tool = TOOL_PAN;
     }
+    for (int v = 0; v < p->nviewers; v++) { /* (the script's centre has its low part: see check_center_lo) */
+        Section *s = p->viewers[v];
+        vrt[v].center_bits[0] = p->initial_state[s->center->slot];
+        vrt[v].center_bits[1] = p->initial_state[s->center->slot + 1];
+    }
     /* new state; keep the views, picked points and tools of viewers that still exist */
     bool same = mode == LOAD_RUN && A.prog;
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
@@ -3670,7 +3675,9 @@ static void config_pane(Rect pr) {
             for (int v = 0; v < p->nviewers; v++) {
                 char id[64];
                 snprintf(id, sizeof id, "Reset %s##rv%d", p->viewers[v]->name, v);
-                if (ui_button_ex(id, x1, y, ww, rh - px(4), 0)) reset_view(v);
+                float tw = ui_text_width(UI_FONT_SANS, id, (int)(strstr(id, "##") - id)) + px(16);
+                float bx = tw > ww ? x0 : x1; /* (a long name: the whole row) */
+                if (ui_button_ex(id, bx, y, x1 + ww - bx, rh - px(4), 0)) reset_view(v);
                 y += rh;
             }
         }

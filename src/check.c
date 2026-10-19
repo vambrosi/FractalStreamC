@@ -1530,11 +1530,11 @@ static void chk_stmt(Checker *c, Stmt *s) {
             Sym *sym = lookup_name(c, tg->name);
             if (sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym) sym = NULL; /* shadow pi, e */
             if (!sym) { /* (a typo would otherwise make a new variable) */
-                const char *near = closest_name(c, tg->name);
+                const char *guess = closest_name(c, tg->name); /* (not `near`: a macro on Windows) */
                 Type *vt = chk(c, s->value);
-                if (near)
+                if (guess)
                     ERR(c, tg, "'%s' isn't declared: did you mean '%s'? (A new variable is declared with %s := ...)",
-                        tg->name, near, tg->name);
+                        tg->name, guess, tg->name);
                 else if (vt != t_error && vt != t_void && s->op == TK_ASSIGN)
                     ERR(c, tg, "'%s' isn't declared: declare it with %s := ... (or with its type: %s : %s = ...)",
                         tg->name, tg->name, tg->name, type_str(infer_decl_type(vt, s->value)));
