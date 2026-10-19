@@ -127,7 +127,13 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "d := derivative t -> f(t) at w\n"
      "c := critical t -> f(t) with seed z\n"
      "e := [re(w[1]) : w[2] + 1] * 2 - 1/w\n"
-     "color = [chordal(c, 0), |d| / (1 + |d|), chordal(w, ∞) + 0.2 chordal(e, 1)]\n", 0.002},
+     "L : List of P = [0, ∞, 1 + i]\n"
+     "append(L, w)\n"
+     "near := 1.0\n"
+     "for q in L do\n"
+     "    near = min(near, chordal(z, q))\n"
+     "end\n"
+     "color = [chordal(c, 0), |d| / (1 + |d|), chordal(w, ∞) + 0.2 chordal(e, L[2]) + 0.1 near]\n", 0.002},
     {"quaternions_bools",
      "@global\n"
      "count : Z = 0\n"

@@ -629,7 +629,7 @@ static u32 gen_index(Gen *g, Expr *e) {
         u32 et = ty(g, bt->elem);
         if (g->df && bt->elem->kind == T_REAL) return sel2(g, nonempty, v, cnull(g, bt->elem));
         if (g->df && bt->elem->kind == T_COMPLEX) return sel4(g, nonempty, v, cnull(g, bt->elem));
-        if (bt->elem->kind == T_COMPLEX || bt->elem->kind == T_QUAT) {
+        if (bt->elem->kind == T_COMPLEX || bt->elem->kind == T_QUAT || bt->elem->kind == T_PROJ) {
             /* OpSelect on vectors needs a vector condition in SPIR-V 1.0 */
             int n = bt->elem->kind == T_COMPLEX ? 2 : 4;
             u32 c[4] = {nonempty, nonempty, nonempty, nonempty};
