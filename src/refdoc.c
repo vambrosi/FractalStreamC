@@ -228,14 +228,22 @@ static float rd_rich(float x, float y, float w, const char *s, u32 col, bool dra
     return cy + lh;
 }
 
-static bool rd_contains(const char *hay, const char *needle) { /* (ignoring case) */
+static bool rd_contains(const char *hay, const char *needle) { /* (ignoring case, and the marks of `code` and **bold**) */
     size_t n = strlen(needle);
+    if (!n) return true;
     for (; *hay; hay++) {
+        const char *h = hay;
         size_t k = 0;
-        while (k < n && hay[k] && tolower((unsigned char)hay[k]) == tolower((unsigned char)needle[k])) k++;
+        while (k < n && *h) {
+            if (*h == '`' && needle[k] != '`') { h++; continue; }
+            if (h[0] == '*' && h[1] == '*' && needle[k] != '*') { h += 2; continue; }
+            if (tolower((unsigned char)*h) != tolower((unsigned char)needle[k])) break;
+            h++;
+            k++;
+        }
         if (k == n) return true;
     }
-    return !n;
+    return false;
 }
 
 /* does a block have the text searched for? */
