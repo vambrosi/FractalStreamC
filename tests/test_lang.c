@@ -875,6 +875,53 @@ TEST(variables_take_the_widest_type_assigned) {
     /* a value that can't fit: the error is about the assignment */
     EXPECT_ERROR("@global\nk := 1\nk = true\n", "must be Z, but this is Bool");
     EXPECT_ERROR("@global\nn : Z = 1\nn = 0.5\n", "floor, ceil or round");
+    /* the results of a function, unpacked, widen too; so does declaring them again */
+    p = LOAD_OK("@global\ndefine rot(x, y, t) = (x cos(t) - y sin(t), x sin(t) + y cos(t))\n"
+                "define h(x) = (x / 2, x * 3)\n"
+                "x := 1\ny := 0\n(x, y) = rot(x, y, 0.5)\n"
+                "a := 0\n(a, b) := h(1)\n");
+    CHECK(find_global(p, "x") && find_global(p, "x")->type == t_real);
+    CHECK_NEAR(gnum(p, "x", 0), cos(0.5), 1e-6);
+    CHECK(find_global(p, "a") && find_global(p, "a")->type == t_real);
+    CHECK_NEAR(gnum(p, "a", 0), 0.5, 1e-7);
+    CHECK(find_global(p, "b") && find_global(p, "b")->type == t_int);
+    program_free(p);
+    /* a long chain of variables assigned to each other (one more run each) */
+    StrBuf sb = {0};
+    sb_puts(&sb, "@global\n");
+    for (int k = 0; k < 12; k++) sb_printf(&sb, "v%d := 0\n", k);
+    for (int k = 0; k < 11; k++) sb_printf(&sb, "v%d = v%d\n", k, k + 1);
+    sb_puts(&sb, "v11 = 0.5\n");
+    p = LOAD_OK(sb_cstr(&sb));
+    CHECK(find_global(p, "v0") && find_global(p, "v0")->type == t_real);
+    program_free(p);
+    sb_clear(&sb); /* (far too long: an error that says what to do) */
+    sb_puts(&sb, "@global\n");
+    for (int k = 0; k < 40; k++) sb_printf(&sb, "v%d := 0\n", k);
+    for (int k = 0; k < 39; k++) sb_printf(&sb, "v%d = v%d\n", k, k + 1);
+    sb_puts(&sb, "v39 = 0.5\n");
+    EXPECT_ERROR(sb_cstr(&sb), "could not be worked out in time: declare it with its type");
+    sb_free(&sb);
+    /* an output's first value fixes its type: a later value that doesn't fit is the error */
+    p = load_src("@global\ndefine f(x) = r where\n    r = x\n    r = [1, 2]\nend\na := f(1)\n");
+    CHECK_INT(p->nerrors, 1);
+    for (int i = 0; i < p->diags.len; i++)
+        if (p->diags.data[i].severity == DIAG_ERROR) CHECK_INT(p->diags.data[i].line, 4);
+    program_free(p);
+    /* a slider range written with real numbers makes a real variable */
+    p = LOAD_OK("@config\nspeed := 1 in 0.1..10\nn := 2 in 1..5\n");
+    CHECK(find_global(p, "speed") && find_global(p, "speed")->type == t_real && find_global(p, "speed")->has_range);
+    CHECK(find_global(p, "n") && find_global(p, "n")->type == t_int);
+    program_free(p);
+    EXPECT_ERROR("@config\nn : Z = 3 in 0.5..10\n", "its slider range must be integers");
+}
+
+/* A generic function nothing calls is checked, but changes no types (here: it can't take C or R, Z works) */
+TEST(unused_generic_function_changes_nothing) {
+    Program *p = LOAD_OK("@config\ndepth := 50 in 10..500\n@global\ndefine setDepth(d) where\n    depth = d\nend\n"
+                         "@viewer plane z\nw := 0\nfor k in 1..depth do\n    w = w^2 + z\nend\ncolor = gray(|w| / 4)\n");
+    CHECK(find_global(p, "depth") && find_global(p, "depth")->type == t_int);
+    program_free(p);
 }
 
 TEST(assigning_needs_a_declaration) {
@@ -886,6 +933,16 @@ TEST(assigning_needs_a_declaration) {
     /* one error for the name, not more for its uses */
     Program *p = load_src("@viewer v z\nq = 1\nq = q + 1\ncolor = gray(q)\n");
     CHECK_INT(p->nerrors, 1);
+    program_free(p);
+    p = load_src("@global\nundefinedvec[1] = 3\n");
+    CHECK_INT(p->nerrors, 1);
+    program_free(p);
+    /* constants can't change (and pi is not a typo of p) */
+    EXPECT_ERROR("@global\np := 1\npi = 3.14\n", "'pi' is a constant and can't be changed");
+    /* the errors of a function with types are its own, even when an instance of a generic one checks it first */
+    p = load_src("@global\ndefine helper(x : C) = x < 1\ndefine f(x) = helper(x)\na := f(2)\n");
+    CHECK(p->nerrors >= 1);
+    for (int i = 0; i < p->diags.len; i++) CHECK(!strstr(p->diags.data[i].msg, "(in f("));
     program_free(p);
 }
 
@@ -1472,6 +1529,7 @@ static const TestCase tests_lang[] = {
     TESTCASE(solve_fails_when_its_expression_gets_stuck),
     TESTCASE(declarations_take_the_type_of_their_value),
     TESTCASE(variables_take_the_widest_type_assigned),
+    TESTCASE(unused_generic_function_changes_nothing),
     TESTCASE(assigning_needs_a_declaration),
     TESTCASE(generic_functions),
     TESTCASE(projective_points),

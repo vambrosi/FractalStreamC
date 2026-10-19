@@ -13,7 +13,8 @@ typedef struct Diag {
     DiagSeverity severity;
     int line, col, end_col; /* 1-based; end_col exclusive (0 = unknown) */
     char *msg;
-    bool noted;             /* (check.c: says which instance of a generic function it is about) */
+    bool noted;             /* (check.c: already says which instance of a generic function it is about, or is about a
+                               function with types: not labelled again) */
 } Diag;
 typedef VEC(Diag) DiagVec;
 

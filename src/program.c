@@ -228,12 +228,12 @@ void program_free(Program *p);
 
 /* Parse + check + initial state.  Always returns a Program; check p->nerrors / p->diags.  `source` is copied.
  * A variable declared without a type takes the widest type it is assigned: when the checker finds an assignment
- * that needs a wider type, it notes it and the whole script is checked again (a few times at most). */
+ * that needs a wider type, it notes it and the whole script is checked again (usually once or twice, at most 32 runs). */
 Program *program_load(const char *source, const char *path) {
     TypeHint *hints = NULL;
     int nhints = 0;
     for (int round = 0;; round++) {
-        bool final = round >= 6;
+        bool final = round >= 31; /* (each run widens at least one variable; long chains x = y, y = z... need many) */
         Program *p = program_load_round(source, path, hints, nhints, final);
         if (!p->new_hints || final) {
             free(hints);

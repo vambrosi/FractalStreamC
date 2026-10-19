@@ -204,6 +204,7 @@ typedef struct Checker {
     bool load;       /* in @global/@config outside functions */
     int loop_depth;
     u64 ctx;         /* the instance of a generic function being checked (0: none): see TypeHint */
+    int probing;     /* checking a generic function nothing calls (probe_template): it must not change globals */
 } Checker;
 
 static Sym *new_sym(Checker *c, const char *name, Type *t, SymKind kind, int line, int col) {
@@ -777,9 +778,19 @@ static bool storable(Type *t) {
    script is checked again).  False if it can't be (s has a type, or the types don't mix), or on the last run. */
 static bool widen_sym(Checker *c, Sym *s, Type *vt) {
     Program *p = c->prog;
-    if (!s || !s->untyped || p->final_round || !storable(vt)) return false;
+    if (!s || !s->untyped || !storable(vt)) return false;
+    if (c->probing && s->kind == SYM_GLOBAL) return false; /* (a function nothing calls changes no types) */
     Type *w = s->unknown_type ? vt : join_types(s->type, vt); /* (an output with no value yet takes any) */
     if (!w || w == s->type) return false;
+    if (p->final_round) { /* (the runs ran out: a very long chain of variables assigned to each other) */
+        for (int i = 0; i < p->diags.len; i++)
+            if (p->diags.data[i].line == s->line && p->diags.data[i].col == s->col && strstr(p->diags.data[i].msg, "in time"))
+                return true; /* (said once) */
+        prog_diag(p, DIAG_ERROR, s->line, s->col, 0,
+                  "'%s' is assigned %s values, but its type could not be worked out in time: declare it with its type (%s : %s = ...)",
+                  s->name, type_str(vt), s->name, type_str(w));
+        return true;
+    }
     for (int i = 0; i < p->nhints; i++)
         if (p->hints[i].line == s->line && p->hints[i].col == s->col && p->hints[i].ctx == s->hint_ctx) {
             Type *j = join_types(p->hints[i].type, w);
@@ -1378,6 +1389,20 @@ static void chk_range(Checker *c, Stmt *s, Sym *sym) {
         ERR(c, s->range_lo, "only Z and R variables can have a slider range");
         return;
     }
+    if (sym->type == t_int) { /* x := 1 in 0.1..10 is a real number (the range is written with real numbers) */
+        bool real = false;
+        Expr *ends[2] = {s->range_lo, s->range_hi};
+        for (int k = 0; k < 2; k++) {
+            Expr *e = ends[k]->kind == E_UNARY ? ends[k]->a : ends[k];
+            if (e->kind == E_REAL) real = true;
+        }
+        if (real && widen_sym(c, sym, t_real)) return;
+        if (lo != floor(lo) || hi != floor(hi)) {
+            ERR(c, s->range_lo, "'%s' is an integer, so its slider range must be integers (or declare %s : R = ...)",
+                sym->name, sym->name);
+            return;
+        }
+    }
     sym->has_range = true;
     sym->range_lo = lo;
     sym->range_hi = hi;
@@ -1544,11 +1569,15 @@ static void chk_stmt(Checker *c, Stmt *s) {
         }
         if (tg->kind == E_NAME) {
             Sym *sym = lookup_name(c, tg->name);
-            if (sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym) sym = NULL; /* shadow pi, e */
+            bool constant = sym && sym->kind == SYM_CONST && scope_find_local(&c->builtin, tg->name) == sym;
+            if (constant) sym = NULL; /* (pi, e: a variable of the script may shadow them, but they can't change) */
             if (!sym) { /* (a typo would otherwise make a new variable) */
                 const char *guess = closest_name(c, tg->name); /* (not `near`: a macro on Windows) */
                 Type *vt = chk(c, s->value);
-                if (guess)
+                if (constant)
+                    ERR(c, tg, "'%s' is a constant and can't be changed (a variable of your own may have its name: %s := ...)",
+                        tg->name, tg->name);
+                else if (guess)
                     ERR(c, tg, "'%s' isn't declared: did you mean '%s'? (A new variable is declared with %s := ...)",
                         tg->name, guess, tg->name);
                 else if (vt != t_error && vt != t_void && s->op == TK_ASSIGN)
@@ -1560,9 +1589,13 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 return;
             }
         }
-        if (tg->kind == E_INDEX && chk(c, tg->a) == t_proj) {
-            ERR(c, tg, "the coordinates of a point of the sphere can't be set one by one; write p = [a : b]");
-            return;
+        if (tg->kind == E_INDEX) {
+            Type *at = chk(c, tg->a);
+            if (at == t_error) return; /* (said already) */
+            if (at == t_proj) {
+                ERR(c, tg, "the coordinates of a point of the sphere can't be set one by one; write p = [a : b]");
+                return;
+            }
         }
         Type *tt = chk(c, tg);
         if (tt == t_error) return;
@@ -1599,6 +1632,7 @@ static void chk_stmt(Checker *c, Stmt *s) {
             }
         }
         s->value = coerce(c, s->value, tt, "the new value");
+        if (tg == base && base->sym) base->sym->unknown_type = false; /* (an output has its type now) */
         if (s->range_lo || s->label || s->choices) {
             if (tg != base || !base->sym) ERR(c, tg, "only a whole variable can have a slider, choices or a label");
             else chk_config_extras(c, s, base->sym, false);
@@ -1696,7 +1730,13 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 }
                 if (!sym) {
                     Type *dt = infer_decl_type(it, v), *h = hint_for(c, tg->line, tg->col), *j = h ? join_types(dt, h) : NULL;
-                    sym = declare(c, tg, tg->name, j ? j : dt); /* (n, ok) := f(x) keeps f's types */
+                    if (j) dt = j;
+                    Sym *old = scope_find_local(c->load && !c->fn ? &c->globals : c->scope, tg->name);
+                    if (old && old->untyped && old->type != dt && old->type != t_error) { /* declared again: as in S_DECL */
+                        if (conv_cost(dt, old->type) >= 0) dt = old->type;
+                        else if (widen_sym(c, old, dt)) sym = old; /* (checked again with the wider type) */
+                    }
+                    if (!sym) sym = declare(c, tg, tg->name, dt); /* (n, ok) := f(x) keeps f's types */
                     if (!sym) return;
                     if (sym->line == tg->line && sym->col == tg->col) sym->untyped = true;
                 }
@@ -1708,8 +1748,15 @@ static void chk_stmt(Checker *c, Stmt *s) {
             Expr *base = tg;
             while (base->kind == E_INDEX) base = base->a;
             check_assign_target(c, base);
-            if (conv_cost(it, tg->type) < 0)
+            if (conv_cost(it, tg->type) < 0) { /* an untyped variable gets wider, as in S_ASSIGN */
+                if (tg == base && widen_sym(c, base->sym, it)) continue;
+                if (tg->kind == E_INDEX && tg->a == base && base->sym && base->sym->type->kind == T_VEC) {
+                    Type *el = join_types(base->sym->type->elem, it);
+                    if (el && type_is_number(el) && widen_sym(c, base->sym, type_vec(el, base->sym->type->n))) continue;
+                }
                 ERR(c, tg, "value %d is %s and can't be stored in %s", i + 1, type_str(it), type_str(tg->type));
+            }
+            if (tg == base && base->sym) base->sym->unknown_type = false;
         }
         break;
     }
@@ -2319,6 +2366,8 @@ static void check_func(Checker *c, Func *f) {
     }
     if (c->prog->nerrors != errs || f->ret == t_error) f->failed = true;
     if (f->tmpl) note_instance_errors(c, f, d0);
+    else /* (errors of a function with types are its own, even when it is first checked from an instance) */
+        for (int i = d0; i < c->prog->diags.len; i++) c->prog->diags.data[i].noted = true;
     layout_frame(&f->locals, &f->frame_words);
     vec_free(fscope.syms);
     f->check_state = 2;
@@ -2340,7 +2389,9 @@ static void probe_template(Checker *c, Func *t) {
         g->probe = true;
         if (g->check_state == 0) {
             c->scope = &c->globals;
+            c->probing++;
             check_func(c, g);
+            c->probing--;
         }
         if (!g->failed) {
             free(saved);
