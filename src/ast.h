@@ -148,7 +148,8 @@ typedef enum StmtKind {
     S_EXPR, S_DECL, S_ASSIGN, S_DESTRUCTURE, S_IF, S_WHILE, S_DOWHILE, S_FOR, S_FOREACH,
     S_BREAK, S_CONTINUE, S_RETURN, S_DRAW, S_DEFINE, S_APPEND,
     S_ON,    /* tools: on EVENT do body end (op = the TOOL_EV_*) */
-    S_ERASE  /* tools: erase the tool's drawings */
+    S_ERASE, /* tools: erase the tool's drawings */
+    S_PRINT  /* print TEXT: a line in the Info pane (text: texts in quotes and values joined with +) */
 } StmtKind;
 
 /* the events a tool can handle with `on EVENT do ... end` */
@@ -308,6 +309,7 @@ typedef struct Program {
     ConfigItemVec config; /* what the config panel shows, in order */
     int state_words;     /* size of the state buffer in words */
     u32 *initial_state;  /* state after running @global/@config */
+    char *load_output;   /* what @global and @config printed (malloc'ed, NULL: nothing) */
     DiagVec diags;
     int nerrors;
     /* internals with fixed meaning */

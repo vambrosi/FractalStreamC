@@ -1063,8 +1063,8 @@ static void chk_text(Checker *c, Expr *e) {
         return;
     }
     Type *t = chk(c, e);
-    if (t != t_error && !type_is_number(t) && t != t_bool && t->kind != T_VEC)
-        ERR(c, e, "only texts in quotes, numbers and vectors can be written (joined with +), not %s", type_str(t));
+    if (t != t_error && !type_is_number(t) && t != t_bool && t->kind != T_VEC && t->kind != T_LIST)
+        ERR(c, e, "only texts in quotes, numbers, vectors and lists can be written (joined with +), not %s", type_str(t));
 }
 
 static void config_add_var(Checker *c, Sym *sym) {
@@ -1422,6 +1422,9 @@ static void chk_stmt(Checker *c, Stmt *s) {
         break;
     }
     case S_APPEND: break;
+    case S_PRINT: /* (anywhere: on the GPU it does nothing; the Inspect tool shows what a viewer prints) */
+        chk_text(c, s->text);
+        break;
     case S_ERASE: {
         bool ok_place = (c->fn != NULL) || (c->sec && c->sec->kind == SEC_TOOL);
         if (!ok_place) prog_diag(c->prog, DIAG_ERROR, s->line, s->col, s->end_col, "'erase' can only be used in tools");

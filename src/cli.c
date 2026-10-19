@@ -18,7 +18,7 @@ static const char *cli_usage =
     "                       (--set .doublePrecision=true: deep zooms in double precision)\n"
     "  fractalstream --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
     "                                      run a tool once at a point (a click, or one event of a tool with\n"
-    "                                      'on' blocks); print its draw calls and the globals\n"
+    "                                      'on' blocks); print what it prints, its draw calls and the globals\n"
     "  fractalstream --version | --help\n";
 
 static int cli_load(const char *path, Program **out) {
@@ -88,6 +88,17 @@ static bool cli_set_global(Program *p, u32 *state, const char *assign) {
         state[vs->center_lo->slot + 1] = fw((float)(dim - (double)im));
     }
     return true;
+}
+
+/* each line of `text` after `prefix` */
+static void cli_print_lines(const char *prefix, const char *text) {
+    for (const char *q = text; *q;) {
+        const char *e = strchr(q, '\n');
+        int n = e ? (int)(e - q) : (int)strlen(q);
+        printf("%s%.*s\n", prefix, n, q);
+        if (!e) break;
+        q = e + 1;
+    }
 }
 
 static void cli_print_value(Type *t, const u32 *v) {
@@ -259,6 +270,17 @@ int cli_main(int argc, char **argv) {
         printf("%s: ok (%d viewer%s, %d tool%s)\n", script, p->nviewers, p->nviewers == 1 ? "" : "s", p->ntools,
                p->ntools == 1 ? "" : "s");
     } else if (!strcmp(mode, "--state")) {
+        if (p->load_output) cli_print_lines("print: ", p->load_output);
+        if (p->nprepares) { /* (what @prepare prints: it runs again, on a copy) */
+            u32 *st = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+            memcpy(st, state, sizeof(u32) * (size_t)p->state_words);
+            StrBuf printed = {0};
+            char perr_[256];
+            program_prepare_ex(p, st, &printed, perr_, sizeof perr_);
+            cli_print_lines("print: ", sb_cstr(&printed));
+            sb_free(&printed);
+            free(st);
+        }
         cli_print_state(p, state);
     } else if (!strcmp(mode, "--spirv")) {
         for (int v = 0; v < p->nviewers; v++) {
@@ -307,7 +329,9 @@ int cli_main(int argc, char **argv) {
         Interp I;
         interp_init(&I, p, state);
         DrawItemVec draws = {0};
+        StrBuf printed = {0};
         I.draws = &draws;
+        I.out = &printed;
         /* .pixel as if the tool's viewer were rendered at --size */
         Section *tv = t->viewer_of >= 0 ? p->viewers[t->viewer_of] : v;
         if (tv) I.pixel = viewer_pixel_size(p, state, tv, (float)w, (float)h, 0.5f * w, 0.5f * h);
@@ -342,6 +366,8 @@ int cli_main(int argc, char **argv) {
             if (d->viewer >= 0) printf(" in %s", p->viewers[d->viewer]->name);
             printf("\n");
         }
+        cli_print_lines("print: ", sb_cstr(&printed));
+        sb_free(&printed);
         (void)v;
         vec_free(draws);
         interp_free(&I);

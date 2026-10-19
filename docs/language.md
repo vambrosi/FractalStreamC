@@ -343,9 +343,30 @@ on hide do
 end
 ```
 
-Every viewer also has the built-in tools **Pan** (drag to move, wheel to zoom) and **Pick point**
-(sets `.VAR` of the viewer you click in and marks it). The mouse wheel always zooms, and dragging
-with the right or middle button always pans. Each viewer remembers its own selected tool.
+Every viewer also has the built-in tools **Pan** (drag to move, wheel to zoom), **Pick point**
+(sets `.VAR` of the viewer you click in and marks it) and **Inspect** (key `?`: runs the viewer's
+code for the point you click, on the CPU, and lists its variables at the end — and what it printed —
+in the Info pane; drag to follow the mouse). The mouse wheel always zooms, and dragging with the
+right or middle button always pans. Each viewer remembers its own selected tool.
+
+### Printing
+
+`print` writes a line in the **Info** pane (the `i` button in the right bar, Ctrl+I / Cmd+I),
+with the same texts as `draw text` — texts in quotes and values joined with `+`:
+
+```
+print "period " + n + ", multiplier " + mu + ", cycle " + L     # L a list: [z1, z2, ...]
+```
+
+- In a tool, each run replaces the lines of its previous run, like its drawings; with
+  `.keep = true` they build up until `erase` (which also clears them). The pane opens the first
+  time a click makes a tool print.
+- In `@prepare` they are replaced at each run; in `@global` and `@config` they show what happened
+  when the script started.
+- In a viewer, `print` does nothing in the picture: the Inspect tool shows what it prints for the
+  point you click.
+- The pane has a section for each tool (and for Inspect, `@prepare` and the script), each with
+  buttons to copy and clear it.
 
 ## Config
 

@@ -531,16 +531,17 @@ TEST(app_bars) {
     layout_reset(0);
     tu_reset(1.0f);
     app_test_bars_frame();
-    /* left: the script, then view 1 with its tools (Pan, Pick point, Mark), then view 2 alone (hidden) */
+    /* left: the script, then view 1 with its tools (Pan, Pick point, Mark, Inspect), then view 2 alone (hidden) */
     BarItem it[BAR_ITEMS];
     float total;
     int n = left_bar_items(it, &total);
-    static const int kinds[] = {BI_SCRIPT, BI_SEP, BI_VIEW, BI_TOOL, BI_TOOL, BI_TOOL, BI_SEP, BI_VIEW};
+    static const int kinds[] = {BI_SCRIPT, BI_SEP, BI_VIEW, BI_TOOL, BI_TOOL, BI_TOOL, BI_TOOL, BI_SEP, BI_VIEW};
     CHECK_INT(n, ARRAY_COUNT(kinds));
     for (int i = 0; i < n && i < ARRAY_COUNT(kinds); i++) CHECK_INT(it[i].kind, kinds[i]);
     if (n == ARRAY_COUNT(kinds)) {
         CHECK(it[3].what == TOOL_PAN && it[4].what == TOOL_PICK && it[5].what == 1); /* (Mark is tool 1: for every view) */
-        CHECK_INT(it[7].viewer, 1);
+        CHECK(it[6].what == TOOL_INSPECT);
+        CHECK_INT(it[8].viewer, 1);
     }
     /* the script's button opens and closes it; the bar stays where it is */
     float x0 = A.lbar_r.x;
@@ -593,6 +594,62 @@ TEST(app_bars) {
     app_test_end();
 }
 
+/* what tools print goes to the Info pane like their drawings (replaced at each run, built up with .keep); Inspect
+   shows a view's values at a point */
+TEST(app_info_and_inspect) {
+    Program *p = program_load("@config\n"
+                              "c := 0.25\n"
+                              "@global\n"
+                              "print \"hello\"\n"
+                              "@viewer v z\n"
+                              "w := z\n"
+                              "k : Z = 0\n"
+                              "while w not escapes do\n"
+                              "    w = w^2 + c\n"
+                              "    k += 1\n"
+                              "end\n"
+                              "print \"k is \" + k\n"
+                              "color = gray(k / 50)\n"
+                              "@v.tool \"Once\"\n"
+                              "print \"at \" + z\n"
+                              "@v.tool \"Log\"\n"
+                              ".keep = true\n"
+                              "print \"at \" + z\n"
+                              "@tool \"Clear\" button\n"
+                              "erase \"Log\"\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    interp_init(&A.interp, p, A.state);
+    A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
+    outs_init();
+    layout_reset(0);
+    CHECK_STR(sb_cstr(&A.outs[out_script()]), "hello\n");
+    run_tool(0, 0, TOOL_EV_PRESS, 1, 0);
+    run_tool(0, 0, TOOL_EV_PRESS, 2, 0);
+    CHECK_STR(sb_cstr(&A.outs[0]), "at 2\n");
+    CHECK(A.info_open); /* (a click that printed opened the pane) */
+    run_tool(1, 0, TOOL_EV_PRESS, 1, 0);
+    run_tool(1, 0, TOOL_EV_PRESS, 2, 0);
+    CHECK_STR(sb_cstr(&A.outs[1]), "at 1\nat 2\n");
+    run_tool(2, 0, TOOL_EV_CLICK, 0, 0); /* erase "Log" */
+    CHECK_STR(sb_cstr(&A.outs[1]), "");
+    CHECK_STR(sb_cstr(&A.outs[0]), "at 2\n");
+    inspect_at(0, 3, 0); /* escapes at once: w = 3, k = 0 */
+    const char *s = sb_cstr(&A.outs[out_inspect()]);
+    CHECK_MSG(strstr(s, "k is 0\n") && strstr(s, "k : Z = 0\n") && strstr(s, "w : C = 3\n") && strstr(s, "z : C = 3\n"),
+              "%s", s);
+    inspect_at(0, 0, 0); /* stays bounded (c = 1/4): the loop is stuck */
+    s = sb_cstr(&A.outs[out_inspect()]);
+    CHECK_MSG(strstr(s, ".stuck = true") && strstr(s, "k : Z = 1000"), "%s", s);
+    CHECK(wf(A.state[find_global(p, "c")->slot]) == 0.25f); /* (the viewer ran on a copy of the state) */
+    interp_free(&A.interp);
+    outs_free();
+    for (int t = 0; t < p->ntools; t++) vec_free(A.draws[t]);
+    free(A.draws);
+    app_test_end();
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -604,4 +661,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_reference_parse),
     TESTCASE(app_hover_info),
     TESTCASE(app_bars),
+    TESTCASE(app_info_and_inspect),
 };

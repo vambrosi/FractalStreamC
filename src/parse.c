@@ -925,6 +925,21 @@ static Stmt *parse_stmt(Parser *p, int top_level) {
         expect_end(p, t, "on");
         return s;
     }
+    if (t->kind == TK_IDENT && !strcmp(t->str, "print")) { /* print "period " + n (unless print is a variable) */
+        TokKind k = peek(p, 1)->kind;
+        if (k != TK_ASSIGN && k != TK_DECLARE && k != TK_COLON && k != TK_PLUSEQ && k != TK_MINUSEQ && k != TK_STAREQ &&
+            k != TK_SLASHEQ && k != TK_LBRACKET) {
+            advance(p);
+            Stmt *s = new_stmt(p, S_PRINT, t);
+            k = cur(p)->kind;
+            if (k == TK_NEWLINE || k == TK_EOF || k == TK_SEMI || k == TK_END || k == TK_ELSE || k == TK_SECTION) {
+                perr(p, cur(p), "expected what to print after 'print' (texts in quotes and values joined with +)");
+                return NULL;
+            }
+            s->text = parse_arith(p);
+            return s->text ? s : NULL;
+        }
+    }
     if (t->kind == TK_IDENT && !strcmp(t->str, "erase")) {
         Token *n = peek(p, 1);
         bool all = n->kind == TK_IDENT && !strcmp(n->str, "all");

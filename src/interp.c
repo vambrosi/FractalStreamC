@@ -23,6 +23,7 @@ typedef struct DrawItem {
 typedef VEC(DrawItem) DrawItemVec;
 
 enum { SIG_NONE, SIG_BREAK, SIG_CONTINUE, SIG_RETURN, SIG_ABORT };
+#define INTERP_PRINT_LIMIT (64 * 1024) /* bytes of `print` output kept per run */
 
 typedef struct Interp {
     Program *prog;
@@ -38,6 +39,7 @@ typedef struct Interp {
     u64 erase_tools;  /* ... `erase "Name"`: those tools' drawings (bit = tool index) */
     int signal;
     DrawItemVec *draws;
+    StrBuf *out;      /* `print` appends its lines here (NULL: printing does nothing) */
     double steps, step_limit;
     int quiet; /* > 0 inside prelude functions: their loops don't touch .stuck/.iterations */
     /* continuation (flood.c): how this pixel's `continuing` solve starts, and what it found */
@@ -657,10 +659,13 @@ static void format_value(Type *t, const u32 *v, StrBuf *sb) {
     case T_BOOL: sb_puts(sb, v[0] ? "true" : "false"); break;
     case T_REAL: sb_printf(sb, "%.6g", wf(v[0])); break;
     case T_COMPLEX: {
-        float re = wf(v[0]), im = wf(v[1]);
+        float re = wf(v[0]), im = wf(v[1]), ai = fabsf(im);
+        char ib[32]; /* the imaginary part's size: "i" for 1 */
+        if (ai == 1) snprintf(ib, sizeof ib, "i");
+        else snprintf(ib, sizeof ib, "%.6gi", ai);
         if (im == 0) sb_printf(sb, "%.6g", re);
-        else if (re == 0) sb_printf(sb, "%.6gi", im);
-        else sb_printf(sb, "%.6g %c %.6gi", re, im < 0 ? '-' : '+', fabsf(im));
+        else if (re == 0) sb_printf(sb, "%s%s", im < 0 ? "-" : "", ib);
+        else sb_printf(sb, "%.6g %c %s", re, im < 0 ? '-' : '+', ib);
         break;
     }
     case T_QUAT: sb_printf(sb, "quat(%.4g, %.4g, %.4g, %.4g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
@@ -672,6 +677,16 @@ static void format_value(Type *t, const u32 *v, StrBuf *sb) {
         }
         sb_putc(sb, ']');
         break;
+    case T_LIST: {
+        i32 n = FS_CLAMP(wi(v[0]), 0, t->n);
+        sb_putc(sb, '[');
+        for (int i = 0; i < n; i++) {
+            if (i) sb_puts(sb, ", ");
+            format_value(t->elem, v + t->data_off + i * t->stride, sb);
+        }
+        sb_putc(sb, ']');
+        break;
+    }
     default: break;
     }
 }
@@ -831,9 +846,18 @@ static void exec_stmt(Interp *I, Stmt *s) {
             break;
         }
         if (I->draws) I->draws->len = 0;
+        if (I->out) sb_clear(I->out);
         I->erased = true;
         if (s->op) I->erased_all = true;
         break;
+    case S_PRINT: {
+        if (!I->out) break;
+        if (I->out->len > INTERP_PRINT_LIMIT) break; /* (a print in a long loop: the rest is dropped) */
+        format_text(I, s->text, I->out);
+        sb_putc(I->out, '\n');
+        if (I->out->len > INTERP_PRINT_LIMIT) sb_puts(I->out, "... (more lines were printed than are shown)\n");
+        break;
+    }
     case S_BREAK: I->signal = SIG_BREAK; break;
     case S_CONTINUE: I->signal = SIG_CONTINUE; break;
     case S_RETURN: I->signal = SIG_RETURN; break;

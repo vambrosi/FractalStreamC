@@ -161,6 +161,8 @@ Program *program_load(const char *source, const char *path) {
         state_set_defaults(p, p->initial_state);
         Interp I;
         interp_init(&I, p, p->initial_state);
+        StrBuf printed = {0};
+        I.out = &printed;
         for (int i = 0; i < p->sections.len; i++) {
             Section *s = p->sections.data[i];
             if (s->kind != SEC_GLOBAL && s->kind != SEC_CONFIG) continue;
@@ -169,13 +171,17 @@ Program *program_load(const char *source, const char *path) {
                 break;
             }
         }
-        /* @prepare: once for the initial state (then whenever the state changes, see program_prepare) */
+        /* @prepare: once for the initial state (then whenever the state changes, see program_prepare; the app and the
+           CLI run it again to see what it prints) */
+        I.out = NULL;
         for (int i = 0; i < p->nprepares && !p->nerrors; i++)
             if (!interp_run_section(&I, p->prepares[i])) {
                 prog_diag(p, DIAG_ERROR, p->prepares[i]->line, 1, 0, "while running @prepare: %s", I.error);
                 break;
             }
         interp_free(&I);
+        if (printed.len) p->load_output = xstrdup(sb_cstr(&printed));
+        sb_free(&printed);
         /* projective viewers start with the view that shows `center` +- `radius` */
         for (int v = 0; v < p->nviewers; v++) {
             Section *s = p->viewers[v];
@@ -190,11 +196,13 @@ Program *program_load(const char *source, const char *path) {
     return p;
 }
 
-/* Run the @prepare sections on `state` (after the state changed).  False (message in err) on an error. */
-bool program_prepare(Program *p, u32 *state, char *err, int errcap) {
+/* Run the @prepare sections on `state` (after the state changed); what they print goes to `out` (if not NULL).
+ * False (message in err) on an error. */
+bool program_prepare_ex(Program *p, u32 *state, StrBuf *out, char *err, int errcap) {
     if (!p->nprepares) return true;
     Interp I;
     interp_init(&I, p, state);
+    I.out = out;
     I.step_limit = 3e7;
     bool ok = true;
     for (int i = 0; i < p->nprepares && ok; i++) ok = interp_run_section(&I, p->prepares[i]);
@@ -203,8 +211,11 @@ bool program_prepare(Program *p, u32 *state, char *err, int errcap) {
     return ok;
 }
 
+bool program_prepare(Program *p, u32 *state, char *err, int errcap) { return program_prepare_ex(p, state, NULL, err, errcap); }
+
 void program_free(Program *p) {
     if (!p) return;
+    free(p->load_output);
     for (int i = 0; i < p->sections.len; i++) vec_free(p->sections.data[i]->locals);
     for (int i = 0; i < p->funcs.len; i++) vec_free(p->funcs.data[i]->locals);
     vec_free(p->tokens);

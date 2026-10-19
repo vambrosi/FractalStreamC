@@ -50,6 +50,9 @@ end
 - Values changed in the config pane (or by tools) are marked with a dot and survive running the
   script again; a button at the top of the pane writes them, and the places of the views, into
   the script (another sets them back).
+- `print "period " + n` in a tool or in `@prepare` writes in the Info pane (the `i` button in the
+  right bar); the Inspect tool (the last button under each view, or `?`) shows the values a view
+  computes at the point you click, like FractalStream's Debug tool.
 - F1 lists every key; F2 (or the book in the script's toolbar) shows the language reference,
   with a search field (F2 in the script looks up the word under the caret). Ctrl+= / Ctrl+- /
   Ctrl+0 make everything bigger, smaller or normal (for a talk, say).

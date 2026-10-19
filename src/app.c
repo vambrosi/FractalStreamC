@@ -30,9 +30,9 @@
 #define FORWARD_KEY "Alt+Right"
 #endif
 
-enum { TOOL_PAN = -2, TOOL_PICK = -1 };
+enum { TOOL_INSPECT = -3, TOOL_PAN = -2, TOOL_PICK = -1 };
 enum { N_FREE, N_LEAF, N_HSPLIT, N_VSPLIT }; /* HSPLIT: a | b, VSPLIT: a over b */
-enum { DRAG_NONE, DRAG_PAN, DRAG_TOOL, DRAG_PICK, DRAG_CLICK, DRAG_SPLIT, DRAG_VIEWER };
+enum { DRAG_NONE, DRAG_PAN, DRAG_TOOL, DRAG_PICK, DRAG_CLICK, DRAG_SPLIT, DRAG_VIEWER, DRAG_INSPECT };
 enum { DROP_NONE, DROP_REPLACE, DROP_LEFT, DROP_RIGHT, DROP_TOP, DROP_BOTTOM, DROP_FLOAT };
 
 typedef struct Rect { float x, y, w, h; } Rect;
@@ -85,6 +85,15 @@ typedef struct App {
     Interp interp;
     ViewerRT *vrt;
     DrawItemVec *draws; /* per user tool */
+    /* the Info pane: what `print` wrote, per source (the tools, then OUT_PREPARE, OUT_SCRIPT, OUT_INSPECT) */
+    StrBuf *outs;
+    int *out_serial;        /* bumped when a source's text changes */
+    int out_seen;           /* the total of the serials when the pane was last open */
+    bool info_open;
+    bool info_auto;         /* the pane opened by itself (once per run of the script) */
+    float info_frac, info_scroll;
+    int inspect_viewer;     /* the point the Inspect tool looked at (-1 none) */
+    float inspect_at[2];
     LNode nodes[MAX_NODES];
     int root;
     int floats[MAX_FLOATS]; /* viewer shown in each corner (-1 none): TL TR BL BR */
@@ -600,6 +609,10 @@ static void shortcut_text(Shortcut sc, char *out, int cap) {
     char k[16];
     if (sc.key >= UI_KEY_F1 && sc.key <= UI_KEY_F12) snprintf(k, sizeof k, "F%d", sc.key - UI_KEY_F1 + 1);
     else if (sc.key == UI_KEY_SPACE) snprintf(k, sizeof k, "Space");
+    else if (sc.key == UI_KEY_SLASH && sc.mods == UI_MOD_SHIFT) { /* (Shift+/ is ? on most keyboards) */
+        snprintf(out, (size_t)cap, "?");
+        return;
+    }
     else if (sc.key < 128) snprintf(k, sizeof k, "%c", (char)sc.key);
     else snprintf(k, sizeof k, "?");
     const char *mod = MODKEY "+";
@@ -772,11 +785,11 @@ static bool tool_in_viewer(int tool, int v) {
 }
 
 static const char *tool_name(int tool) {
-    return tool == TOOL_PAN ? "Pan" : tool == TOOL_PICK ? "Pick point" : A.prog->tools[tool]->display;
+    return tool == TOOL_PAN ? "Pan" : tool == TOOL_PICK ? "Pick point" : tool == TOOL_INSPECT ? "Inspect" : A.prog->tools[tool]->display;
 }
 
 static const char *tool_icon(int tool) {
-    return tool == TOOL_PAN ? "pan_tool" : tool == TOOL_PICK ? "my_location" : A.prog->tools[tool]->icon;
+    return tool == TOOL_PAN ? "pan_tool" : tool == TOOL_PICK ? "my_location" : tool == TOOL_INSPECT ? "manage_search" : A.prog->tools[tool]->icon;
 }
 
 /* the first letter of the tool's name, shown when it has no (known) icon */
@@ -792,6 +805,7 @@ static void tool_letter(int tool, char out[8]) {
 static Shortcut tool_shortcut(int tool) {
     if (tool == TOOL_PAN) return (Shortcut){UI_KEY_H, 0};
     if (tool == TOOL_PICK) return (Shortcut){UI_KEY_P, 0};
+    if (tool == TOOL_INSPECT) return (Shortcut){UI_KEY_SLASH, UI_MOD_SHIFT}; /* ? (as in FractalStream) */
     return parse_shortcut(A.prog->tools[tool]->shortcut);
 }
 
@@ -826,7 +840,7 @@ static void select_tool(int v, int tool) {
 }
 
 /* the tools offered in viewer v, in the order of its bar: Pan, Pick point (when the viewer has a point to pick),
- * then the script's tools for it and for every view; returns how many (at most cap) */
+ * the script's tools for it and for every view, and Inspect; returns how many (at most cap) */
 static int viewer_tools(int v, int *tools, int cap) {
     Program *p = A.prog;
     int n = 0;
@@ -834,7 +848,65 @@ static int viewer_tools(int v, int *tools, int cap) {
     if (p->viewers[v]->picked && n < cap) tools[n++] = TOOL_PICK;
     for (int k = 0; k < p->ntools && n < cap; k++)
         if (tool_in_viewer(k, v)) tools[n++] = k;
+    if (n < cap) tools[n++] = TOOL_INSPECT;
     return n;
+}
+
+/* ---- what the script prints (the Info pane) ------------------------------------------------------------------- */
+/* sources of text: the tools (0 .. ntools - 1), then these */
+static int out_prepare(void) { return A.prog->ntools; }
+static int out_script(void) { return A.prog->ntools + 1; }
+static int out_inspect(void) { return A.prog->ntools + 2; }
+static int out_count(void) { return A.prog ? A.prog->ntools + 3 : 0; }
+#define OUT_KEEP_BYTES (256 * 1024) /* (what a tool with .keep prints builds up to this, the oldest lines go) */
+
+static void outs_free(void) {
+    for (int k = 0; A.outs && k < out_count(); k++) sb_free(&A.outs[k]);
+    free(A.outs);
+    free(A.out_serial);
+    A.outs = NULL;
+    A.out_serial = NULL;
+}
+
+static int out_total(void) {
+    int t = 0;
+    for (int k = 0; A.out_serial && k < out_count(); k++) t += A.out_serial[k];
+    return t;
+}
+
+/* source k's text becomes `text` (append: added at its end); the pane notices */
+static void out_set(int k, const char *text, bool append) {
+    StrBuf *b = &A.outs[k];
+    if (!append && (size_t)b->len == strlen(text) && !strcmp(sb_cstr(b), text)) return;
+    if (!*text && append) return;
+    if (!append) sb_clear(b);
+    sb_puts(b, text);
+    if (b->len > OUT_KEEP_BYTES) { /* drop the oldest lines */
+        const char *cut = b->data + (b->len - OUT_KEEP_BYTES);
+        const char *nl = memchr(cut, '\n', OUT_KEEP_BYTES);
+        char *rest = xstrdup(nl ? nl + 1 : cut);
+        sb_clear(b);
+        sb_puts(b, rest);
+        free(rest);
+    }
+    A.out_serial[k]++;
+}
+
+/* for a program that was just loaded (A.prog): nothing printed yet but what @global and @config printed */
+static void outs_init(void) {
+    A.outs = (StrBuf *)xcalloc((size_t)out_count(), sizeof(StrBuf));
+    A.out_serial = (int *)xcalloc((size_t)out_count(), sizeof(int));
+    A.out_seen = 0;
+    A.info_auto = false;
+    A.inspect_viewer = -1;
+    if (A.prog->load_output) out_set(out_script(), A.prog->load_output, false);
+}
+
+/* a run that printed something because of a click opens the pane, once per run of the script */
+static void out_show(void) {
+    if (A.info_open || A.info_auto) return;
+    A.info_open = true;
+    A.info_auto = true;
 }
 
 /* ---- program loading ------------------------------------------------------------ */
@@ -1200,6 +1272,7 @@ static bool load_source(const char *src, int mode) {
     free(remap);
     free_viewers();
     if (A.prog) interp_free(&A.interp);
+    outs_free();
     program_free(A.prog);
     free(A.state);
     free(A.uploaded);
@@ -1208,6 +1281,7 @@ static bool load_source(const char *src, int mode) {
     A.uploaded = NULL;
     A.vrt = vrt;
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
+    outs_init();
     A.choice_open = NULL;
     free(A.prepare_snap);
     A.prepare_snap = NULL;
@@ -1607,12 +1681,25 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
             break;
         }
     DrawItemVec out = {0};
+    StrBuf printed = {0};
     A.interp.draws = &out;
+    A.interp.out = &printed;
     A.interp.erased = A.interp.erased_all = false;
     A.interp.erase_tools = 0;
     bool ok = t->has_events ? interp_run_tool_event(&A.interp, t, ev, re, im) : interp_run_tool(&A.interp, t, re, im);
     if (!ok) set_status(true, "%s: %s", t->display, A.interp.error);
     A.interp.draws = NULL;
+    A.interp.out = NULL;
+    /* what it printed: like its drawings (replaced at each run, or built up with .keep until `erase`) */
+    if (A.interp.erased_all)
+        for (int k = 0; k < p->ntools; k++)
+            if (k != tool) out_set(k, "", false);
+    for (int k = 0; k < p->ntools && k < 64; k++)
+        if ((A.interp.erase_tools >> k & 1) && k != tool) out_set(k, "", false);
+    bool keep_text = t->keep && !A.interp.erased && !(A.interp.erase_tools >> tool & 1);
+    out_set(tool, sb_cstr(&printed), keep_text);
+    if (printed.len && (ev == TOOL_EV_PRESS || ev == TOOL_EV_CLICK)) out_show();
+    sb_free(&printed);
     for (int k = 0; k < out.len; k++)
         if (out.data[k].viewer < 0) out.data[k].viewer = viewer;
     if (A.interp.erased_all)
@@ -1650,6 +1737,59 @@ static void pick(int viewer, float re, float im) {
     /* every viewer sharing this variable shows the marker */
     for (int v = 0; v < A.prog->nviewers; v++)
         if (A.prog->viewers[v]->picked == s->picked) A.vrt[v].picked = true;
+}
+
+/* The Inspect tool: run viewer v's code for the point (re, im) on the CPU and show what it computed, its variables at
+ * the end (like FractalStream's Debug tool), after what it printed. */
+static void inspect_at(int v, float re, float im) {
+    Program *p = A.prog;
+    Section *s = p->viewers[v];
+    size_t bytes = sizeof(u32) * (size_t)p->state_words;
+    u32 *st = (u32 *)xmalloc(bytes); /* (a viewer changes only its own copy of the globals) */
+    memcpy(st, A.state, bytes);
+    Interp I;
+    interp_init(&I, p, st);
+    I.step_limit = 3e7;
+    StrBuf printed = {0}, sb = {0};
+    I.out = &printed;
+    for (int i = 0; i < A.nvis; i++)
+        if (A.vis[i].viewer == v) {
+            Rect r = A.vis[i].r;
+            float x = FS_CLAMP(A.in.mouse_x - r.x, 0.0f, r.w), y = FS_CLAMP(A.in.mouse_y - r.y, 0.0f, r.h);
+            I.pixel = viewer_pixel_size(p, st, s, r.w, r.h, x, y);
+        }
+    float rgb[3];
+    bool ok = interp_eval_viewer(&I, s, re, im, rgb);
+    u32 at[2] = {fw(re), fw(im)};
+    sb_printf(&sb, "View %d, %s, at %s = ", v + 1, s->display ? s->display : s->name, s->var ? s->var : "z");
+    format_value(t_complex, at, &sb);
+    sb_putc(&sb, '\n');
+    if (s->flood) sb_puts(&sb, "(The picture carries its solve from pixel to pixel; here it starts from the seed.)\n");
+    if (!ok) sb_printf(&sb, "Stopped: %s\n", I.error);
+    if (printed.len) sb_printf(&sb, "%s", sb_cstr(&printed));
+    sb_puts(&sb, "The values at the end:\n");
+    for (int i = 0; i < s->locals.len; i++) {
+        Sym *l = s->locals.data[i];
+        if (l == s->color || l->name[0] == '_' || l->kind != SYM_LOCAL) continue;
+        sb_printf(&sb, "  %s : %s = ", l->name, type_str(l->type));
+        format_value(l->type, I.frame + l->slot, &sb);
+        sb_putc(&sb, '\n');
+    }
+    if (s->color) {
+        sb_puts(&sb, "  color = ");
+        format_value(s->color->type, I.frame + s->color->slot, &sb);
+        sb_putc(&sb, '\n');
+    }
+    sb_printf(&sb, "  .iterations = %d (the last loop)\n  .stuck = %s\n", (int)I.iterations, I.stuck ? "true" : "false");
+    out_set(out_inspect(), sb_cstr(&sb), false);
+    A.info_open = true;
+    A.inspect_viewer = v;
+    A.inspect_at[0] = re;
+    A.inspect_at[1] = im;
+    sb_free(&sb);
+    sb_free(&printed);
+    interp_free(&I);
+    free(st);
 }
 
 static void zoom_at(int v, Rect r, float x, float y, float factor) {
@@ -1803,6 +1943,10 @@ static void viewer_interaction(void) {
             if (dx || dy) pick(t->viewer, re, im);
             platform_set_cursor(UI_CURSOR_CROSSHAIR);
             break;
+        case DRAG_INSPECT:
+            if (dx || dy) inspect_at(t->viewer, re, im);
+            platform_set_cursor(UI_CURSOR_CROSSHAIR);
+            break;
         case DRAG_TOOL:
             if ((dx || dy) && tool_handles(A.drag_tool, TOOL_EV_DRAG)) run_tool(A.drag_tool, t->viewer, TOOL_EV_DRAG, re, im);
             if (!any_down) {
@@ -1885,6 +2029,10 @@ static void viewer_interaction(void) {
     } else if (rt->tool == TOOL_PICK) {
         A.drag = DRAG_PICK;
         pick(v, re, im);
+    } else if (rt->tool == TOOL_INSPECT) {
+        A.drag = DRAG_INSPECT;
+        set_c(p->s_last_click, re, im);
+        inspect_at(v, re, im);
     } else if (p->tools[rt->tool]->panning) {
         A.drag = DRAG_CLICK;
         set_c(p->s_drag_start, re, im);
@@ -2117,6 +2265,18 @@ static void draw_tile(VisTile *t) {
         ui_circle(x, y, px(6), px(3), UI_RGBA(0, 0, 0, 150));
         ui_circle(x, y, px(6), px(1.5f), UI_RGBA(255, 255, 255, 230));
     }
+    if (A.inspect_viewer == t->viewer && rt->tool == TOOL_INSPECT) { /* the point Inspect looked at */
+        float x, y, a = px(5), b = px(10);
+        pixel_of(t->viewer, r, A.inspect_at[0], A.inspect_at[1], &x, &y);
+        for (int k = 0; k < 2; k++) {
+            float th = k ? px(1.5f) : px(4);
+            u32 col = k ? UI_RGBA(255, 255, 255, 235) : UI_RGBA(0, 0, 0, 150);
+            ui_line(x - b, y, x - a, y, th, col);
+            ui_line(x + a, y, x + b, y, th, col);
+            ui_line(x, y - b, x, y - a, th, col);
+            ui_line(x, y + a, x, y + b, th, col);
+        }
+    }
     bool several = A.nvis > 1;
     if (p->nviewers > 1 || t->fl >= 0) { /* its number (its button in the left bar) and its name */
         const char *name = s->display ? s->display : s->name;
@@ -2182,7 +2342,7 @@ static void ensure_target(int v, int w, int h) {
  * its tools, the selected one highlighted.  Right: the config's button, then what can be done with the focused view
  * (the one clicked last): back, forward, reset, copy and paste its location, axes and grid, pictures, hide; the keys
  * at the bottom.  The bars stay when the panes next to them open, so their buttons never move away from the mouse. */
-enum { BI_SEP, BI_SCRIPT, BI_VIEW, BI_TOOL, BI_CONFIG, BI_FOCUS, BI_ACTION, BI_HELP };
+enum { BI_SEP, BI_SCRIPT, BI_VIEW, BI_TOOL, BI_CONFIG, BI_INFO, BI_FOCUS, BI_ACTION, BI_HELP };
 enum { ACT_BACK, ACT_FORWARD, ACT_RESET, ACT_COPY, ACT_PASTE, ACT_GRID, ACT_SAVE, ACT_SAVE_LARGE, ACT_HIDE, ACT_COUNT };
 typedef struct BarItem {
     int kind;
@@ -2258,6 +2418,7 @@ static int left_bar_items(BarItem *it, float *total) {
 static int right_bar_items(BarItem *it, float *total) {
     float b = bar_button() + px(3), sep = px(11), y = px(6);
     int n = bar_add(it, 0, BI_CONFIG, -1, 0, &y, b);
+    n = bar_add(it, n, BI_INFO, -1, 0, &y, b);
     int v = A.prog ? bar_view() : -1;
     if (v >= 0) {
         bool flat = !A.prog->viewers[v]->mobius;
@@ -2403,6 +2564,13 @@ static int bar_ui(const char *id, Rect r, BarItem *items, int n, float total, fl
             if (ui_icon_button_ex("##config", "tune", "C", bx, y, b, A.config_open ? UI_SELECTED : UI_FLAT)) A.config_open = !A.config_open;
             ui_tooltip(A.config_open ? "Hide the config (" MODKEY "+T)" : "Show the config (" MODKEY "+T)");
             break;
+        case BI_INFO: {
+            if (ui_icon_button_ex("##info", "info", "i", bx, y, b, A.info_open ? UI_SELECTED : UI_FLAT)) A.info_open = !A.info_open;
+            ui_tooltip(A.info_open ? "Hide the info (" MODKEY "+I)"
+                                   : "Show the info: what the tools print, and what the Inspect tool finds (" MODKEY "+I)");
+            if (!A.info_open && out_total() != A.out_seen) ui_disk(bx + b - px(6), y + px(6), px(4), UI_COL_ACCENT);
+            break;
+        }
         case BI_VIEW: bar_view_button(it->viewer, bx, y, b); break;
         case BI_TOOL: bar_tool_button(it->viewer, it->what, bx, y, b); break;
         case BI_FOCUS: { /* which view the buttons below act on */
@@ -3300,30 +3468,27 @@ static void config_choice(Sym *s, float x, float y, float w) {
     ui_layer(prev);
 }
 
-/* the config pane, left of the right bar */
-static void config_pane(float W, float H) {
-    Rect pr = A.config_r;
-    if (!A.config_open || pr.w < 1) return;
+/* the config, in the right pane */
+static void config_pane(Rect pr) {
+    if (pr.w < 1 || pr.h < 1) return;
     Program *p = A.prog;
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
-    ui_rect(pr.x, 0, px(1), H, UI_COL_BORDER);
+    ui_rect(pr.x, pr.y, px(1), pr.h, UI_COL_BORDER);
     float bh = px(40);
-    ui_panel_ex(pr.x, 0, pr.w, bh, UI_COL_PANEL_HI, 0);
-    ui_text(UI_FONT_SANS, pr.x + px(14), px(11), "Config", -1, UI_COL_TEXT);
-    float nx = pane_splitter("##config_split", pr.x, H);
-    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((A.rbar_r.x - nx) / W, 0.12f, 0.6f);
+    ui_panel_ex(pr.x, pr.y, pr.w, bh, UI_COL_PANEL_HI, 0);
+    ui_text(UI_FONT_SANS, pr.x + px(14), pr.y + px(11), "Config", -1, UI_COL_TEXT);
     if (!p) return;
     /* the values changed since the script ran (a dot marks each): into the script, or back */
     int nchanged = count_changed(p, true), nsettings = count_changed(p, false);
-    float bx = pr.x + pr.w - px(34);
+    float bx = pr.x + pr.w - px(34), by = pr.y + px(6);
     if (bx > pr.x + px(70) &&
-        ui_icon_button_ex("##config_write", "edit_note", "W", bx, px(6), px(28), nchanged ? UI_FLAT : UI_FLAT | UI_DISABLED))
+        ui_icon_button_ex("##config_write", "edit_note", "W", bx, by, px(28), nchanged ? UI_FLAT : UI_FLAT | UI_DISABLED))
         write_values();
     ui_tooltip(nchanged ? "Write the changed values (marked with a dot) and the places of the views into the script, so it opens like this"
                         : "Write the values into the script (nothing changed since it ran)");
     bx -= px(32);
     if (bx > pr.x + px(70) &&
-        ui_icon_button_ex("##config_reset", "restore", "R", bx, px(6), px(28), nsettings ? UI_FLAT : UI_FLAT | UI_DISABLED))
+        ui_icon_button_ex("##config_reset", "restore", "R", bx, by, px(28), nsettings ? UI_FLAT : UI_FLAT | UI_DISABLED))
         reset_values();
     ui_tooltip("Set the changed values back as the script has them (the views stay: Home resets a view)");
     float rh = config_row_h();
@@ -3337,7 +3502,7 @@ static void config_pane(float W, float H) {
         lw = FS_MAX(lw, ui_text_width(UI_FONT_SANS, label, -1) + px(24));
     }
     lw = FS_MIN(lw, pr.w * 0.55f);
-    Rect body = {pr.x + px(4), bh + px(4), pr.w - px(8), pr.h - bh - px(8)};
+    Rect body = {pr.x + px(4), pr.y + bh + px(4), pr.w - px(8), pr.h - bh - px(8)};
     A.config_scroll += ui_scroll_area(body.x, body.y, body.w, body.h);
     ui_push_clip(body.x, body.y, body.w, body.h);
     float y = body.y - A.config_scroll + px(4);
@@ -3408,6 +3573,130 @@ static void config_pane(float W, float H) {
     ui_pop_clip();
 }
 
+/* ---- the Info pane: what the script printed, and what Inspect found -------------------------------------------- */
+static const char *out_title(int k, char *buf, int cap) {
+    Program *p = A.prog;
+    if (k < p->ntools) snprintf(buf, (size_t)cap, "%.150s", p->tools[k]->display);
+    else if (k == out_prepare()) snprintf(buf, (size_t)cap, "@prepare");
+    else if (k == out_script()) snprintf(buf, (size_t)cap, "@global and @config");
+    else snprintf(buf, (size_t)cap, "Inspect");
+    return buf;
+}
+
+/* `text` in the mono font from y, wrapped at w (between words, but not inside "a + bi": a complex number stays on one
+ * line when it fits), the continuation lines indented; only the lines between clip_y0 and clip_y1 are drawn.  Returns
+ * the height. */
+static float info_text(float x, float y, float w, const char *text, float clip_y0, float clip_y1) {
+    float y0 = y, lh = ui_font_line_height(UI_FONT_MONO), cw = ui_font_advance(UI_FONT_MONO, 'm');
+    int cols0 = FS_MAX(12, (int)(w / FS_MAX(cw, 1.0f))), hang = 4;
+    for (const char *q = text; *q;) {
+        const char *e = strchr(q, '\n');
+        int n = e ? (int)(e - q) : (int)strlen(q);
+        int lead = 0; /* (a line's own indentation, kept on its continuation lines) */
+        while (lead < n && q[lead] == ' ') lead++;
+        /* break points: after a space, unless the space is next to a lone + or - (a + bi) */
+        int start = 0;
+        for (;;) {
+            int indent = start ? FS_MIN(lead + hang, cols0 / 2) : 0, cols = cols0 - indent;
+            int end = n, chars = 0, last_break = -1;
+            for (int i = start; i < n; i = ui_utf8_next(q, i)) {
+                if (chars >= cols) {
+                    end = last_break > start ? last_break : i;
+                    break;
+                }
+                bool op_space = q[i] == ' ' && ((i + 2 < n && (q[i + 1] == '+' || q[i + 1] == '-') && q[i + 2] == ' ') ||
+                                                (i >= 2 && (q[i - 1] == '+' || q[i - 1] == '-') && q[i - 2] == ' '));
+                if (q[i] == ' ' && !op_space) last_break = i + 1;
+                chars++;
+            }
+            if (y + lh > clip_y0 && y < clip_y1 && end > start)
+                ui_text(UI_FONT_MONO, x + indent * cw, y, q + start, end - start, UI_COL_TEXT);
+            y += lh;
+            if (end >= n || end <= start) break;
+            start = end;
+        }
+        if (!e) break;
+        q = e + 1;
+    }
+    return y - y0;
+}
+
+static void info_pane(Rect pr) {
+    if (pr.w < 1 || pr.h < 1) return;
+    Program *p = A.prog;
+    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
+    ui_rect(pr.x, pr.y, px(1), pr.h, UI_COL_BORDER);
+    float bh = px(40);
+    ui_panel_ex(pr.x, pr.y, pr.w, bh, UI_COL_PANEL_HI, 0);
+    ui_text(UI_FONT_SANS, pr.x + px(14), pr.y + px(11), "Info", -1, UI_COL_TEXT);
+    A.out_seen = out_total();
+    if (!p) return;
+    int order[80], n = 0; /* Inspect, the tools in the script's order, @prepare, the script */
+    order[n++] = out_inspect();
+    for (int k = 0; k < p->ntools && n < 77; k++) order[n++] = k;
+    order[n++] = out_prepare();
+    order[n++] = out_script();
+    bool any = false;
+    for (int i = 0; i < n; i++) any = any || A.outs[order[i]].len > 0;
+    if (any) {
+        if (ui_icon_button_ex("##info_clear", "delete_sweep", "X", pr.x + pr.w - px(34), pr.y + px(6), px(28), UI_FLAT))
+            for (int i = 0; i < n; i++) out_set(order[i], "", false);
+        ui_tooltip("Clear all of it");
+    }
+    Rect body = {pr.x + px(4), pr.y + bh + px(4), pr.w - px(8), pr.h - bh - px(8)};
+    A.info_scroll += ui_scroll_area(body.x, body.y, body.w, body.h);
+    ui_push_clip(body.x, body.y, body.w, body.h);
+    float y = body.y - A.info_scroll + px(6), x0 = body.x + px(10), tw = body.w - px(20);
+    if (!any)
+        y += ui_text_wrapped(UI_FONT_SANS, x0, y, tw,
+                             "Nothing yet. Tools and @prepare write here with print (print \"period \" + n), and "
+                             "the Inspect tool (the last button under each view, or ?) shows the values a view "
+                             "computes at the point you click.",
+                             UI_COL_TEXT_DIM, true);
+    char title[200], id[48];
+    for (int i = 0; i < n; i++) {
+        int k = order[i];
+        if (!A.outs[k].len) continue;
+        float lh = ui_font_line_height(UI_FONT_SANS);
+        ui_label(x0, y, tw - px(64), lh + px(6), out_title(k, title, sizeof title), UI_ALIGN_LEFT, UI_COL_ACCENT);
+        snprintf(id, sizeof id, "##info_copy%d", k);
+        if (ui_icon_button_ex(id, "content_copy", "C", x0 + tw - px(56), y, px(26), UI_FLAT))
+            platform_set_clipboard(sb_cstr(&A.outs[k]));
+        ui_tooltip("Copy this text");
+        snprintf(id, sizeof id, "##info_clear%d", k);
+        if (ui_icon_button_ex(id, "close", "x", x0 + tw - px(28), y, px(26), UI_FLAT)) out_set(k, "", false);
+        ui_tooltip("Clear it");
+        y += lh + px(10);
+        y += info_text(x0, y, tw, sb_cstr(&A.outs[k]), body.y, body.y + body.h) + px(12);
+    }
+    float content = y + A.info_scroll - body.y;
+    A.info_scroll = FS_CLAMP(A.info_scroll, 0.0f, FS_MAX(0.0f, content - body.h));
+    ui_pop_clip();
+}
+
+/* the pane left of the right bar: the info on top of the config when both are open (the line between them drags) */
+static void right_pane(float W, float H) {
+    Rect pr = A.config_r;
+    if (pr.w < 1) return;
+    if (A.info_open && A.config_open) {
+        float ih = FS_CLAMP(floorf(H * A.info_frac), px(100), FS_MAX(px(100), H - px(140)));
+        info_pane((Rect){pr.x, 0, pr.w, ih});
+        config_pane((Rect){pr.x, ih, pr.w, H - ih});
+        ui_rect(pr.x, ih, pr.w, px(1), UI_COL_BORDER);
+        int prev = ui_layer(UI_LAYER_PANEL);
+        UiInteract it = ui_interact("##info_split", pr.x, ih - px(4), pr.w, px(8));
+        ui_layer(prev);
+        if (it.hovered || it.held) ui_set_cursor(UI_CURSOR_VRESIZE);
+        if (it.held && H > 0) A.info_frac = FS_CLAMP(A.in.mouse_y / H, 0.1f, 0.85f);
+    } else if (A.info_open) {
+        info_pane(pr);
+    } else {
+        config_pane(pr);
+    }
+    float nx = pane_splitter("##config_split", pr.x, H);
+    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((A.rbar_r.x - nx) / W, 0.12f, 0.6f);
+}
+
 /* ---- overlays ------------------------------------------------------------------------- */
 static void help_overlay(float W, float H) {
     if (!A.help_open) return;
@@ -3425,10 +3714,10 @@ static void help_overlay(float W, float H) {
         {MODKEY "+O, " MODKEY "+N", "open a script (or drop it on the window), a new one from a template"},
         {MODKEY "+F, " MODKEY "+Alt+F", "find, replace in the script (" MODKEY "+G: next)"},
         {"Tab", "in the script, while a list of names is offered: take the one shown (Up, Down: choose)"},
-        {MODKEY "+E, " MODKEY "+T", "show / hide the script, the config"},
+        {MODKEY "+E, " MODKEY "+T, " MODKEY "+I", "show / hide the script, the config, the info"},
         {MODKEY "+=, " MODKEY "+-, " MODKEY "+0", "bigger, smaller, normal size (of everything; in the script: of its text)"},
         {MODKEY "+1, 2, ...", "show a view (or the shortcut written in the script)"},
-        {"H, P, tool keys", "choose a tool of the view under the mouse"},
+        {"H, P, ?, tool keys", "choose a tool of the view under the mouse (? is Inspect)"},
         {"Home", "reset the view under the mouse"},
         {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
@@ -3522,7 +3811,7 @@ static void browse_to(const char *path, bool folder) {
     char abs[1024];
     if (folder && fs_absolute(path, abs, sizeof abs)) path = abs;
     size_t n = strlen(path);
-    snprintf(A.modal_buf, sizeof A.modal_buf, "%s%s", path, folder && n && path[n - 1] != '/' && path[n - 1] != '\\' ? "/" : "");
+    snprintf(A.modal_buf, sizeof A.modal_buf, "%.1020s%s", path, folder && n && path[n - 1] != '/' && path[n - 1] != '\\' ? "/" : "");
     A.modal_focus = true;
     A.modal_confirm = false;
     A.browse_scroll = 0;
@@ -3867,6 +4156,7 @@ static void shortcuts(void) {
     if (ui_shortcut(UI_KEY_0, UI_MOD_MOD)) set_ui_zoom(1);
     if (ui_shortcut(UI_KEY_E, UI_MOD_MOD)) A.editor_open = !A.editor_open;
     if (ui_shortcut(UI_KEY_T, UI_MOD_MOD)) A.config_open = !A.config_open;
+    if (ui_shortcut(UI_KEY_I, UI_MOD_MOD)) A.info_open = !A.info_open;
     if (ui_shortcut(UI_KEY_F11, 0)) platform_toggle_fullscreen();
 #if FS_OS_MACOS
     if (ui_shortcut(UI_KEY_F, UI_MOD_MOD | UI_MOD_CTRL)) platform_toggle_fullscreen(); /* (Cmd+Ctrl+F, as on a Mac) */
@@ -3917,6 +4207,7 @@ static void shortcuts(void) {
     }
     if (tv >= 0 && ui_shortcut(UI_KEY_H, 0)) select_tool(tv, TOOL_PAN);
     if (tv >= 0 && ui_shortcut(UI_KEY_P, 0) && p->viewers[tv]->picked) select_tool(tv, TOOL_PICK);
+    if (tv >= 0 && ui_shortcut(UI_KEY_SLASH, UI_MOD_SHIFT)) select_tool(tv, TOOL_INSPECT);
     if (tv >= 0 && ui_shortcut(UI_KEY_HOME, 0)) reset_view(tv);
     if (tv >= 0 && (ui_shortcut(UI_KEY_LEFT, UI_MOD_ALT) || ui_shortcut(UI_KEY_LEFT_BRACKET, UI_MOD_MOD))) nav_key(tv, false);
     if (tv >= 0 && (ui_shortcut(UI_KEY_RIGHT, UI_MOD_ALT) || ui_shortcut(UI_KEY_RIGHT_BRACKET, UI_MOD_MOD))) nav_key(tv, true);
@@ -3939,7 +4230,10 @@ static void run_prepare(void) {
         A.prepare_snap = (u32 *)xmalloc(bytes);
     }
     char err[256];
-    if (!program_prepare(p, A.state, err, sizeof err)) set_status(true, "@prepare: %s", err);
+    StrBuf printed = {0};
+    if (!program_prepare_ex(p, A.state, &printed, err, sizeof err)) set_status(true, "@prepare: %s", err);
+    out_set(out_prepare(), sb_cstr(&printed), false);
+    sb_free(&printed);
     memcpy(A.prepare_snap, A.state, bytes);
 }
 
@@ -4092,7 +4386,7 @@ static bool viewers_busy(void) {
 static void layout_panes(float W, float H) {
     float bar = bar_width();
     float ew = A.editor_open ? floorf(W * A.editor_frac) : 0;
-    float cw = A.config_open ? FS_MAX(floorf(W * A.config_frac), px(260)) : 0;
+    float cw = A.config_open || A.info_open ? FS_MAX(floorf(W * A.config_frac), px(300)) : 0;
     /* the views keep at least a third of the window */
     float room = W * 2 / 3 - 2 * bar;
     if (ew + cw > room) {
@@ -4167,7 +4461,7 @@ static void frame(void) {
         ui_layer(prev);
     }
     editor_pane(H);
-    config_pane(W, H);
+    right_pane(W, H);
     bars();
     help_overlay(W, H);
     refdoc_ui(W, H, &A.ref_open);
@@ -4253,7 +4547,8 @@ int app_run(const char *script_path) {
     A.band_rows = 8192;
     A.flood_passes = 64;
     A.editor_frac = 0.4f;
-    A.config_frac = 0.22f;
+    A.config_frac = 0.27f;
+    A.info_frac = 0.4f;
     A.live = true;
     A.hover_viewer = -1;
     A.hover_tile = -1;

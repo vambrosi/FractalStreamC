@@ -1078,7 +1078,64 @@ TEST(prepare_sections) {
     EXPECT_ERROR("@prepare\ndraw point at 0\n@viewer v z\ncolor = .red\n", "only be used in tools");
 }
 
+/* print: in @global / @config (Program.load_output), @prepare (program_prepare_ex), tools (Interp.out); a viewer's
+   prints do nothing on the GPU */
+TEST(print_statement) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        "a : R = 2 in 0..10\n"
+        "@global\n"
+        "L : List of C = [1, i, 2 - 0.5i]\n"
+        "print \"a = \" + a + \", L = \" + L\n"
+        "@prepare\n"
+        "print \"prepare: \" + (a * a)\n"
+        "@viewer v z\n"
+        "print \"pixel \" + z\n"
+        "color = .red\n"
+        "@v.tool \"T\"\n"
+        ".keep = true\n"
+        "print \"clicked \" + z\n"
+        "@tool \"E\"\n"
+        "print \"before\"\n"
+        "erase\n"
+        "print \"after\"\n");
+    CHECK_STR(p->load_output ? p->load_output : "", "a = 2, L = [1, i, 2 - 0.5i]\n"); /* (not @prepare's) */
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    StrBuf out = {0};
+    char err[128];
+    CHECK(program_prepare_ex(p, state, &out, err, sizeof err));
+    CHECK_STR(sb_cstr(&out), "prepare: 4\n");
+    sb_clear(&out);
+    Interp I;
+    interp_init(&I, p, state);
+    I.out = &out;
+    CHECK(interp_run_tool(&I, p->tools[0], 1, -1));
+    CHECK_STR(sb_cstr(&out), "clicked 1 - i\n");
+    sb_clear(&out);
+    CHECK(interp_run_tool(&I, p->tools[1], 0, 0)); /* erase clears what the run printed so far */
+    CHECK_STR(sb_cstr(&out), "after\n");
+    sb_clear(&out);
+    float rgb[3];
+    CHECK(interp_eval_viewer(&I, p->viewers[0], 0.5f, 0, rgb));
+    CHECK_STR(sb_cstr(&out), "pixel 0.5\n");
+    u32 n;
+    u32 *words = codegen_viewer(p, p->viewers[0], &n, err, sizeof err); /* (on the GPU it does nothing) */
+    CHECK_MSG(words != NULL, "%s", err);
+    free(words);
+    sb_free(&out);
+    interp_free(&I);
+    free(state);
+    program_free(p);
+    /* `print` can still be a variable's name */
+    p = LOAD_OK("@global\nprint := 2\nprint = print + 1\n@viewer v z\ncolor = .red\n");
+    CHECK_NEAR(gnum(p, "print", 0), 3, 0);
+    program_free(p);
+    EXPECT_ERROR("@global\nprint\n@viewer v z\ncolor = .red\n", "what to print");
+}
+
 static const TestCase tests_lang[] = {
+    TESTCASE(print_statement),
     TESTCASE(prepare_sections),
     TESTCASE(list_capacity_and_negative_indices),
     TESTCASE(functions_without_results),
