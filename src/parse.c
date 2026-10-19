@@ -145,11 +145,13 @@ static bool starts_factor(Parser *p) {
     }
 }
 
-static Expr **parse_args(Parser *p, TokKind close, int *nout, const char *what) {
+/* the comma-separated values up to `close` (first: the first one, already parsed, or NULL) */
+static Expr **parse_args_from(Parser *p, Expr *first, TokKind close, int *nout, const char *what) {
     VEC(Expr *) args = {0};
     int saved = p->abs_depth;
     p->abs_depth = 0;
-    if (!at(p, close)) {
+    if (first) vec_push(args, first);
+    if (!at(p, close) && (!first || accept(p, TK_COMMA))) {
         for (;;) {
             Expr *a = parse_expr(p);
             if (!a) break;
@@ -164,6 +166,10 @@ static Expr **parse_args(Parser *p, TokKind close, int *nout, const char *what) 
     *nout = args.len;
     vec_free(args);
     return out;
+}
+
+static Expr **parse_args(Parser *p, TokKind close, int *nout, const char *what) {
+    return parse_args_from(p, NULL, close, nout, what);
 }
 
 /* argument of a function applied without parentheses */
@@ -267,7 +273,29 @@ static Expr *parse_primary(Parser *p) {
     case TK_LBRACKET: {
         advance(p);
         e = new_expr(p, E_VECTOR, t);
-        e->args = parse_args(p, TK_RBRACKET, &e->nargs, "to close '['");
+        Expr *first = NULL;
+        if (!at(p, TK_RBRACKET)) {
+            int saved = p->abs_depth;
+            p->abs_depth = 0;
+            first = parse_expr(p);
+            p->abs_depth = saved;
+            if (!first) return NULL;
+            if (accept(p, TK_COLON)) { /* [a : b], a point of the Riemann sphere */
+                p->abs_depth = 0;
+                Expr *second = parse_expr(p);
+                p->abs_depth = saved;
+                if (!second) return NULL;
+                expect(p, TK_RBRACKET, "to close [a : b]");
+                e->op = TK_COLON;
+                e->nargs = 2;
+                e->args = ARENA_ARRAY(&p->prog->arena, Expr *, 2);
+                e->args[0] = first;
+                e->args[1] = second;
+                finish(p, e);
+                return e;
+            }
+        }
+        e->args = parse_args_from(p, first, TK_RBRACKET, &e->nargs, "to close '['");
         finish(p, e);
         return e;
     }
@@ -1183,6 +1211,15 @@ static void parse_section_header(Parser *p, Section *s, Token *h) {
             s->name = args.data[0]->str;
             s->var = args.data[1]->str;
             k = 2;
+            if (args.len >= 4 && args.data[2]->kind == TK_COLON && args.data[3]->kind == TK_IDENT) { /* z : P */
+                const char *tn = args.data[3]->str;
+                if (!strcmp(tn, "P") || !strcmp(tn, "Projective")) s->var_proj = true;
+                else if (strcmp(tn, "C") != 0 && strcmp(tn, "Complex") != 0) {
+                    p->nerr_stmt = 0;
+                    perr(p, args.data[3], "a viewer's variable is a complex number (C) or a point of the sphere (P)");
+                }
+                k = 4;
+            }
         }
     }
     for (; k < args.len; k++) {

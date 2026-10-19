@@ -60,6 +60,26 @@ static bool parse_complex_literal_d(const char *s, double *re, double *im) {
     return true;
 }
 
+/* a point of the Riemann sphere written as a complex number, or as ∞ (or inf, infinity); out: 4 words (a lift) */
+static bool parse_proj_literal(const char *s, u32 *out) {
+    while (*s == ' ') s++;
+    if (!strcmp(s, "∞") || !strcmp(s, "inf") || !strcmp(s, "infinity") || !strcmp(s, "Infinity") || !strcmp(s, ".infinity")) {
+        out[0] = fw(1);
+        out[1] = out[2] = out[3] = fw(0);
+        return true;
+    }
+    double re, im;
+    char buf[96];
+    int n = 0;
+    for (; *s && n < (int)sizeof buf - 1; s++)
+        if (*s != ' ') buf[n++] = *s;
+    buf[n] = 0;
+    if (!parse_complex_literal_d(buf, &re, &im) || !isfinite(re) || !isfinite(im)) return false;
+    u32 a[2] = {fw((float)re), fw((float)im)}, b[2] = {fw(1), fw(0)};
+    proj_make(a, b, out);
+    return true;
+}
+
 /* a constant number (literals with + - * /) in double precision */
 static bool const_eval_d(Expr *e, double *re, double *im) {
     double ar, ai, br, bi;
@@ -275,7 +295,7 @@ static const char *source_line(const char *src, int line, int *len) {
  * about 1e-6 of the size of the numbers (single precision gets noisy from there on); `already` (rendering in
  * double-single precision) lowers the threshold a little, to avoid flapping. */
 bool viewer_deep(Program *p, const u32 *state, Section *v, int w, int h, bool already) {
-    if (v->mobius || !v->center_lo || w <= 0 || h <= 0) return false;
+    if (v->mobius || v->var_proj || !v->center_lo || w <= 0 || h <= 0) return false;
     double cx = (double)wf(state[v->center->slot]) + wf(state[v->center_lo->slot]);
     double cy = (double)wf(state[v->center->slot + 1]) + wf(state[v->center_lo->slot + 1]);
     double pixel = (double)wf(state[v->radius->slot]) / (0.5 * FS_MIN(w, h));

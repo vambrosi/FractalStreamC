@@ -43,6 +43,7 @@ static void gen_block(Gen *g, Block *b);
 static void return_if(Gen *g, u32 bad);
 static u32 real_const(Gen *g, double v);
 static void mark_expr(Gen *g, Expr *e);
+static u32 proj_scale(Gen *g, u32 v);
 
 /* ---- types ---------------------------------------------------------------- */
 static u32 ty(Gen *g, Type *t) {
@@ -54,6 +55,7 @@ static u32 ty(Gen *g, Type *t) {
     case T_REAL: id = g->treal; break;
     case T_COMPLEX: id = g->tcplx; break;
     case T_QUAT: id = g->tvec4; break; /* quaternions stay in single precision */
+    case T_PROJ: id = g->tvec4; break; /* so do points of the sphere: (a, b) */
     case T_VEC: id = spv_type_array(&g->s, ty(g, t->elem), t->n); break;
     case T_LIST: {
         u32 m[2] = {g->tint, ty(g, type_vec(t->elem, t->n))};
@@ -142,7 +144,7 @@ static u32 const_value(Gen *g, Type *t, const float *v) {
             u32 p[2] = {cf(g, v[0]), cf(g, v[1])};
             return spv_const_composite(&g->s, g->tvec2, p, 2);
         }
-    case T_QUAT: {
+    case T_QUAT: case T_PROJ: {
         u32 p[4] = {cf(g, v[0]), cf(g, v[1]), cf(g, v[2]), cf(g, v[3])};
         return spv_const_composite(&g->s, g->tvec4, p, 4);
     }
@@ -477,6 +479,13 @@ static u32 negate(Gen *g, Type *t, u32 v) {
 
 static u32 convert_g(Gen *g, Type *from, Type *to, u32 v) {
     if (from == to) return v;
+    if (to->kind == T_PROJ && type_is_number(from) && from->kind != T_QUAT) { /* z -> [z : 1] (the checker lowers
+                                                                                     these; just in case) */
+        u32 z = convert_g(g, from, t_complex, v), f = g->tfloat;
+        u32 x = g->df ? df_hi(g, c_re(g, z)) : extract(g, f, z, 0), y = g->df ? df_hi(g, c_im(g, z)) : extract(g, f, z, 1);
+        u32 p[4] = {x, y, cf(g, 1), cf(g, 0)};
+        return proj_scale(g, construct(g, g->tvec4, p, 4));
+    }
     if (g->df && type_is_number(from) && type_is_number(to)) {
         u32 f = g->tfloat, x, y;
         switch (from->kind) {
@@ -629,6 +638,16 @@ static u32 f2i_clamped(Gen *g, u32 x) {
     return op1(g, SpvOpConvertFToS, g->tint, c);
 }
 
+/* a point of the sphere (a vec4 (a, b)) scaled so that its largest component is 1 (as proj_make in interp.c) */
+static u32 proj_scale(Gen *g, u32 v) {
+    u32 f = g->tfloat;
+    u32 av = ext1(g, g->tvec4, GLSLFAbs, v);
+    u32 m = ext2(g, f, GLSLFMax, ext2(g, f, GLSLFMax, extract(g, f, av, 0), extract(g, f, av, 1)),
+                 ext2(g, f, GLSLFMax, extract(g, f, av, 2), extract(g, f, av, 3)));
+    u32 s = op2(g, SpvOpFDiv, f, cf(g, 1), ext2(g, f, GLSLFMax, m, cf(g, 1e-30f)));
+    return op2(g, SpvOpVectorTimesScalar, g->tvec4, v, s);
+}
+
 /* the intrinsics on reals in double-single precision (0: not one of them) */
 static u32 gen_intrinsic_df(Gen *g, Expr *e, const u32 *a) {
     u32 f = g->tfloat, B = g->tbool;
@@ -699,6 +718,14 @@ static u32 gen_intrinsic_df(Gen *g, Expr *e, const u32 *a) {
         u32 p[4];
         for (int i = 0; i < 4; i++) p[i] = df_hi(g, a[i]);
         return construct(g, g->tvec4, p, 4);
+    }
+    case I_PMAKE: { /* (the sphere stays in single precision: the high parts) */
+        u32 p[4] = {extract(g, f, a[0], 0), extract(g, f, a[0], 2), extract(g, f, a[1], 0), extract(g, f, a[1], 2)};
+        return proj_scale(g, construct(g, g->tvec4, p, 4));
+    }
+    case I_PA: case I_PB: {
+        u32 k = id == I_PA ? 0 : 2;
+        return c_make(g, df_from_f(g, extract(g, f, a[0], k)), df_from_f(g, extract(g, f, a[0], k + 1)));
     }
     }
     return 0;
@@ -841,6 +868,12 @@ static u32 gen_intrinsic(Gen *g, Expr *e) {
     case I_RE: return extract(g, f, a[0], 0);
     case I_IM: return extract(g, f, a[0], 1);
     case I_QUAT: return construct(g, g->tvec4, a, 4);
+    case I_PMAKE: {
+        u32 p[4] = {extract(g, f, a[0], 0), extract(g, f, a[0], 1), extract(g, f, a[1], 0), extract(g, f, a[1], 1)};
+        return proj_scale(g, construct(g, g->tvec4, p, 4));
+    }
+    case I_PA: return vec2(g, extract(g, f, a[0], 0), extract(g, f, a[0], 1));
+    case I_PB: return vec2(g, extract(g, f, a[0], 2), extract(g, f, a[0], 3));
     case I_ISNAN: return op1(g, SpvOpIsNan, g->tbool, a[0]);
     case I_ISINF: return op1(g, SpvOpIsInf, g->tbool, a[0]);
     }
@@ -1492,8 +1525,17 @@ static u32 flat_pixel_size(Gen *g, u32 w, u32 h) {
     return g->df ? df_from_f(g, px) : px;
 }
 
-/* plane point of the pixel position (px, py) in a w x h projective view (see proj_pixel_to_plane in interp.c) */
+/* a lift (num, den) (vec4) of the point of the pixel position (px, py) in a w x h projective view (see
+   proj_pixel_to_plane in interp.c) */
+static u32 proj_plane_lift(Gen *g, u32 px, u32 py, u32 w, u32 h);
+
+/* plane point of the pixel position (px, py) in a w x h projective view */
 static u32 proj_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
+    u32 l = proj_plane_lift(g, px, py, w, h), f = g->tfloat;
+    return g_cdiv(g, vec2(g, extract(g, f, l, 0), extract(g, f, l, 1)), vec2(g, extract(g, f, l, 2), extract(g, f, l, 3)));
+}
+
+static u32 proj_plane_lift(Gen *g, u32 px, u32 py, u32 w, u32 h) {
     Section *v = g->viewer;
     u32 f = g->tfloat;
     u32 half = cf(g, 0.5f);
@@ -1512,7 +1554,8 @@ static u32 proj_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
     u32 mc = extract(g, g->tvec2, mv, 2), md = extract(g, g->tvec2, mv, 3);
     u32 num = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, ma, u), g_cmul(g, mb, vv));
     u32 den = op2(g, SpvOpFAdd, g->tvec2, g_cmul(g, mc, u), g_cmul(g, md, vv));
-    return g_cdiv(g, num, den);
+    u32 p[4] = {extract(g, f, num, 0), extract(g, f, num, 1), extract(g, f, den, 0), extract(g, f, den, 1)};
+    return construct(g, g->tvec4, p, 4);
 }
 
 static u32 iabs_(Gen *g, u32 x) { return ext1(g, g->tint, GLSLSAbs, x); }
@@ -1977,17 +2020,23 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         u32 px = op2(g, SpvOpFAdd, f, extract(g, f, fc, 0), extract(g, f, off, 0));
         u32 py = op2(g, SpvOpFAdd, f, extract(g, f, fc, 1), extract(g, f, off, 1));
         u32 w = extract(g, f, size, 0), h = extract(g, f, size, 1);
-        u32 z;
+        u32 z, lift = 0;
         if (v->mobius) {
-            z = proj_plane_point(g, px, py, w, h);
+            lift = proj_plane_lift(g, px, py, w, h);
+            z = g_cdiv(g, vec2(g, extract(g, f, lift, 0), extract(g, f, lift, 1)),
+                       vec2(g, extract(g, f, lift, 2), extract(g, f, lift, 3)));
             /* .pixel: distance to the point of the next pixel */
             u32 z1 = proj_plane_point(g, op2(g, SpvOpFAdd, f, px, cf(g, 1)), py, w, h);
             store(g, g->pxsize_var, ext1(g, f, GLSLLength, op2(g, SpvOpFSub, g->tvec2, z1, z)));
         } else {
             z = flat_plane_point(g, px, py, w, h);
             store(g, g->pxsize_var, flat_pixel_size(g, w, h));
+            if (v->var_proj) {
+                u32 p[4] = {extract(g, f, z, 0), extract(g, f, z, 1), cf(g, 1), cf(g, 0)};
+                lift = construct(g, g->tvec4, p, 4);
+            }
         }
-        if (v->coord) store(g, v->coord->spv_var, z);
+        if (v->coord) store(g, v->coord->spv_var, v->var_proj ? proj_scale(g, lift) : z); /* (z : P: exact at infinity) */
     }
     g->fn = NULL;
     g->dead = false;

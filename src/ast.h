@@ -49,9 +49,11 @@ const char *tok_kind_name(TokKind k);
  * follows std430 (the GPU storage-buffer layout), so the interpreter's
  * frames and the global state buffer share one representation:
  *   Bool -> u32 0/1, Z -> i32, R -> f32, C -> 2 x f32 (align 2),
- *   H -> 4 x f32 (align 4), R^n etc. -> array, List -> {len, data[cap]}. */
+ *   H -> 4 x f32 (align 4), R^n etc. -> array, List -> {len, data[cap]},
+ *   P -> 4 x f32 (align 4): a lift (a, b) of the point [a : b] of the Riemann sphere, scaled so that its
+ *        largest component is 1 (see notes/projective.md and the lowering in check.c). */
 typedef enum TypeKind {
-    T_ERROR, T_VOID, T_BOOL, T_INT, T_REAL, T_COMPLEX, T_QUAT, T_VEC, T_LIST, T_TUPLE, T_STRING
+    T_ERROR, T_VOID, T_BOOL, T_INT, T_REAL, T_COMPLEX, T_QUAT, T_VEC, T_LIST, T_TUPLE, T_STRING, T_PROJ
 } TypeKind;
 
 typedef struct Type Type;
@@ -69,7 +71,7 @@ struct Type {
     Type *next;      /* intern list */
 };
 
-extern Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color;
+extern Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color, *t_proj;
 void types_init(void);
 Type *type_vec(Type *elem, int n);
 Type *type_list(Type *elem, int cap);
@@ -275,6 +277,7 @@ struct Section {
     char *display;      /* display name */
     char *shortcut;     /* "Ctrl + 1" */
     bool projective;
+    bool var_proj;      /* viewer: `@viewer NAME z : P`, the pixel's point is a point of P (exact at infinity) */
     Block body;
     SymVec locals;
     int frame_words;

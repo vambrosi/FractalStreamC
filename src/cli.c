@@ -67,6 +67,11 @@ static bool cli_set_global(Program *p, u32 *state, const char *assign) {
         state[s->slot] = eq[1] == 't';
         return true;
     }
+    if (s && s->type->kind == T_PROJ) { /* a complex number or inf */
+        if (parse_proj_literal(eq + 1, state + s->slot)) return true;
+        fprintf(stderr, "error: can't set '%s' (a point of the sphere: a complex number or inf)\n", assign);
+        return false;
+    }
     if (!s || !parse_complex_literal(eq + 1, &re, &im)) {
         fprintf(stderr, "error: can't set '%s' (unknown global or bad value)\n", assign);
         return false;
@@ -109,6 +114,12 @@ static void cli_print_value(Type *t, const u32 *v) {
     case T_REAL: printf("%.9g", wf(v[0])); break;
     case T_COMPLEX: printf("%.9g%+.9gi", wf(v[0]), wf(v[1])); break;
     case T_QUAT: printf("quat(%.9g, %.9g, %.9g, %.9g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
+    case T_PROJ: { /* the point's complex number (or inf) */
+        double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+        if (d == 0) printf("%s", ar == 0 && ai == 0 ? "[0 : 0]" : "inf");
+        else printf("%.9g%+.9gi", (ar * br + ai * bi) / d, (ai * br - ar * bi) / d);
+        break;
+    }
     case T_VEC:
         printf("[");
         for (int i = 0; i < t->n; i++) {
@@ -155,10 +166,10 @@ void render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba
         for (int x = 0; x < w; x++) {
             memcpy(st, state, sizeof(u32) * (size_t)p->state_words);
             interp_init(&I, p, st);
-            float re, im, c[3];
-            viewer_pixel_to_plane(p, st, v, (float)w, (float)h, x + 0.5f, y + 0.5f, &re, &im);
+            float lift[4], c[3];
+            viewer_pixel_to_lift(p, st, v, (float)w, (float)h, x + 0.5f, y + 0.5f, lift);
             I.pixel = viewer_pixel_size(p, st, v, (float)w, (float)h, x + 0.5f, y + 0.5f);
-            interp_eval_viewer(&I, v, re, im, c);
+            interp_eval_viewer_lift(&I, v, lift, c);
             interp_free(&I);
             u8 *px = rgba + 4 * ((size_t)y * w + x);
             for (int k = 0; k < 3; k++) px[k] = (u8)(c[k] * 255.0f + 0.5f);

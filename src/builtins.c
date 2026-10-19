@@ -18,6 +18,8 @@ typedef enum Intrinsic {
     I_FLOORI, I_CEILI, I_ROUNDI, I_TRUNCI,
     /* constructors / accessors */
     I_COMPLEX, I_RE, I_IM, I_QUAT,
+    /* the Riemann sphere: [a : b] (scaled so that the largest component is 1), and the components of a lift */
+    I_PMAKE, I_PA, I_PB,
     /* R -> Bool */
     I_ISNAN, I_ISINF,
     /* generic (checked specially) */
@@ -31,7 +33,7 @@ typedef struct IntrinsicInfo {
     const char *name;
     int id;
     int nparams;
-    char params[5]; /* 'Z' 'R' 'C' 'H' 'B', '*' generic (a string: NUL-terminated) */
+    char params[5]; /* 'Z' 'R' 'C' 'H' 'P' 'B', '*' generic (a string: NUL-terminated) */
     char ret;
 } IntrinsicInfo;
 
@@ -55,6 +57,7 @@ static const IntrinsicInfo intrinsics[] = {
     {"complex", I_COMPLEX, 2, "RR", 'C'}, {"re", I_RE, 1, "C", 'R'}, {"im", I_IM, 1, "C", 'R'},
     {"Re", I_RE, 1, "C", 'R'}, {"Im", I_IM, 1, "C", 'R'},
     {"quat", I_QUAT, 4, "RRRR", 'H'},
+    {"__pmake", I_PMAKE, 2, "CC", 'P'}, {"__pa", I_PA, 1, "P", 'C'}, {"__pb", I_PB, 1, "P", 'C'},
     {"isnan", I_ISNAN, 1, "R", 'B'}, {"isinf", I_ISINF, 1, "R", 'B'},
     {"dot", I_DOT, 2, "**", '*'}, {"length", I_LENGTH, 1, "*", '*'}, {"append", I_APPEND, 2, "**", '*'},
     {"clear", I_CLEAR, 1, "*", '*'},
@@ -146,6 +149,23 @@ static const char *prelude_source =
     "define asin(z : C) = -i * log(i * z + sqrt(1 - z * z))\n"
     "define acos(z : C) = complex(1.570796327, 0) - asin(z)\n"
     "define atan(z : C) = 0.5 * i * (log(1 - i * z) - log(1 + i * z))\n"
+    "\n"
+    "# ---- points of the Riemann sphere (P): p = [a : b] with p[1] = a, p[2] = b\n"
+    "define complex(p : P) = p[1] / p[2]\n"
+    "define conj(p : P) = [conj(p[1]) : conj(p[2])]\n"
+    "# the chordal distance: 0 for the same point, 1 for opposite points\n"
+    "define chordal(p : P, q : P) = |p[1] * q[2] - p[2] * q[1]| / (__sqrt(norm(p[1]) + norm(p[2])) * __sqrt(norm(q[1]) + norm(q[2])))\n"
+    "define __peq(p : P, q : P) = chordal(p, q) < .epsilon\n"
+    "define __pescapes(p : P) = |p[1]| > .escapeRadius * |p[2]|\n"
+    "define __pvanishes(p : P) = |p[1]| < .epsilon * __sqrt(norm(p[1]) + norm(p[2]))\n"
+    "define __pabs(p : P) = |p[1]| / |p[2]|\n"
+    "define __ppowi(p : P, n : Z) = r : P where\n"
+    "    if n >= 0 then\n"
+    "        r = [__powci(p[1], n) : __powci(p[2], n)]\n"
+    "    else\n"
+    "        r = [__powci(p[2], -n) : __powci(p[1], -n)]\n"
+    "    end\n"
+    "end\n"
     "\n"
     "# ---- powers, for ^ when the exponent is not a small integer constant\n"
     "define __powr(x : R, y : R) = __pow(x, y)\n"

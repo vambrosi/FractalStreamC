@@ -25,6 +25,12 @@ typedef struct Jet { Expr *v, *d1, *d2; } Jet; /* NULL derivative = zero */
 typedef struct JetVar { Sym *v, *d1, *d2; } JetVar;
 typedef struct SymPair { Sym *from, *to; } SymPair;
 typedef VEC(Stmt *) StmtVec;
+/* a point of the sphere computed from the variable: jets of the two coordinates (a, b) of a lift [a : b].  The
+   lift may be scaled (__pmake makes the largest coordinate 1) by a factor the jets treat as a constant; nothing
+   computed from them depends on the scale (notes/projective.md, section 4). */
+typedef struct PJet { Jet a, b; } PJet;
+typedef struct JetBind { Sym *src; Jet j; } JetBind;    /* a parameter of an inlined function, and its jet */
+typedef struct PJetBind { Sym *src; PJet j; } PJetBind;
 
 typedef struct AD {
     Checker *c;
@@ -40,6 +46,10 @@ typedef struct AD {
     Sym *var_src;          /* the variable we differentiate with respect to (its derivative is 1) */
     bool failed;
     int ntemp;
+    VEC(JetBind) cbind;    /* parameters of inlined functions (see ad_bind_params) */
+    VEC(PJetBind) pbind;
+    bool pmode;            /* the variable is a point of the sphere, moved in a chart: */
+    PJet pvar;             /* ... its jets (see ad_pseed) */
 } AD;
 
 typedef struct JetFuncCache { Func *src, *jet; int order; struct JetFuncCache *next; } JetFuncCache;
@@ -242,7 +252,7 @@ static Expr *ad_hold(AD *ad, Expr *e) {
 /* ---- source -> target symbols ----------------------------------------------------- */
 static Sym *ad_map(AD *ad, Sym *s) {
     if (!s || s->kind != SYM_LOCAL) return s;
-    for (int i = 0; i < ad->map.len; i++)
+    for (int i = ad->map.len - 1; i >= 0; i--) /* (the latest: parameters of inlined functions are mapped again) */
         if (ad->map.data[i].from == s) return ad->map.data[i].to;
     Sym *t = ad_local(ad, s->name, s->type);
     SymPair pr = {s, t};
@@ -302,9 +312,19 @@ static Expr *ad_subst(AD *ad, Expr *e, Sym **from, Expr **to, int n) {
 }
 
 /* ---- activity ------------------------------------------------------------------- */
+static bool ad_bound(AD *ad, Sym *s) {
+    for (int i = 0; i < ad->cbind.len; i++)
+        if (ad->cbind.data[i].src == s) return true;
+    for (int i = 0; i < ad->pbind.len; i++)
+        if (ad->pbind.data[i].src == s) return true;
+    return false;
+}
+
 static bool ad_depends(AD *ad, Expr *e) {
     if (!e) return false;
-    if ((e->kind == E_NAME) && e->sym && (sym_in(&ad->act_src, e->sym) || sym_in(&ad->taint_src, e->sym))) return true;
+    if ((e->kind == E_NAME) && e->sym &&
+        (sym_in(&ad->act_src, e->sym) || sym_in(&ad->taint_src, e->sym) || ad_bound(ad, e->sym)))
+        return true;
     if (ad_depends(ad, e->a) || ad_depends(ad, e->b)) return true;
     for (int i = 0; i < e->nargs; i++)
         if (ad_depends(ad, e->args[i])) return true;
@@ -363,6 +383,19 @@ static bool ad_analyze_block(AD *ad, Block *b) {
 /* ---- jets of expressions ------------------------------------------------------------- */
 static Jet ad_jet(AD *ad, Expr *e);
 static Func *ad_jet_func(AD *ad, Func *src);
+static PJet ad_pjet(AD *ad, Expr *e);
+typedef struct BindMark { int map, cbind, pbind; } BindMark;
+static BindMark ad_bind_params(AD *ad, Expr *call);
+static void ad_unbind(AD *ad, BindMark m) {
+    ad->map.len = m.map;
+    ad->cbind.len = m.cbind;
+    ad->pbind.len = m.pbind;
+}
+static bool ad_has_proj_param(Func *f) {
+    for (int i = 0; i < f->nparams; i++)
+        if (f->params[i]->type == t_proj) return true;
+    return false;
+}
 
 /* x*y with NULL meaning zero */
 static Expr *jmul(AD *ad, Expr *x, Expr *y) {
@@ -571,7 +604,9 @@ static Jet ad_jet(AD *ad, Expr *e) {
     if (!ad_depends(ad, e)) return jet_const(ad, e);
     switch (e->kind) {
     case E_NAME: {
-        if (e->sym == ad->var_src) {
+        for (int i = ad->cbind.len - 1; i >= 0; i--)
+            if (ad->cbind.data[i].src == e->sym) return ad->cbind.data[i].j;
+        if (e->sym == ad->var_src && !ad->pmode) {
             Jet j = {ad_name(ad, ad_map(ad, e->sym)), ad_cconst(ad, 1, 0), NULL};
             return j;
         }
@@ -645,8 +680,18 @@ static Jet ad_jet(AD *ad, Expr *e) {
         return r;
     }
     case E_CALL: {
+        if (e->intrinsic == I_PA || e->intrinsic == I_PB) { /* a coordinate of a lift */
+            PJet pj = ad_pjet(ad, e->args[0]);
+            return e->intrinsic == I_PA ? pj.a : pj.b;
+        }
         if (e->intrinsic || !e->fn) break;
         Func *f = e->fn;
+        if (f->body_expr && f->body_expr->kind != E_TUPLE && f->ret == t_complex && ad_has_proj_param(f)) {
+            BindMark m = ad_bind_params(ad, e); /* (a one-line function of points, inlined) */
+            Jet r = ad_jet(ad, f->body_expr);
+            ad_unbind(ad, m);
+            return r;
+        }
         if (f->prelude) {
             if (!strcmp(f->name, "conj")) {
                 ad_fail(ad, e, "conj is not holomorphic");
@@ -806,6 +851,192 @@ static void ad_free(AD *ad) {
     vec_free(ad->act_src);
     vec_free(ad->taint_src);
     vec_free(ad->jets);
+    vec_free(ad->cbind);
+    vec_free(ad->pbind);
+}
+
+/* ---- points of the sphere --------------------------------------------------------------- */
+static Expr *ad_pcomp(AD *ad, Expr *p, int k) { /* p[1] or p[2] */
+    Expr *args[1] = {p};
+    return ad_intrinsic(ad, k ? I_PB : I_PA, t_complex, args, 1);
+}
+static Expr *ad_pmake(AD *ad, Expr *a, Expr *b) {
+    Expr *args[2] = {ad_to(ad, a, t_complex), ad_to(ad, b, t_complex)};
+    return ad_intrinsic(ad, I_PMAKE, t_proj, args, 2);
+}
+static Jet ad_jet_held(AD *ad, Jet j) { return jet_hold(ad, j.v, j.d1, j.d2); }
+
+/* The parameters of the one-line function called by `call`, bound to the jets (or values) of its arguments, so
+   that its body can be differentiated in place: each argument is computed once, into temporaries. */
+static BindMark ad_bind_params(AD *ad, Expr *call) {
+    BindMark m = {ad->map.len, ad->cbind.len, ad->pbind.len};
+    Func *f = call->fn;
+    int n = FS_MIN(f->nparams, 32);
+    PJet pj[32];
+    Jet cj[32];
+    Sym *tmp[32];
+    int kind[32];
+    for (int i = 0; i < n; i++) { /* (all the arguments first: they belong to the caller) */
+        Sym *ps = f->params[i];
+        Expr *arg = call->args[i];
+        bool dep = ad_depends(ad, arg);
+        kind[i] = 0;
+        if (dep && ps->type == t_proj) {
+            PJet a = ad_pjet(ad, arg);
+            pj[i].a = ad_jet_held(ad, a.a);
+            pj[i].b = ad_jet_held(ad, a.b);
+            tmp[i] = ad_temp(ad, t_proj);
+            ad_assign(ad, tmp[i], ad_pmake(ad, pj[i].a.v, pj[i].b.v));
+            kind[i] = 2;
+        } else if (dep && ps->type == t_complex) {
+            cj[i] = ad_jet_held(ad, ad_jet(ad, arg));
+            tmp[i] = ad_temp(ad, t_complex);
+            ad_assign(ad, tmp[i], cj[i].v);
+            kind[i] = 1;
+        } else {
+            if (dep) ad_fail(ad, arg, "argument %d of '%s' is a real or integer number computed from the variable", i + 1, f->name);
+            tmp[i] = ad_temp(ad, ps->type);
+            ad_assign(ad, tmp[i], ad_copy(ad, arg));
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        ad_map_set(ad, f->params[i], tmp[i]);
+        if (kind[i] == 2) {
+            PJetBind b = {f->params[i], pj[i]};
+            vec_push(ad->pbind, b);
+        } else if (kind[i] == 1) {
+            JetBind b = {f->params[i], cj[i]};
+            vec_push(ad->cbind, b);
+        }
+    }
+    return m;
+}
+
+/* the jets of the coordinates of a point of the sphere computed from the variable */
+static PJet ad_pjet(AD *ad, Expr *e) {
+    PJet zero = {{ad_cconst(ad, 1, 0), NULL, NULL}, {ad_cconst(ad, 1, 0), NULL, NULL}};
+    if (ad->failed) return zero;
+    if (!ad_depends(ad, e)) { /* a constant point */
+        Expr *v = ad_hold(ad, ad_copy(ad, e));
+        PJet r = {{ad_pcomp(ad, v, 0), NULL, NULL}, {ad_pcomp(ad, v, 1), NULL, NULL}};
+        return r;
+    }
+    switch (e->kind) {
+    case E_NAME:
+        if (e->sym == ad->var_src && ad->pmode) return ad->pvar;
+        for (int i = ad->pbind.len - 1; i >= 0; i--)
+            if (ad->pbind.data[i].src == e->sym) return ad->pbind.data[i].j;
+        ad_fail(ad, e, "'%s' is a point of the sphere computed from the variable and kept in a variable; write the "
+                       "computation as one formula (a one-line function of the variable)", e->sym->name);
+        return zero;
+    case E_CALL:
+        if (e->intrinsic == I_PMAKE) {
+            PJet r = {ad_jet(ad, e->args[0]), ad_jet(ad, e->args[1])};
+            return r;
+        }
+        if (!e->intrinsic && e->fn && e->fn->body_expr && e->fn->body_expr->kind != E_TUPLE) {
+            BindMark m = ad_bind_params(ad, e);
+            PJet r = ad_pjet(ad, e->fn->body_expr);
+            ad_unbind(ad, m);
+            return r;
+        }
+        ad_fail(ad, e, "only one-line functions of points of the sphere (define f(z : P) = ...) can be differentiated");
+        return zero;
+    case E_COND: { /* if c then p else q: each branch computes its own jets */
+        Sym *s[6];
+        int ns = ad->order >= 2 ? 6 : 4;
+        for (int k = 0; k < ns; k++) s[k] = ad_temp(ad, t_complex);
+        Stmt *iff = ad_stmt_new(ad, S_IF);
+        iff->value = ad_copy(ad, e->args[0]);
+        StmtVec *saved = ad->out;
+        for (int k = 1; k <= 2; k++) {
+            StmtVec br = {0};
+            ad->out = &br;
+            PJet j = ad_pjet(ad, e->args[k]);
+            Jet *c2[2] = {&j.a, &j.b};
+            for (int q = 0; q < 2; q++) {
+                ad_assign(ad, s[q], c2[q]->v);
+                ad_assign(ad, s[2 + q], c2[q]->d1 ? c2[q]->d1 : ad_cconst(ad, 0, 0));
+                if (ns == 6) ad_assign(ad, s[4 + q], c2[q]->d2 ? c2[q]->d2 : ad_cconst(ad, 0, 0));
+            }
+            if (k == 1) iff->body = ad_take_block(ad, &br);
+            else iff->else_body = ad_take_block(ad, &br);
+        }
+        ad->out = saved;
+        ad_emit(ad, iff);
+        PJet r = {{ad_name(ad, s[0]), ad_name(ad, s[2]), ns == 6 ? ad_name(ad, s[4]) : NULL},
+                  {ad_name(ad, s[1]), ad_name(ad, s[3]), ns == 6 ? ad_name(ad, s[5]) : NULL}};
+        return r;
+    }
+    default: break;
+    }
+    ad_fail(ad, e, "this point of the sphere can't be differentiated");
+    return zero;
+}
+
+/* The variable as a point of the sphere moves in a chart: the coordinate x of the chart U0 (points [x : 1]) when
+   chart0, of U-infinity ([1 : x]) otherwise.  Its jets: (x, 1) or (1, x) with derivatives (1, 0) or (0, 1). */
+typedef struct PChart { Sym *chart0, *x, *ca, *cb, *da, *db, *t; } PChart;
+
+static void ad_pseed(AD *ad, PChart *pc) {
+    Stmt *iff = ad_stmt_new(ad, S_IF);
+    iff->value = ad_name(ad, pc->chart0);
+    StmtVec *saved = ad->out;
+    for (int k = 0; k < 2; k++) {
+        StmtVec br = {0};
+        ad->out = &br;
+        ad_assign(ad, pc->ca, k == 0 ? ad_name(ad, pc->x) : ad_cconst(ad, 1, 0));
+        ad_assign(ad, pc->cb, k == 0 ? ad_cconst(ad, 1, 0) : ad_name(ad, pc->x));
+        ad_assign(ad, pc->da, ad_cconst(ad, k == 0 ? 1 : 0, 0));
+        ad_assign(ad, pc->db, ad_cconst(ad, k == 0 ? 0 : 1, 0));
+        if (k == 0) iff->body = ad_take_block(ad, &br);
+        else iff->else_body = ad_take_block(ad, &br);
+    }
+    ad->out = saved;
+    ad_emit(ad, iff);
+    ad_assign(ad, pc->t, ad_pmake(ad, ad_name(ad, pc->ca), ad_name(ad, pc->cb))); /* (for conditions that use it) */
+    PJet v = {{ad_name(ad, pc->ca), ad_name(ad, pc->da), NULL}, {ad_name(ad, pc->cb), ad_name(ad, pc->db), NULL}};
+    ad->pvar = v;
+}
+
+/* the natural chart of the point p (the coordinate of smaller size): chart0 and x */
+static void ad_pchart_of(AD *ad, PChart *pc, Expr *p) {
+    Expr *a = ad_hold(ad, ad_pcomp(ad, p, 0)), *b = ad_hold(ad, ad_pcomp(ad, p, 1));
+    ad_assign(ad, pc->chart0, ad_bin(ad, TK_LE, ad_abs(ad, a), ad_abs(ad, b)));
+    Stmt *iff = ad_stmt_new(ad, S_IF);
+    iff->value = ad_name(ad, pc->chart0);
+    StmtVec *saved = ad->out;
+    StmtVec b0 = {0}, b1 = {0};
+    ad->out = &b0;
+    ad_assign(ad, pc->x, ad_bin(ad, TK_SLASH, a, b));
+    iff->body = ad_take_block(ad, &b0);
+    ad->out = &b1;
+    ad_assign(ad, pc->x, ad_bin(ad, TK_SLASH, b, a));
+    iff->else_body = ad_take_block(ad, &b1);
+    ad->out = saved;
+    ad_emit(ad, iff);
+}
+
+/* the derivative of the target coordinate, in the natural chart of the result: for a point [A : B],
+   (A'B - AB') / B^2 near 0 (|A| <= |B|) and (B'A - BA') / A^2 near infinity */
+static Expr *ad_ptarget_d1(AD *ad, PJet j) {
+    Jet A = ad_jet_held(ad, j.a), B = ad_jet_held(ad, j.b);
+    Sym *r = ad_temp(ad, t_complex);
+    Stmt *iff = ad_stmt_new(ad, S_IF);
+    iff->value = ad_bin(ad, TK_LE, ad_abs(ad, A.v), ad_abs(ad, B.v));
+    StmtVec *saved = ad->out;
+    StmtVec b0 = {0}, b1 = {0};
+    ad->out = &b0;
+    Expr *n0 = jsub(ad, jmul(ad, A.d1, B.v), jmul(ad, A.v, B.d1));
+    ad_assign(ad, r, n0 ? ad_bin(ad, TK_SLASH, n0, ad_bin(ad, TK_STAR, B.v, B.v)) : ad_cconst(ad, 0, 0));
+    iff->body = ad_take_block(ad, &b0);
+    ad->out = &b1;
+    Expr *n1 = jsub(ad, jmul(ad, B.d1, A.v), jmul(ad, B.v, A.d1));
+    ad_assign(ad, r, n1 ? ad_bin(ad, TK_SLASH, n1, ad_bin(ad, TK_STAR, A.v, A.v)) : ad_cconst(ad, 0, 0));
+    iff->else_body = ad_take_block(ad, &b1);
+    ad->out = saved;
+    ad_emit(ad, iff);
+    return ad_name(ad, r);
 }
 
 /* ---- jet versions of user functions ------------------------------------------------- */
@@ -1000,8 +1231,32 @@ static Stmt *ad_if_break(AD *ad, Expr *cond, Sym *set_true) {
     return s;
 }
 
-static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym *total, Expr *limit) {
+/* what a Newton step divides: the value and its derivative (root), or the first and second derivatives (critical).
+   For a point of the sphere [A : B]: root solves A/B = 0 (step A B / (A'B - AB')), critical solves
+   K = A B' - B A' = 0, which is where the map's derivative vanishes in any chart (step K / K', K' = A B'' - B A''). */
+static void ad_solve_terms(AD *ad, int op, Expr *body, bool pbody, Expr **num, Expr **den) {
+    if (!pbody) {
+        Jet j = ad_jet(ad, body);
+        *num = op == SOLVE_CRITICAL ? j.d1 : j.v;
+        *den = op == SOLVE_CRITICAL ? j.d2 : j.d1;
+        return;
+    }
+    PJet pj = ad_pjet(ad, body);
+    Jet A = ad_jet_held(ad, pj.a), B = ad_jet_held(ad, pj.b);
+    if (op == SOLVE_ROOT) {
+        *num = jmul(ad, A.v, B.v);
+        *den = jsub(ad, jmul(ad, A.d1, B.v), jmul(ad, A.v, B.d1));
+    } else {
+        *num = jsub(ad, jmul(ad, A.v, B.d1), jmul(ad, B.v, A.d1));
+        *den = jsub(ad, jmul(ad, A.v, B.d2), jmul(ad, B.v, A.d2));
+    }
+}
+
+/* (pc: the variable is a point of the sphere, moved in charts: Newton's method on the coordinate pc->x, which
+   changes chart when it leaves the unit disk) */
+static void ad_newton(AD *ad, int op, Expr *body, bool pbody, Sym *t, PChart *pc, Sym *conv, Sym *k, Sym *total, Expr *limit) {
     Sym *prev = ad_temp(ad, t_real), *a = ad_temp(ad, t_real), *scale = ad_temp(ad, t_real);
+    Sym *X = pc ? pc->x : t;
     ad_assign(ad, k, ad_int(ad, 0));
     ad_assign(ad, conv, ad_bool(ad, false));
     ad_assign(ad, prev, ad_real(ad, 1e30f));
@@ -1012,10 +1267,10 @@ static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym
     if (total) ad_assign(ad, total, ad_bin(ad, TK_PLUS, ad_name(ad, total), ad_int(ad, 1)));
     /* an evaluation that gets stuck (a loop of the expression reaches .maxIterations) is not a value to trust */
     ad_assign(ad, ad->p->s_stuck, ad_bool(ad, false));
-    Jet j = ad_jet(ad, body);
+    if (pc) ad_pseed(ad, pc);
+    Expr *num, *den;
+    ad_solve_terms(ad, op, body, pbody, &num, &den);
     ad_emit(ad, ad_if_break(ad, ad_name(ad, ad->p->s_stuck), NULL));
-    Expr *num = op == SOLVE_CRITICAL ? j.d1 : j.v;
-    Expr *den = op == SOLVE_CRITICAL ? j.d2 : j.d1;
     if (!den && !ad->failed) {
         prog_diag(ad->p, DIAG_ERROR, ad->at->line, ad->at->col, ad->at->end_col,
                   "the %s is constant, so Newton's method can't be used here",
@@ -1026,9 +1281,9 @@ static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym
     if (!num) num = ad_cconst(ad, 0, 0);
     Sym *step = ad_temp(ad, t_complex);
     ad_assign(ad, step, ad_bin(ad, TK_SLASH, num, den));
-    ad_assign(ad, t, ad_bin(ad, TK_MINUS, ad_name(ad, t), ad_name(ad, step)));
+    ad_assign(ad, X, ad_bin(ad, TK_MINUS, ad_name(ad, X), ad_name(ad, step)));
     ad_assign(ad, a, ad_abs(ad, ad_name(ad, step)));
-    ad_assign(ad, scale, ad_bin(ad, TK_PLUS, ad_real(ad, 1), ad_abs(ad, ad_name(ad, t))));
+    ad_assign(ad, scale, ad_bin(ad, TK_PLUS, ad_real(ad, 1), ad_abs(ad, ad_name(ad, X))));
     Expr *eps = ad_name(ad, ad->p->s_epsilon);
     ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, eps, ad_name(ad, scale))), conv));
     Expr *small = ad_bin(ad, TK_LE, ad_name(ad, a), ad_bin(ad, TK_STAR, ad_real(ad, 1e-3f), ad_name(ad, scale)));
@@ -1036,6 +1291,19 @@ static void ad_newton(AD *ad, int op, Expr *body, Sym *t, Sym *conv, Sym *k, Sym
     ad_emit(ad, ad_if_break(ad, ad_bin(ad, TK_AND, small, stalled), conv));
     ad_emit(ad, ad_if_break(ad, ad_not(ad, ad_bin(ad, TK_LT, ad_name(ad, a), ad_real(ad, 1e30f))), NULL));
     ad_assign(ad, prev, ad_name(ad, a));
+    if (pc) { /* out of the unit disk of its chart: the other chart */
+        Stmt *sw = ad_stmt_new(ad, S_IF);
+        sw->value = ad_bin(ad, TK_GT, ad_abs(ad, ad_name(ad, X)), ad_real(ad, 1));
+        StmtVec b = {0};
+        StmtVec *in = ad->out;
+        ad->out = &b;
+        ad_assign(ad, X, ad_bin(ad, TK_SLASH, ad_cconst(ad, 1, 0), ad_name(ad, X)));
+        ad_assign(ad, pc->chart0, ad_not(ad, ad_name(ad, pc->chart0)));
+        ad_assign(ad, prev, ad_real(ad, 1e30f));
+        sw->body = ad_take_block(ad, &b);
+        ad->out = in;
+        ad_emit(ad, sw);
+    }
     ad->out = saved;
     Stmt *wh = ad_stmt_new(ad, S_WHILE);
     wh->quiet = true;
@@ -1048,8 +1316,14 @@ static Type *chk_solve(Checker *c, Expr *e) {
     static int counter = 0;
     Program *p = c->prog;
     bool cont = e->cont_from != NULL;
-    if (chk(c, e->b) == t_error) return t_error;
-    e->b = coerce(c, e->b, t_complex, e->op == SOLVE_DERIVATIVE ? "the point after 'at'" : "the seed");
+    Type *seed_t = chk(c, e->b);
+    if (seed_t == t_error) return t_error;
+    bool pmode = seed_t == t_proj; /* at a point of the sphere: the variable is one too, moved in charts */
+    if (!pmode) e->b = coerce(c, e->b, t_complex, e->op == SOLVE_DERIVATIVE ? "the point after 'at'" : "the seed");
+    if (pmode && cont) {
+        ERR(c, e, "'continuing' is not available for points of the sphere yet");
+        return t_error;
+    }
     Section *viewer = NULL;
     Sym *cvar = NULL;
     if (cont) {
@@ -1066,7 +1340,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
             return t_error;
         }
         cvar = viewer->coord;
-        if (viewer->projective) {
+        if (viewer->projective || viewer->var_proj) {
             ERR(c, e, "'continuing' is not available in projective viewers yet");
             return t_error;
         }
@@ -1094,7 +1368,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
     f->has_where = true;
     f->check_state = 1;
     /* the variable of the lambda, and its body */
-    Sym *var = new_sym(c, e->name ? e->name : "x", t_complex, SYM_LOCAL, e->line, e->col);
+    Sym *var = new_sym(c, e->name ? e->name : "x", pmode ? t_proj : t_complex, SYM_LOCAL, e->line, e->col);
     var->owner = f;
     Expr *body = e->a;
     if (!e->name) { /* a function name: body = f(x) */
@@ -1122,11 +1396,18 @@ static Type *chk_solve(Checker *c, Expr *e) {
     c->scope = saved_scope;
     vec_free(lam.syms);
     if (bt == t_error) return t_error;
-    if (!type_is_number(bt) || bt == t_quat) {
-        ERR(c, body, "the expression after '->' must be a number, not %s", type_str(bt));
+    bool pbody = bt == t_proj; /* a map to the sphere */
+    if (!pbody && (!type_is_number(bt) || bt == t_quat)) {
+        ERR(c, body, "the expression after '->' must be a number or a point of the sphere, not %s", type_str(bt));
         return t_error;
     }
-    body = coerce(c, body, t_complex, "the expression");
+    if (pbody && cont) {
+        ERR(c, e, "'continuing' is not available for points of the sphere yet");
+        return t_error;
+    }
+    if (!pbody) body = coerce(c, body, t_complex, "the expression");
+    px_lower_expr(c, &body); /* (points of the sphere: written with their coordinates) */
+    Type *rtype = e->op == SOLVE_DERIVATIVE || !pmode ? t_complex : t_proj;
     /* captured locals of the caller become parameters */
     SymVec caps = {0};
     ad_collect_captures(body, var, &caps);
@@ -1158,7 +1439,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
     ad.fn = f;
     /* parameters: seed, [from, to,] captures */
     VEC(Sym *) params = {0};
-    Sym *seed = ad_local(&ad, "seed", t_complex);
+    Sym *seed = ad_local(&ad, "seed", pmode ? t_proj : t_complex);
     vec_push(params, seed);
     Sym *from = NULL, *to = NULL, *cc = NULL;
     if (cont) {
@@ -1172,24 +1453,42 @@ static Type *chk_solve(Checker *c, Expr *e) {
         ad_map_set(&ad, caps.data[i], np);
         vec_push(params, np);
     }
-    Sym *t = ad_local(&ad, var->name, t_complex);
+    Sym *t = ad_local(&ad, var->name, pmode ? t_proj : t_complex);
     ad_map_set(&ad, var, t);
     vec_push(ad.act_src, var);
     ad.var_src = var;
+    ad.pmode = pmode;
+    PChart pc = {0};
+    if (pmode) {
+        pc.chart0 = ad_local(&ad, "chart0", t_bool);
+        pc.x = ad_local(&ad, "x", t_complex);
+        pc.ca = ad_local(&ad, "a", t_complex);
+        pc.cb = ad_local(&ad, "b", t_complex);
+        pc.da = ad_local(&ad, "a'", t_complex);
+        pc.db = ad_local(&ad, "b'", t_complex);
+        pc.t = t;
+    }
     if (cont) {
         cc = ad_local(&ad, cvar->name, t_complex);
         ad_map_set(&ad, cvar, cc);
     }
-    Sym *res = ad_local(&ad, "result", t_complex);
+    Sym *res = ad_local(&ad, "result", rtype);
     StmtVec out = {0};
     ad.out = &out;
     ad_assign(&ad, t, ad_name(&ad, seed));
+    if (pmode) ad_pchart_of(&ad, &pc, ad_name(&ad, seed));
     if (e->op == SOLVE_DERIVATIVE) {
-        Jet j = ad_jet(&ad, body);
-        ad_assign(&ad, res, j.d1 ? j.d1 : ad_cconst(&ad, 0, 0));
+        if (pmode) ad_pseed(&ad, &pc);
+        if (pbody) { /* in the natural charts of the point and of its image */
+            ad_assign(&ad, res, ad_ptarget_d1(&ad, ad_pjet(&ad, body)));
+        } else {
+            Jet j = ad_jet(&ad, body);
+            ad_assign(&ad, res, j.d1 ? j.d1 : ad_cconst(&ad, 0, 0));
+        }
     } else if (!cont) {
         Sym *conv = ad_local(&ad, "converged", t_bool), *k = ad_local(&ad, "steps", t_int);
-        ad_newton(&ad, e->op, body, t, conv, k, NULL, ad_name(&ad, p->s_max_iter));
+        ad_newton(&ad, e->op, body, pbody, t, pmode ? &pc : NULL, conv, k, NULL, ad_name(&ad, p->s_max_iter));
+        if (pmode) ad_pseed(&ad, &pc); /* (t = the point of x in its chart) */
         ad_assign(&ad, res, ad_name(&ad, t));
         ad_assign(&ad, p->s_stuck, ad_not(&ad, ad_name(&ad, conv)));
         ad_assign(&ad, p->s_iterations, ad_name(&ad, k));
@@ -1214,7 +1513,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
             Expr *frac = ad_bin(&ad, TK_SLASH, ad_name(&ad, j), ad_name(&ad, nsub));
             ad_assign(&ad, cc, ad_bin(&ad, TK_PLUS, ad_name(&ad, from),
                                       ad_bin(&ad, TK_STAR, ad_bin(&ad, TK_MINUS, ad_name(&ad, to), ad_name(&ad, from)), frac)));
-            ad_newton(&ad, e->op, body, t, conv, k, total, ad_int(&ad, 30));
+            ad_newton(&ad, e->op, body, false, t, NULL, conv, k, total, ad_int(&ad, 30));
             Stmt *iff = ad_stmt_new(&ad, S_IF);
             iff->value = ad_not(&ad, ad_name(&ad, conv));
             {
@@ -1269,7 +1568,7 @@ static Type *chk_solve(Checker *c, Expr *e) {
     f->outputs = ARENA_ARRAY(&p->arena, Sym *, 1);
     f->outputs[0] = res;
     f->output_tsyn = ARENA_ARRAY(&p->arena, TypeSyntax *, 1);
-    f->ret = t_complex;
+    f->ret = rtype;
     SymVec ordered = {0};
     for (int i = 0; i < f->nparams; i++) vec_push(ordered, f->params[i]);
     vec_push(ordered, res);
@@ -1318,5 +1617,5 @@ static Type *chk_solve(Checker *c, Expr *e) {
     e->a = e->b = NULL;
     e->cont_from = NULL;
     if (c->fn && f->uses_draw) c->fn->uses_draw = true;
-    return t_complex;
+    return rtype;
 }

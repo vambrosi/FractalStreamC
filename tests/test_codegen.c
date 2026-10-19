@@ -115,6 +115,19 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "clear(L)\n"
      "e := L[1]\n"
      "color = [0.5 + 0.4 sin(re(s)), 0.5 + 0.4 cos(dd + n), 0.5 + 0.4 sin(re(e) + re(L[1]) + im(s))]\n", 0.002},
+    {"projective",
+     "@global\n"
+     "a : C = -0.4 + 0.6i\n"
+     "define f(z : P) = (z^2 + a)/(z^2 - 1)\n"
+     "@viewer sphere z : P \"Sphere\" projective\n"
+     "w := z\n"
+     "for n in 1..12 do\n"
+     "    w = f(w)\n"
+     "end\n"
+     "d := derivative t -> f(t) at w\n"
+     "c := critical t -> f(t) with seed z\n"
+     "e := [re(w[1]) : w[2] + 1] * 2 - 1/w\n"
+     "color = [chordal(c, 0), |d| / (1 + |d|), chordal(w, ∞) + 0.2 chordal(e, 1)]\n", 0.002},
     {"quaternions_bools",
      "@global\n"
      "count : Z = 0\n"

@@ -440,7 +440,7 @@ TEST(errors) {
     EXPECT_ERROR("@viewer a z\ncolor = .red\n@viewer a w\ncolor = .red\n", "already a viewer");
     EXPECT_ERROR("color = 2 3\n", "explicit *");
     EXPECT_ERROR("@global\nx := 5i\n@viewer v z\ncolor = gray(x)\n", "must be R");
-    EXPECT_ERROR("@global\ndefine sin(x : R) = x\n", "built-in");
+    EXPECT_ERROR("@global\ndefine re(z : C) = z\n", "built-in");
     EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\nw := z\n", "only defined inside the viewer");
 }
 
@@ -544,6 +544,126 @@ TEST(projective_mapping) {
     viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 0, &re, &im);
     CHECK_NEAR(re, 1, 1e-4);
     CHECK_NEAR(im, 3, 1e-4);
+    program_free(p);
+}
+
+/* a point of P as a complex number (inf: a huge one), for checking */
+static void pnum(Program *p, const char *name, double *re, double *im) {
+    Sym *s = find_global(p, name);
+    if (!s || s->type != t_proj || !p->initial_state) {
+        printf("    no point '%s'\n", name);
+        test_failures_++;
+        *re = *im = NAN;
+        return;
+    }
+    const u32 *v = p->initial_state + s->slot;
+    double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+    if (d == 0) {
+        *re = ar == 0 && ai == 0 ? NAN : INFINITY;
+        *im = 0;
+        return;
+    }
+    *re = (ar * br + ai * bi) / d;
+    *im = (ai * br - ar * bi) / d;
+}
+#define CHECK_POINT(p, name, xre, xim) do { double r_, i_; pnum(p, name, &r_, &i_); \
+    if (isinf((double)(xre))) CHECK_MSG(isinf(r_), "%s should be infinity, is %g%+gi", name, r_, i_); \
+    else { CHECK_NEAR(r_, xre, 1e-5); CHECK_NEAR(i_, xim, 1e-5); } } while (0)
+
+TEST(projective_points) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define f(z : P) = (z^2 + 1)/(z^2 - 1)\n"
+        "define g(z : P) = z^2 + 0.5i\n"
+        "define h(z : P) = (1/z + 1)/(1/z - 1)\n"
+        "inf : P = [1 : 0]\n"
+        "two : P = 2\n"
+        "a := f(inf)\n"          /* 1: exact at infinity (no [0 : 0]) */
+        "b := f(two)\n"          /* 5/3 */
+        "c := g(.infinity)\n"    /* infinity */
+        "d := h(0)\n"            /* 1: exact at 0 too */
+        "e := 1 / inf\n"         /* 0 */
+        "half := [2 : 4]\n"
+        "same := inf == ∞ and half == 0.5 and half != 2\n"
+        "w := 0\n"
+        "w = two + 1i\n"         /* w becomes a point */
+        "q3 := two^3\n"
+        "qm := two^-2\n"
+        "k : Z = 3\n"
+        "qk := two^k\n"
+        "m := |two| + re(half[1] / half[2])\n"          /* 2 + 0.5 */
+        "esc := two escapes\n"       /* |2| > 2: false */
+        "van := [1e-9 : 1] vanishes\n"
+        "cd := chordal(0, ∞)\n"
+        "zc := complex(half)\n"
+        "L : List of P = []\n"
+        "append(L, ∞)\n"
+        "append(L, two)\n"
+        "n := |L|\n"
+        "count := 0\n"
+        "define once(z : P) = r : P where\n" /* (pieces with calls are computed once) */
+        "    count = count + 1\n"
+        "    r = z\n"
+        "end\n"
+        "y := once(two) * once(two) + 1\n");
+    CHECK_POINT(p, "a", 1, 0);
+    CHECK_POINT(p, "b", 5.0 / 3, 0);
+    CHECK_POINT(p, "c", INFINITY, 0);
+    CHECK_POINT(p, "d", 1, 0);
+    CHECK_POINT(p, "e", 0, 0);
+    CHECK_POINT(p, "half", 0.5, 0);
+    CHECK_NEAR(gnum(p, "same", 0), 1, 0);
+    CHECK_POINT(p, "w", 2, 1);
+    CHECK_POINT(p, "q3", 8, 0);
+    CHECK_POINT(p, "qm", 0.25, 0);
+    CHECK_POINT(p, "qk", 8, 0);
+    CHECK_NEAR(gnum(p, "m", 0), 2.5, 1e-6);
+    CHECK_NEAR(gnum(p, "esc", 0), 0, 0);
+    CHECK_NEAR(gnum(p, "van", 0), 1, 0);
+    CHECK_NEAR(gnum(p, "cd", 0), 1, 1e-6);
+    CHECK_NEAR(gnum(p, "zc", 0), 0.5, 1e-6);
+    CHECK_NEAR(gnum(p, "n", 0), 2, 0);
+    CHECK_POINT(p, "y", 5, 0);
+    CHECK_NEAR(gnum(p, "count", 0), 2, 0);
+    program_free(p);
+    EXPECT_ERROR("@global\np : P = 2\nx := p[3]\n", "p[1] is a and p[2] is b");
+    EXPECT_ERROR("@global\np : P = 2\np[1] = 3\n", "can't be set one by one");
+    EXPECT_ERROR("@global\np : P = 2\nb := p < p\n", "can't be ordered");
+    EXPECT_ERROR("@global\np : P = 2\nq := p^0.5\n", "integer powers");
+    EXPECT_ERROR("@global\nq := [1 : true]\n", "coordinate in [a : b]");
+    EXPECT_ERROR("@global\nz : C = [1 : 2]\n", "must be C");
+    /* derivatives in the natural charts (z near points with |z| <= 1, 1/z near the others) */
+    p = LOAD_OK(
+        "@global\n"
+        "define f(z : P) = (z^2 + 1)/(z^2 - 1)\n"
+        "define q(z : P) = z^2 - 1\n"
+        "d1 := derivative t -> f(t) at [0.5 : 1]\n"   /* f'(z) = -4z/(z^2 - 1)^2 = -2/0.5625; f(0.5) = -5/3: 1/f */
+        "d2 := derivative t -> f(t) at ∞\n"           /* 0 */
+        "d3 := derivative t -> 2 t at ∞\n"            /* s -> s/2 */
+        "d4 := derivative t -> t^2 + 0.25 at [0.5 : 1]\n" /* the parabolic fixed point: 1 */
+        "r1 := root t -> q(t) with seed [3 : 1]\n"
+        "c1 := critical t -> f(t) with seed [0.3 : 1]\n"
+        "c2 := critical t -> f(t) with seed [1 : 0.2]\n"
+        "c3 := critical q with seed [1 : 0.1]\n");
+    /* d(1/f)/dz = -f'/f^2 at 0.5: f' = -32/9, f = -5/3, so 32/25 */
+    CHECK_NEAR(gnum(p, "d1", 0), 32.0 / 25, 1e-4);
+    CHECK_NEAR(gnum(p, "d2", 0), 0, 1e-6);
+    CHECK_NEAR(gnum(p, "d3", 0), 0.5, 1e-6);
+    CHECK_NEAR(gnum(p, "d4", 0), 1, 1e-6);
+    CHECK_POINT(p, "r1", 1, 0);
+    CHECK_POINT(p, "c1", 0, 0);
+    CHECK_POINT(p, "c2", INFINITY, 0);
+    CHECK_POINT(p, "c3", INFINITY, 0);
+    program_free(p);
+    /* the multiplier of a 2-cycle, a product of derivatives: z^2 - 1 has the cycle 0, -1 (superattracting) and
+       z^2 - 1.5 the cycle (-1 +- sqrt(3) i... ) with multiplier 4(1 + c) = -2 */
+    p = LOAD_OK(
+        "@global\n"
+        "define f(z : P) = z^2 - 1.5\n"
+        "x1 := root t -> f(f(t)) - t with seed [0.4 : 1]\n" /* (-1 + sqrt 3)/2 */
+        "mu := (derivative f at x1) * (derivative f at f(x1))\n");
+    CHECK_POINT(p, "x1", (sqrt(3.0) - 1) / 2, 0);
+    CHECK_NEAR(gnum(p, "mu", 0), -2, 1e-3);
     program_free(p);
 }
 
@@ -812,8 +932,13 @@ TEST(generic_functions) {
     EXPECT_ERROR("@global\ndefine f(x) = x < 1\nv := f(1i)\n", "(in f(x : C), called on line 3)");
     EXPECT_ERROR("@global\ndefine bad(t) = foo + t\n", "since nothing calls it yet");
     EXPECT_ERROR("@global\ndefine f(x) = 1\ndefine f(y) = 2\n", "already defined");
-    EXPECT_ERROR("@global\ndefine sin(x) = x\n", "built-in");
+    EXPECT_ERROR("@global\ndefine re(x) = x\n", "built-in");
     EXPECT_ERROR("@global\ndefine f(z) = f(z + 1)\nx := f(1)\n", "recursive");
+    /* the script's own version of a built-in function (written in the language) replaces it */
+    p = LOAD_OK("@global\ndefine sin(x) = 2 x\ndefine step(z, c) = z^2 + c\na := sin(1.5)\nb := step(1i, 1)\n");
+    CHECK_NEAR(gnum(p, "a", 0), 3, 1e-6);
+    CHECK_NEAR(gnum(p, "b", 0), 0, 1e-6);
+    program_free(p);
     /* the same error in two instances is reported once */
     p = load_src("@global\ndefine f(x) = foo(x)\na := f(1)\nb := f(1i)\n");
     int n = 0;
@@ -1002,7 +1127,9 @@ TEST(colour_helpers_and_palettes) {
     CHECK_NEAR(gnum(p, "b", 0), 0.6, 1e-5);
     program_free(p);
     EXPECT_ERROR("@global\nx := palette(\"nope\", 0)\n", "no palette");
-    EXPECT_ERROR("@global\ndefine hsv(h : R, s : R, v : R) = gray(h)\n", "built-in");
+    p = LOAD_OK("@global\ndefine hsv(h : R, s : R, v : R) = gray(h)\nc := hsv(0.3, 1, 1)\n"); /* (any built-in) */
+    CHECK_NEAR(gnum(p, "c", 2), 0.3, 1e-6);
+    program_free(p);
 }
 
 TEST(tool_events) {
@@ -1340,6 +1467,7 @@ static const TestCase tests_lang[] = {
     TESTCASE(variables_take_the_widest_type_assigned),
     TESTCASE(assigning_needs_a_declaration),
     TESTCASE(generic_functions),
+    TESTCASE(projective_points),
     TESTCASE(autodiff_through_loops),
     TESTCASE(continuing_checks),
     TESTCASE(projective_mapping),

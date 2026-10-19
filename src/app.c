@@ -140,6 +140,7 @@ typedef struct App {
     /* the formula being edited in the config pane: its text, and where it is in the script */
     char formula_buf[512];
     int formula_start, formula_end;
+    char proj_buf[96];      /* the point of the sphere being typed in the config panel */
     int modal;              /* 0, 1 save as, 2 open, 3 save a picture, 4 new from a template, 5 unsaved changes */
     int pending;            /* what waits for the answer about unsaved changes (PENDING_*) */
     char pending_path[1024];
@@ -2914,6 +2915,16 @@ static bool value_literal(StrBuf *sb, Type *t, const u32 *v) {
         }
         sb_puts(sb, ")");
         return true;
+    case T_PROJ: { /* the point's complex number, or ∞ */
+        double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+        if (d == 0) {
+            if (ar == 0 && ai == 0) return false;
+            sb_puts(sb, "∞");
+            return true;
+        }
+        u32 z[2] = {fw((float)((ar * br + ai * bi) / d)), fw((float)((ai * br - ar * bi) / d))};
+        return value_literal(sb, t_complex, z);
+    }
     case T_VEC: case T_LIST: {
         int n = t->kind == T_VEC ? t->n : FS_CLAMP((i32)v[0], 0, t->n);
         const u32 *d = t->kind == T_VEC ? v : v + t->data_off;
@@ -3263,6 +3274,28 @@ static void config_number(Sym *s, float x, float y, float w) {
         bool b = v[0] != 0;
         snprintf(id, sizeof id, "##cfg_%s", s->name);
         if (ui_toggle(id, x, y, h, h, &b)) v[0] = b;
+        break;
+    }
+    case T_PROJ: { /* a point of the sphere: its complex number or ∞, typed (Enter sets it) */
+        snprintf(id, sizeof id, "##cfg_%s", s->name);
+        u32 fid = ui_id(id);
+        static char shown[96];
+        bool focused_before = ui_focus_id() == fid;
+        char *buf = focused_before ? A.proj_buf : shown;
+        if (!focused_before) {
+            StrBuf sb = {0};
+            if (!value_literal(&sb, t_proj, v)) sb_puts(&sb, "?");
+            snprintf(shown, sizeof shown, "%s", sb_cstr(&sb));
+            sb_free(&sb);
+        }
+        int r = ui_text_field_ex(id, x, y, w, h, buf, (int)(buf == shown ? sizeof shown : sizeof A.proj_buf),
+                                 UI_TF_SELECT_ALL, "a complex number, or inf");
+        if (!focused_before && ui_focus_id() == fid) snprintf(A.proj_buf, sizeof A.proj_buf, "%s", shown);
+        if ((r & (UI_TEXT_SUBMIT | UI_TEXT_BLURRED)) && buf == A.proj_buf) {
+            u32 p[4];
+            if (parse_proj_literal(A.proj_buf, p)) memcpy(v, p, sizeof p);
+            else set_status(true, "%s: write a complex number (like 0.5 - 2i) or inf", s->name);
+        }
         break;
     }
     case T_VEC:

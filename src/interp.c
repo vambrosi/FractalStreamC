@@ -169,9 +169,25 @@ static float norm2(Type *t, const u32 *v) {
     }
 }
 
+/* the point [a : b] of the Riemann sphere (a, b complex), scaled so that its largest component is 1 (codegen.c
+   does the same) */
+static void proj_make(const u32 *a, const u32 *b, u32 *out) {
+    float v[4] = {wf(a[0]), wf(a[1]), wf(b[0]), wf(b[1])};
+    float m = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
+    float s = 1.0f / fmaxf(m, 1e-30f);
+    for (int k = 0; k < 4; k++) out[k] = fw(v[k] * s);
+}
+
 static void convert_value(Type *from, Type *to, const u32 *a, u32 *r) {
     if (from == to) {
         memcpy(r, a, sizeof(u32) * (size_t)to->size);
+        return;
+    }
+    if (to->kind == T_PROJ && type_is_number(from) && from->kind != T_QUAT) { /* z -> [z : 1] (the checker
+                                                                                     lowers these; just in case) */
+        u32 z[2] = {from->kind == T_INT ? fw((float)wi(a[0])) : a[0], from->kind == T_COMPLEX ? a[1] : fw(0)};
+        u32 one[2] = {fw(1), fw(0)};
+        proj_make(z, one, r);
         return;
     }
     if (type_is_number(from) && type_is_number(to)) {
@@ -407,6 +423,9 @@ static void ev_intrinsic(Interp *I, Expr *e, u32 *out) {
     }
     case I_ISNAN: out[0] = x != x; return;
     case I_ISINF: out[0] = isinf(x) ? 1u : 0u; return;
+    case I_PMAKE: proj_make(a, b, out); return;
+    case I_PA: out[0] = a[0]; out[1] = a[1]; return;
+    case I_PB: out[0] = a[2]; out[1] = a[3]; return;
     default: out[0] = fw(fcall1(id, x)); return;
     }
 }
@@ -669,6 +688,17 @@ static void format_value(Type *t, const u32 *v, StrBuf *sb) {
         break;
     }
     case T_QUAT: sb_printf(sb, "quat(%.4g, %.4g, %.4g, %.4g)", wf(v[0]), wf(v[1]), wf(v[2]), wf(v[3])); break;
+    case T_PROJ: { /* a point of the sphere: its complex number a/b, or ∞ */
+        double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]);
+        if (br == 0 && bi == 0) {
+            sb_puts(sb, ar == 0 && ai == 0 ? "[0 : 0]" : "∞");
+            break;
+        }
+        double d = br * br + bi * bi;
+        u32 z[2] = {fw((float)((ar * br + ai * bi) / d)), fw((float)((ai * br - ar * bi) / d))};
+        format_value(t_complex, z, sb);
+        break;
+    }
     case T_VEC:
         sb_putc(sb, '[');
         for (int i = 0; i < t->n; i++) {
@@ -982,13 +1012,21 @@ bool interp_run_tool_event(Interp *I, Section *t, int ev, float re, float im) {
     return interp_finish(I);
 }
 
-/* Evaluate a viewer at one point on the CPU (reference implementation). */
-bool interp_eval_viewer(Interp *I, Section *v, float zre, float zim, float rgb[3]) {
+/* Evaluate a viewer at one point on the CPU (reference implementation); the point is the lift [a : b] (4 floats) */
+bool interp_eval_viewer_lift(Interp *I, Section *v, const float lift[4], float rgb[3]) {
     u32 *frame;
     interp_run_section_frame(I, v, &frame);
     if (v->coord) {
-        frame[v->coord->slot] = fw(zre);
-        frame[v->coord->slot + 1] = fw(zim);
+        u32 a[2] = {fw(lift[0]), fw(lift[1])}, b[2] = {fw(lift[2]), fw(lift[3])};
+        if (v->var_proj) {
+            proj_make(a, b, frame + v->coord->slot);
+        } else {
+            float z[2];
+            if (lift[2] == 1 && lift[3] == 0) { z[0] = lift[0]; z[1] = lift[1]; }
+            else cdiv(lift, lift + 2, z);
+            frame[v->coord->slot] = fw(z[0]);
+            frame[v->coord->slot + 1] = fw(z[1]);
+        }
     }
     exec_block(I, &v->body);
     for (int k = 0; k < 3; k++) {
@@ -996,6 +1034,11 @@ bool interp_eval_viewer(Interp *I, Section *v, float zre, float zim, float rgb[3
         rgb[k] = c != c ? 0.0f : FS_CLAMP(c, 0.0f, 1.0f);
     }
     return interp_finish(I);
+}
+
+bool interp_eval_viewer(Interp *I, Section *v, float zre, float zim, float rgb[3]) {
+    float lift[4] = {zre, zim, 1, 0};
+    return interp_eval_viewer_lift(I, v, lift, rgb);
 }
 
 /* Evaluate an expression that only uses global values (no locals), e.g. a flood's starting point. */
@@ -1030,6 +1073,22 @@ void state_set_defaults(Program *p, u32 *state) {
 #define PROJ_T 1.19175359f /* tan(50 degrees) */
 #define PROJ_EDGE 0.46630766f /* tan(25 degrees): |w| at the edge of the smaller side */
 
+static void proj_pixel_to_lift(const float *m8, float w, float h, float px, float py, float lift[4]) {
+    float m = 0.5f * FS_MIN(w, h);
+    float x = (px - 0.5f * w) / m * PROJ_T, y = (0.5f * h - py) / m * PROJ_T;
+    float n = 1.0f / sqrtf(x * x + y * y + 1.0f);
+    float u[2] = {x * n, y * n}, v[2] = {1.0f + n, 0.0f};
+    float t1[2], t2[2];
+    cmul(m8 + 0, u, t1);
+    cmul(m8 + 2, v, t2);
+    lift[0] = t1[0] + t2[0];
+    lift[1] = t1[1] + t2[1];
+    cmul(m8 + 4, u, t1);
+    cmul(m8 + 6, v, t2);
+    lift[2] = t1[0] + t2[0];
+    lift[3] = t1[1] + t2[1];
+}
+
 static void proj_pixel_to_plane(const float *m8, float w, float h, float px, float py, float *re, float *im) {
     float m = 0.5f * FS_MIN(w, h);
     float x = (px - 0.5f * w) / m * PROJ_T, y = (0.5f * h - py) / m * PROJ_T;
@@ -1063,6 +1122,20 @@ void viewer_pixel_to_plane(const Program *p, const u32 *state, const Section *v,
     float scale = r / (0.5f * FS_MIN(w, h));
     *re = cx + scale * (px - 0.5f * w);
     *im = cy + scale * (0.5f * h - py);
+}
+
+/* ... as a lift [a : b] (exact at infinity in projective views) */
+void viewer_pixel_to_lift(const Program *p, const u32 *state, const Section *v, float w, float h, float px, float py,
+                          float lift[4]) {
+    if (v->mobius) {
+        float m8[8];
+        for (int k = 0; k < 8; k++) m8[k] = wf(state[v->mobius->slot + k]);
+        proj_pixel_to_lift(m8, w, h, px, py, lift);
+        return;
+    }
+    viewer_pixel_to_plane(p, state, v, w, h, px, py, &lift[0], &lift[1]);
+    lift[2] = 1;
+    lift[3] = 0;
 }
 
 /* .pixel at pixel (px, py) of a w x h tile: the distance in the plane to the next pixel (constant in flat views) */

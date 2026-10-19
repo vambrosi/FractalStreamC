@@ -14,7 +14,7 @@
 #include <ctype.h>
 
 /* ---- types ------------------------------------------------------------- */
-Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color;
+Type *t_error, *t_void, *t_bool, *t_int, *t_real, *t_complex, *t_quat, *t_string, *t_color, *t_proj;
 static Type *type_intern_list;
 
 static Type *new_type(TypeKind k, int size, int align) {
@@ -38,6 +38,7 @@ void types_init(void) {
     t_quat = new_type(T_QUAT, 4, 4);
     t_string = new_type(T_STRING, 0, 1);
     t_color = type_vec(t_real, 3);
+    t_proj = new_type(T_PROJ, 4, 4);
 }
 
 static int round_up(int x, int a) { return (x + a - 1) / a * a; }
@@ -113,6 +114,7 @@ void type_name(Type *t, StrBuf *out) {
     case T_REAL: sb_puts(out, "R"); break;
     case T_COMPLEX: sb_puts(out, "C"); break;
     case T_QUAT: sb_puts(out, "H"); break;
+    case T_PROJ: sb_puts(out, "P"); break;
     case T_STRING: sb_puts(out, "String"); break;
     case T_VEC:
         type_name(t->elem, out);
@@ -224,6 +226,7 @@ static int conv_cost(Type *from, Type *to) {
     if (from == t_error || to == t_error) return 0;
     int rf = type_number_rank(from), rt = type_number_rank(to);
     if (rf && rt) return rf <= rt ? rt - rf : -1;
+    if (to == t_proj && rf && rf <= 3) return 4 - rf; /* z -> [z : 1] */
     if (from->kind == T_VEC && to->kind == T_VEC && from->n == to->n) return conv_cost(from->elem, to->elem);
     return -1;
 }
@@ -238,6 +241,11 @@ static Expr *mk_convert(Checker *c, Expr *e, Type *to) {
     x->a = e;
     x->type = to;
     return x;
+}
+
+/* the type of a letter of IntrinsicInfo.params / .ret */
+static Type *intrinsic_type(char pc) {
+    return pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : pc == 'P' ? t_proj : t_bool;
 }
 
 static const char *narrowing_hint(Type *from, Type *to) {
@@ -284,6 +292,7 @@ static Type *infer_decl_type(Type *t, Expr *value) {
 static Type *join_types(Type *a, Type *b) {
     if (a == b) return a;
     if (type_is_number(a) && type_is_number(b)) return join_numbers(a, b);
+    if ((a == t_proj && conv_cost(b, a) >= 0) || (b == t_proj && conv_cost(a, b) >= 0)) return t_proj;
     if (a->kind == T_VEC && b->kind == T_VEC && a->n == b->n && type_is_number(a->elem) && type_is_number(b->elem))
         return type_vec(join_numbers(a->elem, b->elem), a->n);
     return NULL;
@@ -298,12 +307,13 @@ static Type *resolve_tsyn(Checker *c, TypeSyntax *ts) {
     else if (!strcmp(b, "R") || !strcmp(b, "Real")) base = t_real;
     else if (!strcmp(b, "C") || !strcmp(b, "Complex")) base = t_complex;
     else if (!strcmp(b, "H") || !strcmp(b, "Quaternion")) base = t_quat;
+    else if (!strcmp(b, "P") || !strcmp(b, "Projective")) base = t_proj;
     else if (!strcmp(b, "Bool") || !strcmp(b, "Boolean")) base = t_bool;
     else if (!strcmp(b, "Color") || !strcmp(b, "Colour")) base = t_color;
     else if (!strcmp(b, "List")) {
         Type *e = resolve_tsyn(c, ts->elem);
-        if (!type_is_number(e) && e != t_bool) {
-            prog_diag(c->prog, DIAG_ERROR, ts->line, ts->col, 0, "lists can only hold numbers or Bool, not %s", type_str(e));
+        if (!type_is_number(e) && e != t_bool && e != t_proj) {
+            prog_diag(c->prog, DIAG_ERROR, ts->line, ts->col, 0, "lists can only hold numbers, points of P or Bool, not %s", type_str(e));
             return t_error;
         }
         return type_list(e, ts->cap > 0 ? ts->cap : 64);
@@ -319,8 +329,8 @@ static Type *resolve_tsyn(Checker *c, TypeSyntax *ts) {
                 return t_error;
             }
         prog_diag(c->prog, DIAG_ERROR, ts->line, ts->col, ts->col + (int)strlen(b),
-                  "unknown type '%s' (types are Z, R, C, H, Bool, Color, R^n and List of T; or Integer, Real, Complex, "
-                  "Quaternion)", b);
+                  "unknown type '%s' (types are Z, R, C, H, P, Bool, Color, R^n and List of T; or Integer, Real, Complex, "
+                  "Quaternion, Projective)", b);
         return t_error;
     }
     if (ts->power) {
@@ -403,8 +413,12 @@ static void setup_internals(Checker *c) {
     Sym *k = add_internal(c, "k", t_quat, SYM_CONST, "quaternion unit k");
     k->readonly = true;
     k->cval[3] = 1;
+    Sym *inf = add_internal(c, "infinity", t_proj, SYM_CONST, "the point at infinity of the Riemann sphere, [1 : 0]");
+    inf->readonly = true;
+    inf->cval[0] = 1;
     add_const(c, &c->builtin, "pi", t_real, 3.14159265358979f, 0, 0, 0);
     add_const(c, &c->builtin, "π", t_real, 3.14159265358979f, 0, 0, 0);
+    add_const(c, &c->builtin, "∞", t_proj, 1, 0, 0, 0); /* (also .infinity) */
     add_const(c, &c->builtin, "tau", t_real, 6.28318530717959f, 0, 0, 0);
     add_const(c, &c->builtin, "e", t_real, 2.71828182845905f, 0, 0, 0);
 
@@ -485,6 +499,22 @@ static Type *chk_power(Checker *c, Expr *e) {
     Type *ta = chk(c, e->a);
     if (ta == t_error) return t_error;
     int n;
+    if (ta == t_proj) { /* [a : b]^n = [a^n : b^n] */
+        if (is_int_const(e->b, &n) && n >= -4096 && n <= 4096) {
+            e->kind = E_POWI;
+            e->ival = n;
+            e->b = NULL;
+            return t_proj;
+        }
+        Type *tb = chk(c, e->b);
+        if (tb == t_error) return t_error;
+        if (tb != t_int) {
+            ERR(c, e->b, "a point of the sphere can only be raised to integer powers, not %s", type_str(tb));
+            return t_error;
+        }
+        mk_call(c, e, "__ppowi", e->a, e->b);
+        return chk_call(c, e);
+    }
     if (is_int_const(e->b, &n) && type_is_number(ta) && n >= -4096 && n <= 4096) {
         if (ta == t_int && n < 0) e->a = mk_convert(c, e->a, t_real);
         e->kind = E_POWI;
@@ -547,6 +577,29 @@ static Type *chk_binary(Checker *c, Expr *e) {
     if (op == TK_AND || op == TK_OR) {
         e->a = coerce(c, e->a, t_bool, "each side of 'and'/'or'");
         e->b = coerce(c, e->b, t_bool, "each side of 'and'/'or'");
+        return t_bool;
+    }
+    if ((ta == t_proj || tb == t_proj) && (is_arith(op) || op == TK_EQ || op == TK_NE)) {
+        if (join_types(ta, tb) != t_proj) {
+            ERR(c, e, "can't use '%s' with %s and %s", op_name(op), type_str(ta), type_str(tb));
+            return t_error;
+        }
+        e->a = mk_convert(c, e->a, t_proj);
+        e->b = mk_convert(c, e->b, t_proj);
+        if (is_arith(op)) return t_proj; /* (written with the coordinates later: px_lower_expr) */
+        /* p == q: closer than .epsilon in the chordal distance */
+        Expr *call = ARENA_NEW(&c->prog->arena, Expr);
+        *call = *e;
+        mk_call(c, call, "__peq", e->a, e->b);
+        if (chk_call(c, call) == t_error) return t_error;
+        if (op == TK_EQ) {
+            *e = *call;
+        } else {
+            e->kind = E_UNARY;
+            e->op = TK_NOT;
+            e->a = call;
+            e->b = NULL;
+        }
         return t_bool;
     }
     if (is_arith(op)) {
@@ -638,6 +691,22 @@ static Type *chk_index(Checker *c, Expr *e) {
     Type *tb = chk(c, e->a);
     Type *ti = chk(c, e->b);
     if (tb == t_error || ti == t_error) return t_error;
+    if (tb == t_proj) { /* p[1], p[2]: the coordinates a and b of a lift [a : b] */
+        int k;
+        if (!is_int_const(e->b, &k) || (k != 1 && k != 2 && k != -1 && k != -2)) {
+            ERR(c, e->b, "a point [a : b] of the sphere has two coordinates: p[1] is a and p[2] is b");
+            return t_error;
+        }
+        bool second = k == 2 || k == -1;
+        e->kind = E_CALL;
+        e->name = second ? "__pb" : "__pa";
+        e->intrinsic = second ? I_PB : I_PA;
+        e->args = ARENA_ARRAY(&c->prog->arena, Expr *, 1);
+        e->args[0] = e->a;
+        e->nargs = 1;
+        e->a = e->b = NULL;
+        return t_complex;
+    }
     e->b = coerce(c, e->b, t_int, "an index");
     switch (tb->kind) {
     case T_VEC: case T_LIST: return tb->elem;
@@ -904,7 +973,7 @@ static Type *chk_call(Checker *c, Expr *e) {
         int cost = 0;
         for (int i = 0; i < e->nargs && cost >= 0; i++) {
             char pc = in->params[i];
-            Type *pt = pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : t_bool;
+            Type *pt = intrinsic_type(pc);
             int ci = conv_cost(e->args[i]->type, pt);
             cost = ci < 0 ? -1 : cost + ci;
         }
@@ -989,11 +1058,11 @@ static Type *chk_call(Checker *c, Expr *e) {
         e->intrinsic = in->id;
         for (int i = 0; i < e->nargs; i++) {
             char pc = in->params[i];
-            Type *pt = pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : t_bool;
+            Type *pt = intrinsic_type(pc);
             e->args[i] = mk_convert(c, e->args[i], pt);
         }
         char r = in->ret;
-        return r == 'Z' ? t_int : r == 'R' ? t_real : r == 'C' ? t_complex : r == 'H' ? t_quat : t_bool;
+        return intrinsic_type(r);
     }
     Func *f = best_fn;
     if (f->generic) { /* the copy of the function for these argument types */
@@ -1093,7 +1162,7 @@ static Type *chk(Checker *c, Expr *e) {
         if (e->op == TK_NOT) {
             e->a = coerce(c, e->a, t_bool, "the operand of 'not'");
             t = t_bool;
-        } else if (type_is_number(ta) || ta->kind == T_VEC) {
+        } else if (type_is_number(ta) || ta->kind == T_VEC || ta == t_proj) {
             t = ta;
         } else {
             ERR(c, e, "can't negate %s", type_str(ta));
@@ -1104,6 +1173,11 @@ static Type *chk(Checker *c, Expr *e) {
     case E_ABS: {
         Type *ta = chk(c, e->a);
         if (ta == t_error) break;
+        if (ta == t_proj) { /* |p| = |a| / |b| */
+            mk_call(c, e, "__pabs", e->a, NULL);
+            t = chk_call(c, e);
+            break;
+        }
         if (ta == t_int || ta == t_real) t = ta;
         else if (ta == t_complex || ta == t_quat || ta->kind == T_VEC) t = t_real;
         else if (ta->kind == T_LIST) t = t_int;
@@ -1113,6 +1187,11 @@ static Type *chk(Checker *c, Expr *e) {
     case E_PRED: {
         Type *ta = chk(c, e->a);
         if (ta == t_error) break;
+        if (ta == t_proj) { /* |a| > .escapeRadius |b|, or close to 0 on the sphere */
+            mk_call(c, e, e->op == TK_ESCAPES ? "__pescapes" : "__pvanishes", e->a, NULL);
+            t = chk_call(c, e);
+            break;
+        }
         if (!type_is_number(ta) && ta->kind != T_VEC)
             ERR(c, e, "'%s' needs a number or a vector, not %s", e->op == TK_ESCAPES ? "escapes" : "vanishes", type_str(ta));
         else
@@ -1122,6 +1201,18 @@ static Type *chk(Checker *c, Expr *e) {
     case E_CALL: t = chk_call(c, e); break;
     case E_INDEX: t = chk_index(c, e); break;
     case E_VECTOR: {
+        if (e->op == TK_COLON) { /* [a : b]: a point of the Riemann sphere */
+            Type *ta = chk(c, e->args[0]), *tb = chk(c, e->args[1]);
+            if (ta == t_error || tb == t_error) break;
+            e->args[0] = coerce(c, e->args[0], t_complex, "a coordinate in [a : b]");
+            e->args[1] = coerce(c, e->args[1], t_complex, "a coordinate in [a : b]");
+            e->kind = E_CALL;
+            e->name = "__pmake";
+            e->intrinsic = I_PMAKE;
+            e->op = 0;
+            t = t_proj;
+            break;
+        }
         if (e->nargs == 0) {
             ERR(c, e, "an empty [] is only allowed as the value of a List");
             break;
@@ -1156,6 +1247,7 @@ static Type *chk(Checker *c, Expr *e) {
         if (tc == t_error || ta == t_error || tb == t_error) break;
         e->args[0] = coerce(c, e->args[0], t_bool, "the condition of 'if'");
         if (type_is_number(ta) && type_is_number(tb)) t = join_numbers(ta, tb);
+        else if ((ta == t_proj || tb == t_proj) && join_types(ta, tb) == t_proj) t = t_proj;
         else if (ta == tb && ta != t_void && ta->kind != T_TUPLE) t = ta;
         else if (ta->kind == T_VEC && tb->kind == T_VEC && ta->n == tb->n) t = type_vec(join_numbers(ta->elem, tb->elem), ta->n);
         else {
@@ -1284,14 +1376,6 @@ static bool is_text(Expr *e) {
     return e->kind == E_BINARY && e->op == TK_PLUS && (is_text(e->a) || is_text(e->b));
 }
 
-/* built-in colour helpers that a script may define again (scripts written for the first FractalStream did) */
-static bool replaceable_builtin(const char *name) {
-    static const char *names[] = {"rainbow", "cycle", "blend", "dark", "light", "invert"};
-    for (int i = 0; i < ARRAY_COUNT(names); i++)
-        if (!strcmp(names[i], name)) return true;
-    return false;
-}
-
 /* a shortcut like "Shift + p" in a comparable form ("SHIFT+P"); false if there is none */
 static bool shortcut_key(const char *sc, char *out, int cap) {
     int n = 0;
@@ -1314,8 +1398,8 @@ static void chk_text(Checker *c, Expr *e) {
         return;
     }
     Type *t = chk(c, e);
-    if (t != t_error && !type_is_number(t) && t != t_bool && t->kind != T_VEC && t->kind != T_LIST)
-        ERR(c, e, "only texts in quotes, numbers, vectors and lists can be written (joined with +), not %s", type_str(t));
+    if (t != t_error && !type_is_number(t) && t != t_bool && t != t_proj && t->kind != T_VEC && t->kind != T_LIST)
+        ERR(c, e, "only texts in quotes, numbers, points, vectors and lists can be written (joined with +), not %s", type_str(t));
 }
 
 static void config_add_var(Checker *c, Sym *sym) {
@@ -1450,6 +1534,10 @@ static void chk_stmt(Checker *c, Stmt *s) {
                 declare(c, tg, tg->name, t_error); /* (no more errors about it) */
                 return;
             }
+        }
+        if (tg->kind == E_INDEX && chk(c, tg->a) == t_proj) {
+            ERR(c, tg, "the coordinates of a point of the sphere can't be set one by one; write p = [a : b]");
+            return;
         }
         Type *tt = chk(c, tg);
         if (tt == t_error) return;
@@ -1781,6 +1869,372 @@ static void note_instance_errors(Checker *c, Func *f, int d0) {
     p->diags.len = w;
 }
 
+
+/* ---- the Riemann sphere: arithmetic on P, lowered to the components of lifts ----------------------------------
+ * A value of type P is a lift (a, b) of the point [a : b] (notes/projective.md).  The checker leaves + - * / ^n and
+ * numbers turned into points as P-typed nodes; at the end of each function and section they are rewritten into
+ * complex arithmetic on the components: [a : b] + [c : d] = [ad + bc : bd], and so on, ending in one __pmake(N, D)
+ * (which scales the result so that its largest component is 1).
+ *
+ * Done naively, a sum picks up factors from the denominators: z^2 + 1 would be [a^2 b + b^2 b : b^2 b]... and
+ * (z^2 + 1)/(z^2 - 1) would be [0 : 0] at infinity (b = 0), where it is 1.  So the monomials in the components of
+ * the points involved (a^i b^j) are kept apart, symbolically, and common ones cancel: z^2 + 1 is computed as
+ * [a^2 + b^2 : b^2] and the quotient as [a^2 + b^2 : a^2 - b^2], the standard lift of the rational map.  Points
+ * named by variables (and parameters) get symbols; others ([x : y], calls...) are taken as they are.
+ *
+ * An expression whose pieces include calls of functions (that might change globals, or be slow) becomes a call of
+ * a small generated function of those pieces, so that each is computed once. */
+#define PX_SYMS 6       /* points with symbols in one expression (the others are taken as they are) */
+#define PX_MAX_COST 6000 /* expanded size beyond which an expression must be split */
+
+typedef struct PxVal {
+    Expr *n, *d;           /* the lift (N, D) = (monomial mn * n, monomial md * d) */
+    int nc, dc;            /* the sizes of n and d, as computed (shared parts counted each time) */
+    int mn[2 * PX_SYMS], md[2 * PX_SYMS]; /* exponents of a_k, b_k (k: the symbol) */
+} PxVal;
+
+typedef struct PxLow {
+    Checker *c;
+    Expr *at;
+    Expr *syms[PX_SYMS];   /* the point of each symbol (a name) */
+    int nsyms;
+    bool too_big;
+} PxLow;
+
+static bool px_arith(Expr *e) {
+    if (!e || e->type != t_proj) return false;
+    if (e->kind == E_BINARY) return is_arith(e->op);
+    return (e->kind == E_UNARY && e->op == TK_MINUS) || e->kind == E_POWI || e->kind == E_CONVERT;
+}
+
+static Expr *px_node(PxLow *L, ExprKind k, Type *t) {
+    Expr *e = ARENA_NEW(&L->c->prog->arena, Expr);
+    e->kind = k;
+    e->type = t;
+    e->line = L->at->line;
+    e->col = L->at->col;
+    e->end_col = L->at->end_col;
+    return e;
+}
+static Expr *px_const(PxLow *L, float re, float im) {
+    Expr *e = px_node(L, E_COLOR_CONST, t_complex);
+    e->cval[0] = re;
+    e->cval[1] = im;
+    return e;
+}
+static bool px_is_const(Expr *e, float re) {
+    return e && e->kind == E_COLOR_CONST && e->type == t_complex && e->cval[0] == re && e->cval[1] == 0;
+}
+static Expr *px_bin(PxLow *L, int op, Expr *x, Expr *y) {
+    if (op == TK_STAR) {
+        if (px_is_const(x, 1)) return y;
+        if (px_is_const(y, 1)) return x;
+    }
+    if ((op == TK_PLUS || op == TK_MINUS) && px_is_const(y, 0)) return x;
+    if (op == TK_PLUS && px_is_const(x, 0)) return y;
+    Expr *e = px_node(L, E_BINARY, t_complex);
+    e->op = op;
+    e->a = x;
+    e->b = y;
+    return e;
+}
+static Expr *px_neg(PxLow *L, Expr *x) {
+    if (x->kind == E_COLOR_CONST && x->type == t_complex) return px_const(L, -x->cval[0], -x->cval[1]);
+    Expr *e = px_node(L, E_UNARY, t_complex);
+    e->op = TK_MINUS;
+    e->a = x;
+    return e;
+}
+static Expr *px_pow(PxLow *L, Expr *x, int k) {
+    if (k == 0) return px_const(L, 1, 0);
+    if (k == 1 || px_is_const(x, 1)) return x;
+    Expr *e = px_node(L, E_POWI, t_complex);
+    e->a = x;
+    e->ival = k;
+    return e;
+}
+static Expr *px_intrinsic(PxLow *L, int id, Type *t, Expr *a, Expr *b) {
+    Expr *e = px_node(L, E_CALL, t);
+    e->name = id == I_PMAKE ? "__pmake" : id == I_PA ? "__pa" : "__pb";
+    e->intrinsic = id;
+    e->nargs = b ? 2 : 1;
+    e->args = ARENA_ARRAY(&L->c->prog->arena, Expr *, 2);
+    e->args[0] = a;
+    e->args[1] = b;
+    return e;
+}
+/* the component a (k = 0) or b (k = 1) of the point e */
+static Expr *px_comp(PxLow *L, Expr *e, int k) {
+    if (e->kind == E_CALL && e->intrinsic == I_PMAKE) return e->args[k]; /* (scaling doesn't matter here) */
+    if ((e->kind == E_NAME || e->kind == E_INTERNAL) && e->sym && e->sym->kind == SYM_CONST)
+        return px_const(L, e->sym->cval[2 * k], e->sym->cval[2 * k + 1]);
+    return px_intrinsic(L, k ? I_PB : I_PA, t_complex, clone_expr(&L->c->prog->arena, e), NULL);
+}
+static int px_size(Expr *e) { /* (of a leaf) */
+    if (!e) return 0;
+    int n = 1 + px_size(e->a) + px_size(e->b);
+    for (int i = 0; i < e->nargs; i++) n += px_size(e->args[i]);
+    return n;
+}
+
+/* the product of the monomials of the symbols with exponents m (NULL: 1), and its size */
+static Expr *px_mono(PxLow *L, const int *m, int *cost) {
+    Expr *r = NULL;
+    for (int s = 0; s < L->nsyms; s++)
+        for (int k = 0; k < 2; k++) {
+            int e = m[2 * s + k];
+            if (e <= 0) continue;
+            Expr *f = px_pow(L, px_comp(L, L->syms[s], k), e);
+            r = r ? px_bin(L, TK_STAR, r, f) : f;
+            *cost += 4;
+        }
+    return r;
+}
+static Expr *px_times_mono(PxLow *L, const int *m, Expr *x, int *cost) {
+    Expr *mo = px_mono(L, m, cost);
+    if (!mo) return x;
+    *cost += 1;
+    return px_bin(L, TK_STAR, mo, x);
+}
+
+static void px_cancel(PxVal *v) {
+    for (int k = 0; k < 2 * PX_SYMS; k++) {
+        int e = FS_MIN(v->mn[k], v->md[k]);
+        v->mn[k] -= e;
+        v->md[k] -= e;
+    }
+}
+
+static PxVal px_leaf(PxLow *L, Expr *n, Expr *d) {
+    PxVal v = {0};
+    v.n = n;
+    v.d = d;
+    v.nc = px_size(n);
+    v.dc = px_size(d);
+    return v;
+}
+
+static PxVal px_eval(PxLow *L, Expr *e) {
+    if (e->kind == E_CONVERT && e->type == t_proj) /* a number z: [z : 1] */
+        return px_leaf(L, mk_convert(L->c, e->a, t_complex), px_const(L, 1, 0));
+    if (e->kind == E_UNARY) {
+        PxVal v = px_eval(L, e->a);
+        v.n = px_neg(L, v.n);
+        v.nc++;
+        return v;
+    }
+    if (e->kind == E_POWI) {
+        PxVal v = px_eval(L, e->a), r = {0};
+        int k = e->ival, m = k < 0 ? -k : k;
+        if (k < 0) { /* 1/p = [b : a] */
+            Expr *t = v.n;
+            v.n = v.d;
+            v.d = t;
+            int tc = v.nc;
+            v.nc = v.dc;
+            v.dc = tc;
+            for (int i = 0; i < 2 * PX_SYMS; i++) {
+                int x = v.mn[i];
+                v.mn[i] = v.md[i];
+                v.md[i] = x;
+            }
+        }
+        r.n = px_pow(L, v.n, m);
+        r.d = px_pow(L, v.d, m);
+        r.nc = v.nc + 2;
+        r.dc = v.dc + 2;
+        for (int i = 0; i < 2 * PX_SYMS; i++) {
+            r.mn[i] = v.mn[i] * m;
+            r.md[i] = v.md[i] * m;
+        }
+        return r;
+    }
+    if (e->kind == E_BINARY) {
+        PxVal x = px_eval(L, e->a), y = px_eval(L, e->b), r = {0};
+        int op = e->op;
+        if (op == TK_STAR || op == TK_SLASH) {
+            bool div = op == TK_SLASH; /* p / q = p * [d : c] */
+            Expr *yn = div ? y.d : y.n, *yd = div ? y.n : y.d;
+            int ync = div ? y.dc : y.nc, ydc = div ? y.nc : y.dc;
+            r.n = px_bin(L, TK_STAR, x.n, yn);
+            r.d = px_bin(L, TK_STAR, x.d, yd);
+            r.nc = x.nc + ync + 1;
+            r.dc = x.dc + ydc + 1;
+            for (int i = 0; i < 2 * PX_SYMS; i++) {
+                r.mn[i] = x.mn[i] + (div ? y.md[i] : y.mn[i]);
+                r.md[i] = x.md[i] + (div ? y.mn[i] : y.md[i]);
+            }
+        } else { /* [N1 : D1] + [N2 : D2] = [N1 D2 + N2 D1 : D1 D2], the monomial common to both terms kept apart */
+            int t1[2 * PX_SYMS], t2[2 * PX_SYMS];
+            for (int i = 0; i < 2 * PX_SYMS; i++) {
+                t1[i] = x.mn[i] + y.md[i];
+                t2[i] = y.mn[i] + x.md[i];
+                int g = FS_MIN(t1[i], t2[i]);
+                t1[i] -= g;
+                t2[i] -= g;
+                r.mn[i] = g;
+                r.md[i] = x.md[i] + y.md[i];
+            }
+            int c1 = 0, c2 = 0;
+            Expr *a1 = px_times_mono(L, t1, px_bin(L, TK_STAR, x.n, y.d), &c1);
+            Expr *a2 = px_times_mono(L, t2, px_bin(L, TK_STAR, y.n, x.d), &c2);
+            r.n = px_bin(L, op, a1, a2);
+            r.nc = x.nc + y.dc + y.nc + x.dc + c1 + c2 + 3;
+            r.d = px_bin(L, TK_STAR, x.d, y.d);
+            r.dc = x.dc + y.dc + 1;
+        }
+        px_cancel(&r);
+        if (r.nc + r.dc > PX_MAX_COST) L->too_big = true;
+        return r;
+    }
+    /* a point: a symbol for a variable, else its components as they are */
+    if ((e->kind == E_NAME || e->kind == E_INTERNAL || e->kind == E_MEMBER) && e->sym && e->sym->kind != SYM_CONST) {
+        int s = 0;
+        while (s < L->nsyms && L->syms[s]->sym != e->sym) s++;
+        if (s == L->nsyms && L->nsyms < PX_SYMS) L->syms[L->nsyms++] = e;
+        if (s < L->nsyms) {
+            PxVal v = px_leaf(L, px_const(L, 1, 0), px_const(L, 1, 0));
+            v.mn[2 * s] = 1;
+            v.md[2 * s + 1] = 1;
+            return v;
+        }
+    }
+    return px_leaf(L, px_comp(L, e, 0), px_comp(L, e, 1));
+}
+
+/* The arithmetic tree e (P), with cheap pieces only: __pmake(N, D) */
+static Expr *px_lower_tree(Checker *c, Expr *e) {
+    PxLow L = {0};
+    L.c = c;
+    L.at = e;
+    PxVal v = px_eval(&L, e);
+    int cost = 0;
+    Expr *n = px_times_mono(&L, v.mn, v.n, &cost), *d = px_times_mono(&L, v.md, v.d, &cost);
+    if (L.too_big)
+        ERR(c, e, "this computation with points of the sphere gets too long once written with their coordinates; "
+                  "split it with intermediate variables (p := ...)");
+    return px_intrinsic(&L, I_PMAKE, t_proj, n, d);
+}
+
+/* can a piece of an arithmetic tree be computed several times (no calls of functions)? */
+static bool px_cheap(Expr *e) {
+    if (!e) return true;
+    if (e->kind == E_CALL && !e->intrinsic) return false;
+    if (e->kind == E_COND || e->kind == E_SOLVE || e->kind == E_TUPLE) return false;
+    if (!px_cheap(e->a) || !px_cheap(e->b)) return false;
+    for (int i = 0; i < e->nargs; i++)
+        if (!px_cheap(e->args[i])) return false;
+    return true;
+}
+
+typedef VEC(Expr *) ExprVec;
+
+/* the pieces of the arithmetic tree at *slot that are not arithmetic on P: calls px_lower_expr on them, and (if
+   collect) replaces each by a parameter of f, noting the piece in `pieces` */
+static void px_lower_expr(Checker *c, Expr **slot);
+static void px_pieces(Checker *c, Expr **slot, bool collect, Func *f, SymVec *params, ExprVec *pieces) {
+    Expr *e = *slot;
+    if (px_arith(e)) {
+        if (e->kind == E_CONVERT) { /* a number */
+            Expr *a = e->a;
+            if (a->kind == E_INT || a->kind == E_REAL || a->kind == E_IMAG || a->kind == E_COLOR_CONST) return;
+            px_pieces(c, &e->a, collect, f, params, pieces);
+            return;
+        }
+        px_pieces(c, &e->a, collect, f, params, pieces);
+        if (e->kind == E_BINARY) px_pieces(c, &e->b, collect, f, params, pieces);
+        return;
+    }
+    px_lower_expr(c, slot);
+    if (!collect) return;
+    e = *slot;
+    if (e->kind == E_NAME && e->sym && (e->sym->kind == SYM_CONST || e->sym->kind == SYM_GLOBAL)) return;
+    Sym *s = new_sym(c, arena_printf(&c->prog->arena, "__x%d", params->len + 1), e->type, SYM_LOCAL, e->line, e->col);
+    s->owner = f;
+    vec_push(*params, s);
+    vec_push(*pieces, e);
+    Expr *n = ARENA_NEW(&c->prog->arena, Expr);
+    *n = *e;
+    n->kind = E_NAME;
+    n->name = s->name;
+    n->sym = s;
+    n->a = n->b = NULL;
+    n->args = NULL;
+    n->nargs = 0;
+    n->fn = NULL;
+    n->intrinsic = 0;
+    *slot = n;
+}
+
+static void px_lower_expr(Checker *c, Expr **slot) {
+    Expr *e = *slot;
+    if (!e) return;
+    if (!px_arith(e)) {
+        px_lower_expr(c, &e->a);
+        px_lower_expr(c, &e->b);
+        px_lower_expr(c, &e->cont_from);
+        for (int i = 0; i < e->nargs; i++) px_lower_expr(c, &e->args[i]);
+        return;
+    }
+    if (px_cheap(e)) {
+        px_pieces(c, slot, false, NULL, NULL, NULL);
+        *slot = px_lower_tree(c, e);
+        return;
+    }
+    /* a generated one-line function of the pieces, called with them */
+    static int counter = 0;
+    Program *p = c->prog;
+    Func *f = ARENA_NEW(&p->arena, Func);
+    f->name = arena_printf(&p->arena, "__p%d", ++counter);
+    f->line = e->line;
+    f->col = e->col;
+    f->src_start = f->src_end = -1;
+    SymVec params = {0};
+    ExprVec pieces = {0};
+    px_pieces(c, slot, true, f, &params, &pieces);
+    f->nparams = params.len;
+    f->params = ARENA_ARRAY(&p->arena, Sym *, params.len + 1);
+    f->param_tsyn = ARENA_ARRAY(&p->arena, TypeSyntax *, params.len + 1);
+    for (int i = 0; i < params.len; i++) {
+        f->params[i] = params.data[i];
+        vec_push(f->locals, params.data[i]);
+    }
+    f->outputs = ARENA_ARRAY(&p->arena, Sym *, 1);
+    f->output_tsyn = ARENA_ARRAY(&p->arena, TypeSyntax *, 1);
+    f->body_expr = px_lower_tree(c, *slot);
+    f->ret = t_proj;
+    f->check_state = 2;
+    layout_frame(&f->locals, &f->frame_words);
+    vec_push(p->funcs, f);
+    Expr *call = ARENA_NEW(&p->arena, Expr);
+    *call = *e;
+    call->kind = E_CALL;
+    call->name = f->name;
+    call->fn = f;
+    call->intrinsic = 0;
+    call->a = call->b = NULL;
+    call->nargs = pieces.len;
+    call->args = ARENA_ARRAY(&p->arena, Expr *, pieces.len + 1);
+    for (int i = 0; i < pieces.len; i++) call->args[i] = pieces.data[i];
+    call->type = t_proj;
+    f->ncalls++;
+    *slot = call;
+    vec_free(params);
+    vec_free(pieces);
+}
+
+static void px_lower_block(Checker *c, Block *b) {
+    for (int i = 0; i < b->n; i++) {
+        Stmt *s = b->stmts[i];
+        Expr **slots[] = {&s->target, &s->value, &s->range_lo, &s->range_hi, &s->from, &s->to, &s->step,
+                          &s->p0, &s->p1, &s->radius, &s->color, &s->width, &s->text};
+        for (int k = 0; k < ARRAY_COUNT(slots); k++) px_lower_expr(c, slots[k]);
+        for (int k = 0; k < s->ntargets; k++) px_lower_expr(c, &s->targets[k]);
+        px_lower_block(c, &s->body);
+        px_lower_block(c, &s->else_body);
+    }
+}
+
 static void check_func(Checker *c, Func *f) {
     Checker saved = *c;
     Scope fscope = {{0}, &c->globals};
@@ -1833,6 +2287,10 @@ static void check_func(Checker *c, Func *f) {
             for (int i = 0; i < n; i++) items[i] = f->outputs[i]->type;
             f->ret = type_tuple(items, n);
         }
+    }
+    if (c->prog->nerrors == errs) { /* arithmetic on points of the sphere -> on their coordinates */
+        px_lower_expr(c, &f->body_expr);
+        px_lower_block(c, &f->body);
     }
     if (c->prog->nerrors != errs || f->ret == t_error) f->failed = true;
     if (f->tmpl) note_instance_errors(c, f, d0);
@@ -1922,7 +2380,7 @@ static void check_section(Checker *c, Section *s) {
         Expr at = {0};
         at.line = s->line;
         at.col = 1;
-        if (s->var) s->coord = declare(c, &at, s->var, t_complex);
+        if (s->var) s->coord = declare(c, &at, s->var, s->var_proj ? t_proj : t_complex);
         s->color = declare(c, &at, "color", t_color);
     }
     if (s->kind == SEC_TOOL && s->viewer_of >= 0) {
@@ -1938,7 +2396,9 @@ static void check_section(Checker *c, Section *s) {
         ConfigItem it = {CFG_GROUP, s->display, NULL};
         vec_push(c->prog->config, it);
     }
+    int errs = c->prog->nerrors;
     chk_block(c, &s->body);
+    if (c->prog->nerrors == errs) px_lower_block(c, &s->body); /* (points of the sphere, see check_func) */
     layout_frame(&s->locals, &s->frame_words);
     /* load sections declare globals into c->globals directly; locals only for loop variables */
     vec_free(sscope.syms);
@@ -2024,14 +2484,14 @@ bool check_program(Program *p) {
     for (int i = 0; i < p->funcs.len; i++) resolve_signature(c, p->funcs.data[i]);
     for (int i = 0; i < p->funcs.len; i++) {
         Func *f = p->funcs.data[i];
-        if (!f->prelude) /* functions of the machine itself (sin of a real...) can't be replaced */
+        if (!f->prelude) /* instructions of the machine (re, im, complex...) can't be replaced */
             for (int k = 0; k < ARRAY_COUNT(intrinsics); k++) {
                 const IntrinsicInfo *in = &intrinsics[k];
                 if (strcmp(in->name, f->name) != 0 || in->nparams != f->nparams) continue;
                 bool same = true;
                 for (int q = 0; q < f->nparams && same; q++) {
                     char pc = in->params[q];
-                    Type *pt = pc == 'Z' ? t_int : pc == 'R' ? t_real : pc == 'C' ? t_complex : pc == 'H' ? t_quat : t_bool;
+                    Type *pt = intrinsic_type(pc);
                     if (f->param_tsyn[q] && f->params[q]->type != pt) same = false; /* (no type: any) */
                 }
                 if (same) {
@@ -2052,14 +2512,11 @@ bool check_program(Program *p) {
                 else if (fa != ga || f->params[k]->type != g->params[k]->type) same = false;
             }
             if (!same) continue;
-            if (g->prelude && !f->prelude && replaceable_builtin(g->name)) {
+            if (g->prelude && !f->prelude) {
                 g->shadowed = true; /* the script's own rainbow(t) replaces the built-in one (built-ins keep theirs) */
                 continue;
             }
-            if (g->prelude && !f->prelude) {
-                prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is a built-in function; choose another name", f->name);
-                dup = true;
-            } else if (over) { /* f(x) besides f(x : R): both (the one with types wins when both fit) */
+            if (over) { /* f(x) besides f(x : R): both (the one with types wins when both fit) */
                 continue;
             } else {
                 prog_diag(p, DIAG_ERROR, f->line, f->col, 0, "'%s' is already defined with the same parameter types (line %d)", f->name, g->line);
