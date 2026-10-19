@@ -249,6 +249,7 @@ static Type *intrinsic_type(char pc) {
 }
 
 static const char *narrowing_hint(Type *from, Type *to) {
+    if (from == t_proj) return " (for a point p of the sphere, complex(p) is its complex number)";
     if (from->kind == T_COMPLEX && type_is_scalar_real(to)) return " (use re(z), im(z) or |z| to get a real number)";
     if (from->kind == T_REAL && to->kind == T_INT) return " (use floor, ceil or round to get an integer)";
     if (from->kind == T_COMPLEX && to->kind == T_INT) return " (use re(z), im(z) or |z|, then floor, ceil or round)";
@@ -1044,7 +1045,11 @@ static Type *chk_call(Checker *c, Expr *e) {
             }
             sb_putc(&alts, ')');
         }
-        ERR(c, e, "'%s' can't be applied to (%s)%s%s", name, sb_cstr(&sb), nalt ? "; it accepts " : "", sb_cstr(&alts));
+        bool points = false;
+        for (int i = 0; i < e->nargs; i++)
+            if (e->args[i]->type == t_proj) points = true;
+        ERR(c, e, "'%s' can't be applied to (%s)%s%s%s", name, sb_cstr(&sb), nalt ? "; it accepts " : "", sb_cstr(&alts),
+            points ? " (for a point p of the sphere, complex(p) is its complex number)" : "");
         sb_free(&sb);
         sb_free(&alts);
         return t_error;
