@@ -68,11 +68,13 @@ end
 **Promotion.** Numbers convert automatically along `Z -> R -> C -> H` (and elementwise for
 vectors), never backwards: use `re`, `im`, `|z|`, `floor`, `ceil`, `round` to go down.
 
-**Precision.** Reals are 32-bit floats (GPUs on macOS have no doubles). When you zoom into a flat
-view until a pixel is smaller than about a millionth of the numbers in view, the view is computed
-again in double-single precision (pairs of floats, about 14 digits) — slower, but sharp down to a
-radius of about `1e-12` times the size of the numbers. The coordinates at the bottom of the view
-say "(double precision)" then. Square roots and the four operations get the extra digits; other
+**Precision.** Reals are 32-bit floats (GPUs on macOS have no doubles). A flat view zoomed in until a
+pixel is smaller than about a millionth of the numbers in view gets blocky; with `.doublePrecision`
+on (a check box in the config panel, or `.doublePrecision = true` in `@config`; off by default), it
+is then computed again in double-single precision (pairs of floats, about 14 digits) — slower, but
+sharp down to a radius of about `1e-12` times the size of the numbers. While it's off, such a view
+shows a note that turns it on with a click. The coordinates at the bottom of the view say
+"(double precision)" while it's used. Square roots and the four operations get the extra digits; other
 functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what colours need. Tools,
 `@prepare` and `@global` run on the CPU in single precision. A view's centre written as numbers in
 `@config` (`mandel.center = -0.743643887037151 + 0.131825904205330i`, as Copy location writes it)
@@ -254,6 +256,7 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.r
 | `.maxIterations` | Z | iteration limit of `while` and `do` loops (default 1000) |
 | `.epsilon` | R | tolerance of `==` and `vanishes` (default 1e-6) |
 | `.escapeRadius` | R | `escapes` threshold (default 2) |
+| `.doublePrecision` | Bool | deep zooms in double precision (default false; see *Precision*) |
 | `.stuck`, `.iterations` | Bool, Z | result of the last loop |
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
 | `.dragStart` | C | where the mouse button went down (for tools: `on drag`, `on release`) |
@@ -371,8 +374,8 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 - A one-line function defined in `@config` (`define f(z, c) = z^2 + c`) is a formula you can edit
   in the config panel: the field edits the script itself, which runs again as you type (with Live
   on) or when you press Enter.
-- The views' centre and radius, and `.maxIterations`, `.escapeRadius` and `.epsilon`, are listed at
-  the end unless the script places them itself.
+- The views' centre and radius, `.doublePrecision`, `.maxIterations`, `.escapeRadius` and `.epsilon`
+  are listed at the end unless the script places them itself.
 - A dot marks a value that is no longer the script's (changed in the panel or by a tool); its
   label's tooltip says what the script has, and a click on the dot goes back to it. Values changed this way stay when the script runs
   again, unless the script itself now gives them another value. The two buttons at the top of

@@ -365,6 +365,8 @@ static void setup_internals(Checker *c) {
     p->s_drag_start->readonly = true;
     p->s_width = add_internal(c, "width", t_int, SYM_GLOBAL, "initial window width");
     p->s_height = add_internal(c, "height", t_int, SYM_GLOBAL, "initial window height");
+    p->s_double = add_internal(c, "doublePrecision", t_bool, SYM_GLOBAL,
+                               "deep zooms: views switch to double precision when their pixels get too small for single precision");
     add_internal(c, "title", t_string, SYM_GLOBAL, "window title");
     p->s_stuck = add_internal(c, "stuck", t_bool, SYM_EXEC, "true if the last loop hit .maxIterations");
     p->s_iterations = add_internal(c, "iterations", t_int, SYM_EXEC, "number of iterations of the last loop");

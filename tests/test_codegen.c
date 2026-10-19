@@ -671,6 +671,9 @@ TEST(df_deep_zoom) {
     state[v->center_lo->slot + 1] = fw((float)(cy - hy));
     state[v->radius->slot] = fw((float)radius);
     const int W = 64, H = 64;
+    CHECK(viewer_deep(p, state, v, W, H, false));
+    CHECK(!viewer_wants_df(p, state, v, W, H, false)); /* (until .doublePrecision is on) */
+    state[p->s_double->slot] = 1;
     CHECK(viewer_wants_df(p, state, v, W, H, false));
     gfx_set_globals(state, (u32)p->state_words * 4);
     u8 *rgba = (u8 *)xmalloc((size_t)W * H * 4);

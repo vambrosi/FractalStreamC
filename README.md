@@ -26,14 +26,22 @@ end
   mean) and has buttons for the recent scripts, your home, the examples and the script's folder.
   Ctrl+N starts a new script from a template. Unsaved changes are asked about before they would
   be lost (opening another script, a new one, or quitting).
-- `fractalstream script.fstream` opens a script. The script pane folds into a thin bar on the
-  left (Ctrl+E, Cmd+E on a Mac) and the config pane into one on the right (Ctrl+T); drag the
-  edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script; while you
+- `fractalstream script.fstream` opens a script. The window has a bar on each side. The left bar
+  has the script's button (Ctrl+E, Cmd+E on a Mac, shows and hides the script pane next to it),
+  then a numbered button for each view of the script, with that view's tools below it (the
+  selected one highlighted): a click on a number shows that view (or makes it the one the right
+  bar acts on), and dragging it onto the pictures places it — the middle of a view replaces it,
+  its sides split it, the corners float it. The right bar has the config's button (Ctrl+T) and
+  what you can do with the view you clicked last: back, forward, reset, copy and paste its
+  location, axes and grid, save its picture (as on the screen, or four times larger for print),
+  hide it; and the list of keys. Drag the edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script; while you
   type a name, the editor offers the ones it could be (Tab takes one), and resting the mouse on a
   name says what it is. Changes made to the file in another editor are picked up automatically.
 - The coordinates of the point under the mouse show at the bottom left of the view; Ctrl+Shift+A
-  (or the view's menu) adds the axes and grid lines with their values. Zooming deep (radius below
-  about 1e-4) switches the view to double-single precision automatically.
+  (or the grid button in the right bar) adds the axes and grid lines with their values. Zoomed
+  deep (radius below about 1e-4 for the Mandelbrot set), a view gets blocky in single precision;
+  turn on `.doublePrecision` (the note in the view, or the config panel) to compute it in
+  double-single precision there (slower, sharp to about 1e-12).
 - Each view remembers where it has been: Back and Forward (Alt+Left / Alt+Right, Cmd+[ / Cmd+]
   on a Mac, or the mouse's side buttons) step through its zooms and pans. Copy location
   (Ctrl+Shift+C) puts the view's centre and radius on the clipboard as script lines, with all
@@ -42,13 +50,9 @@ end
 - Values changed in the config pane (or by tools) are marked with a dot and survive running the
   script again; a button at the top of the pane writes them, and the places of the views, into
   the script (another sets them back).
-- Move the mouse to the left edge of a picture for its tools (each view has its own); the menu
-  button on top of that strip (or Esc) switches views, splits them, floats them in a corner, lists
-  the tools, saves the picture as a PNG file (as on the screen, or four times larger for
-  print) and has the view's place (back, forward, copy, paste). F1 lists every key; F2 (or the
-  book in the script's toolbar) shows the language reference, with a search field (F2 in the
-  script looks up the word under the caret). Ctrl+= / Ctrl+- / Ctrl+0 make everything bigger,
-  smaller or normal (for a talk, say).
+- F1 lists every key; F2 (or the book in the script's toolbar) shows the language reference,
+  with a search field (F2 in the script looks up the word under the caret). Ctrl+= / Ctrl+- /
+  Ctrl+0 make everything bigger, smaller or normal (for a talk, say).
 
 Examples are in [`examples/`](examples) (among them [`saddledrop.fstream`](examples/saddledrop.fstream),
 the parameter space of complex Hénon maps after the program SaddleDrop); the language is

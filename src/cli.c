@@ -15,6 +15,7 @@ static const char *cli_usage =
     "      --size WxH       image size in pixels (default 512x512)\n"
     "      --cpu            use the CPU interpreter instead of the GPU (slow, for testing)\n"
     "      --set NAME=VALUE set a global first, e.g. --set c=-0.8+0.156i or --set plane.radius=0.5\n"
+    "                       (--set .doublePrecision=true: deep zooms in double precision)\n"
     "  fractalstream --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
     "                                      run a tool once at a point (a click, or one event of a tool with\n"
     "                                      'on' blocks); print its draw calls and the globals\n"

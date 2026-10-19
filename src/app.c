@@ -902,7 +902,7 @@ static void update_completions(Program *p) {
                                   "on", "press", "release", "click", "hover", "show", "hide", "button", "append",
                                   "clear", "line", "point", "circle", "disk", "text", "radius", "color", "width",
                                   "List", "Integers", "Reals", "Complex", "Quaternions", "Bool", "Color", "up"};
-    static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".time", ".lastClick",
+    static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick",
                                       ".mouse", ".dragStart", ".width", ".height", ".title", ".stuck",
                                       ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
                                       ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan",
@@ -951,6 +951,8 @@ static const char *hover_info(void *user, const char *word) {
         {".maxIterations", ".maxIterations : Z\nthe iteration limit of while and do loops (default 1000)"},
         {".epsilon", ".epsilon : R\nthe tolerance of == and of vanishes (default 1e-6)"},
         {".escapeRadius", ".escapeRadius : R\nz escapes means |z| > .escapeRadius (default 2)"},
+        {".doublePrecision", ".doublePrecision : Bool\ndeep zooms: a view switches to double precision (slower) when its pixels get "
+                             "too small for single precision (default false)"},
         {".stuck", ".stuck : Bool\ntrue when the last loop hit .maxIterations, or Newton's method failed"},
         {".iterations", ".iterations : Z\nhow many times the last loop ran"},
         {".lastClick", ".lastClick : C\nthe point of the last click or drag"},
@@ -2067,6 +2069,39 @@ static void draw_grid(VisTile *t) {
 }
 
 /* the picture, the drawings, the picked point and the name */
+/* A view zoomed in beyond single precision while .doublePrecision is off: a note at its bottom says so, and a click
+ * on it turns double precision on (it's a setting of the config panel, written into the script with the others). */
+static void deep_note(VisTile *t) {
+    Program *p = A.prog;
+    ViewerRT *rt = &A.vrt[t->viewer];
+    Section *s = p->viewers[t->viewer];
+    if (s->mobius || A.state[p->s_double->slot] || !rt->target || !viewer_deep(p, A.state, s, rt->tw, rt->th, false)) return;
+    const char *text = "Finer than single precision: click here for double precision (slower)";
+    float lh = ui_font_line_height(UI_FONT_SANS), tw = ui_text_width(UI_FONT_SANS, text, -1) + px(20), th = lh + px(10);
+    Rect r = t->r;
+    tw = FS_MIN(tw, r.w - px(12));
+    float x = r.x + (r.w - tw) / 2, y = r.y + r.h - th - px(40);
+    int prev = ui_layer(UI_LAYER_MENU); /* (above floating views too) */
+    ui_push_clip(r.x, r.y, r.w, r.h);
+    char id[32];
+    snprintf(id, sizeof id, "##deep_note%d", t->viewer);
+    UiInteract it = ui_interact(id, x, y, tw, th);
+    ui_rrect(x, y, tw, th, px(6), it.hovered ? UI_RGBA(60, 90, 140, 235) : UI_RGBA(28, 36, 52, 225));
+    ui_rrect_outline(x, y, tw, th, px(6), px(1), UI_COL_ACCENT);
+    ui_label(x + px(10), y, tw - px(20), th, text, UI_ALIGN_CENTER, UI_COL_TEXT);
+    if (it.hovered) {
+        ui_set_cursor(UI_CURSOR_HAND);
+        ui_tooltip("Turns on .doublePrecision (in the config panel): views zoomed in this far are computed with pairs of "
+                   "floats, about 14 digits, sharp down to a radius of about 1e-12 times the size of the numbers");
+    }
+    if (it.clicked) {
+        A.state[p->s_double->slot] = 1;
+        set_status(false, "Double precision is on (.doublePrecision in the config panel)");
+    }
+    ui_pop_clip();
+    ui_layer(prev);
+}
+
 static void draw_tile(VisTile *t) {
     Program *p = A.prog;
     ViewerRT *rt = &A.vrt[t->viewer];
@@ -3080,6 +3115,11 @@ static bool config_listed(Program *p, Sym *s) {
 /* the views' center and radius, and the iteration settings, unless the script lists them itself */
 static bool config_auto(Program *p, Sym *s, int group) {
     if (config_listed(p, s)) return false;
+    if (group == 1 && s == p->s_double) { /* (deep zooms: in flat views) */
+        for (int v = 0; v < p->nviewers; v++)
+            if (!p->viewers[v]->mobius) return true;
+        return false;
+    }
     if (group == 1) {
         if (s->viewer_index < 0 || s->is_internal || s->is_config) return false;
         Section *v = p->viewers[s->viewer_index]; /* (a view of the Riemann sphere moves by its Möbius map) */
@@ -3339,9 +3379,9 @@ static void config_pane(float W, float H) {
         y += px(8);
         ui_text(UI_FONT_SANS, x0, y + px(6), group == 1 ? "Views" : "Iteration", -1, UI_COL_ACCENT);
         y += rh;
-        for (int i = 0; i < p->globals.len; i++) {
-            Sym *s = p->globals.data[i];
-            if (!config_auto(p, s, group)) continue;
+        for (int i = 0; i < p->globals.len + 1; i++) { /* (.doublePrecision after the views) */
+            Sym *s = i < p->globals.len ? p->globals.data[i] : p->s_double;
+            if (!config_auto(p, s, group) || (s == p->s_double && i < p->globals.len)) continue;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
             config_changed_mark(p, s, x0, y, lw - px(14));
@@ -4109,6 +4149,7 @@ static void frame(void) {
         if (A.vis[i].fl >= 0) ui_occlude(A.vis[i].r.x, A.vis[i].r.y, A.vis[i].r.w, A.vis[i].r.h);
         ui_layer(prev);
     }
+    for (int i = 0; i < A.nvis; i++) deep_note(&A.vis[i]);
     /* drop zones while dragging a view */
     if (A.drag == DRAG_VIEWER) {
         int prev = ui_layer(UI_LAYER_TOOLTIP);

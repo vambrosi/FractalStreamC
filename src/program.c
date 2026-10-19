@@ -228,15 +228,20 @@ static const char *source_line(const char *src, int line, int *len) {
     return s;
 }
 
-/* Deep zooms: does a w x h picture of flat viewer v need double-single precision (codegen_viewer_ex)?
- * When a pixel is smaller than about 1e-6 of the size of the numbers (single precision gets noisy
- * from there on); `already` (rendering that way) lowers the threshold a little, to avoid flapping. */
-bool viewer_wants_df(Program *p, const u32 *state, Section *v, int w, int h, bool already) {
+/* Deep zooms: is a w x h picture of flat viewer v too fine for single precision?  When a pixel is smaller than
+ * about 1e-6 of the size of the numbers (single precision gets noisy from there on); `already` (rendering in
+ * double-single precision) lowers the threshold a little, to avoid flapping. */
+bool viewer_deep(Program *p, const u32 *state, Section *v, int w, int h, bool already) {
     if (v->mobius || !v->center_lo || w <= 0 || h <= 0) return false;
     double cx = (double)wf(state[v->center->slot]) + wf(state[v->center_lo->slot]);
     double cy = (double)wf(state[v->center->slot + 1]) + wf(state[v->center_lo->slot + 1]);
     double pixel = (double)wf(state[v->radius->slot]) / (0.5 * FS_MIN(w, h));
     return pixel < (already ? 2e-6 : 1e-6) * FS_MAX(hypot(cx, cy), 1.0);
+}
+
+/* ... and is it computed in double-single precision (codegen_viewer_ex) then: when .doublePrecision is on */
+bool viewer_wants_df(Program *p, const u32 *state, Section *v, int w, int h, bool already) {
+    return state[p->s_double->slot] != 0 && viewer_deep(p, state, v, w, h, already);
 }
 
 /* "path:line:col: error: message" followed by the source line and a marker */
