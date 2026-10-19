@@ -470,6 +470,54 @@ TEST(app_hover_info) {
     app_test_end();
 }
 
+/* a point of the sphere in the config panel: shown as a complex number or ∞, typed (Enter sets it) */
+static void app_test_point_field(Sym *s) {
+    A.in = T;
+    tu_begin();
+    config_number(s, 20, 20, 200);
+    tu_end();
+}
+
+TEST(app_config_point) {
+    Program *p = program_load("@config\np : P = ∞\n@viewer v z\ncolor = .black\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    if (p->nerrors) { program_free(p); return; }
+    tu_reset(1.0f);
+    app_test_begin(p);
+    Sym *s = NULL;
+    for (int i = 0; i < p->globals.len; i++)
+        if (!strcmp(p->globals.data[i]->name, "p")) s = p->globals.data[i];
+    CHECK(s && s->type == t_proj);
+    if (s) {
+        StrBuf sb = {0};
+        CHECK(value_literal(&sb, t_proj, A.state + s->slot) && !strcmp(sb_cstr(&sb), "∞"));
+        sb_free(&sb);
+        app_test_point_field(s);
+        tu_move(60, 30); /* click in the field (it selects all), type, Enter */
+        app_test_point_field(s);
+        tu_press(0, 1);
+        tu_release(0);
+        app_test_point_field(s);
+        tu_type("0.5-2i");
+        app_test_point_field(s);
+        CHECK_STR(A.proj_buf, "0.5-2i");
+        tu_key(UI_KEY_ENTER, 0);
+        app_test_point_field(s);
+        app_test_point_field(s);
+        const u32 *v = A.state + s->slot;
+        double ar = wf(v[0]), ai = wf(v[1]), br = wf(v[2]), bi = wf(v[3]), d = br * br + bi * bi;
+        CHECK(d > 0);
+        if (d > 0) {
+            CHECK_NEAR((ar * br + ai * bi) / d, 0.5, 1e-6);
+            CHECK_NEAR((ai * br - ar * bi) / d, -2, 1e-6);
+        }
+        u32 inf[4];
+        CHECK(parse_proj_literal("inf", inf) && wf(inf[0]) == 1 && wf(inf[2]) == 0);
+        CHECK(!parse_proj_literal("not a number", inf));
+    }
+    app_test_end();
+}
+
 /* ---- the bars at the window's edges ---------------------------------------------------------------------------- */
 /* one frame of the bars with the test input (tests/test_ui.c), 800 x 600, no window */
 static void app_test_bars_frame(void) {
@@ -660,6 +708,7 @@ static const TestCase tests_app[] = {
     TESTCASE(app_settings_and_prepare),
     TESTCASE(app_reference_parse),
     TESTCASE(app_hover_info),
+    TESTCASE(app_config_point),
     TESTCASE(app_bars),
     TESTCASE(app_info_and_inspect),
 };

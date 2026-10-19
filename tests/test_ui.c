@@ -672,6 +672,36 @@ TEST(ui_text_field_submit_cancel_focus) {
     CHECK_STR(buf, "foo X");
 }
 
+/* A field that selects everything on focus: the click that focuses it keeps the selection (typing replaces the
+   value), the next click places the caret. */
+TEST(ui_text_field_select_all_on_click) {
+    tu_reset(1.0f);
+    char buf[32] = "1.5";
+    int flags = UI_TF_SELECT_ALL;
+    tu_click_field(30); /* near the left end: a plain field would put the caret before "1" */
+    tu_begin(); ui_text_field_ex("field", 20, 20, 200, 26, buf, sizeof buf, flags, NULL); tu_end();
+    tu_type("2i");
+    tu_begin(); ui_text_field_ex("field", 20, 20, 200, 26, buf, sizeof buf, flags, NULL); tu_end();
+    CHECK_STR(buf, "2i");
+    tu_move(150, 32); /* already focused: the caret goes to the click (after the text) */
+    tu_begin(); ui_text_field_ex("field", 20, 20, 200, 26, buf, sizeof buf, flags, NULL); tu_end();
+    tu_press(0, 1);
+    tu_release(0);
+    tu_begin(); ui_text_field_ex("field", 20, 20, 200, 26, buf, sizeof buf, flags, NULL); tu_end();
+    tu_type("+1");
+    tu_key(UI_KEY_ENTER, 0);
+    int ev = 0;
+    tu_begin(); ev = ui_text_field_ex("field", 20, 20, 200, 26, buf, sizeof buf, flags, NULL); tu_end();
+    CHECK_STR(buf, "2i+1");
+    CHECK(ev & UI_TEXT_SUBMIT);
+    char plain[32] = "abc"; /* without the flag a click places the caret */
+    tu_click_field(150);
+    tu_field(plain, sizeof plain);
+    tu_type("d");
+    tu_field(plain, sizeof plain);
+    CHECK_STR(plain, "abcd");
+}
+
 TEST(ui_shortcuts_and_key_order) {
     tu_reset(1.0f);
     tu_key(UI_KEY_R, UI_MOD_MOD);
@@ -1876,6 +1906,7 @@ static const TestCase tests_ui[] = {
     TESTCASE(ui_drag_log_scale),
     TESTCASE(ui_text_field_editing),
     TESTCASE(ui_text_field_submit_cancel_focus),
+    TESTCASE(ui_text_field_select_all_on_click),
     TESTCASE(ui_shortcuts_and_key_order),
     TESTCASE(ui_tooltip_delay),
     TESTCASE(ui_ids_and_labels),

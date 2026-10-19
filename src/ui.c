@@ -1429,6 +1429,7 @@ static int uip_textedit(u32 id, float x, float y, float w, float h, char *buf, i
         ui_set_focus(id);
         te->dragging = true;
     }
+    bool select_all_now = false;
     if (ui_has_focus(id) && te->id != id) { /* gained the focus (click, or ui_set_focus from outside) */
         if (te->id) uip_te_end(te);
         te->id = id;
@@ -1437,6 +1438,9 @@ static int uip_textedit(u32 id, float x, float y, float w, float h, char *buf, i
         te->anchor = (flags & UI_TF_SELECT_ALL) ? 0 : te->cursor;
         te->scroll = 0;
         te->epoch = now;
+        /* a field that selects everything on focus keeps it selected after the click that focused it (typing
+           replaces the value); the next click places the caret */
+        if ((flags & UI_TF_SELECT_ALL) && r.pressed) { select_all_now = true; te->dragging = false; }
     }
     bool focused = te->id == id && ui_has_focus(id);
 
@@ -1445,7 +1449,7 @@ static int uip_textedit(u32 id, float x, float y, float w, float h, char *buf, i
         if (te->cursor > len) te->cursor = len;
         if (te->anchor > len) te->anchor = len;
         /* mouse: place the caret, extend while dragging, double click = word, triple = everything */
-        if (r.pressed) {
+        if (r.pressed && !select_all_now) {
             int off = uip_text_hit(buf, in->mouse_x - tx + te->scroll);
             if (in->click_count >= 3) { te->anchor = 0; te->cursor = len; }
             else if (in->click_count == 2) ui_word_at(buf, off, &te->anchor, &te->cursor);
