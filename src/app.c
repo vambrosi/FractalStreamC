@@ -4450,6 +4450,8 @@ static bool viewer_dirty(int v) {
     return false;
 }
 
+#define BAND_ALIGN 64 /* rows; A.band_rows is a power of two at least this */
+
 static bool render_viewers(void) {
     Program *p = A.prog;
     size_t bytes = sizeof(u32) * (size_t)p->state_words;
@@ -4509,7 +4511,9 @@ static bool render_viewers(void) {
         }
         if (rt->rows_left <= 0) continue;
         if (rt->next_row >= rt->th) rt->next_row = 0;
-        int rows = FS_MIN(FS_MIN(A.band_rows, rt->th - rt->next_row), rt->rows_left);
+        /* bands of whole multiples of BAND_ALIGN rows, from a multiple of it: a band's edges never cut through the GPU's
+           tiles or compression blocks (Apple GPUs, MoltenVK: garbage blocks next to a partly covered tile while zooming) */
+        int rows = FS_MIN(A.band_rows, rt->th - rt->next_row);
         GfxViewerParams vp = {0};
         vp.width = (float)rt->tw;
         vp.height = (float)rt->th;
@@ -4656,7 +4660,7 @@ static void frame(void) {
     }
     double dt = fs_time_seconds() - t0;
     if (busy || dt > 0.06) {
-        if (dt > 0.06 && A.band_rows > 16) A.band_rows /= 2;
+        if (dt > 0.06 && A.band_rows > BAND_ALIGN) A.band_rows /= 2;
         else if (dt < 0.025 && A.band_rows < 8192) A.band_rows *= 2;
         if (dt > 0.06 && A.flood_passes > 4) A.flood_passes /= 2;
         else if (dt < 0.025 && A.flood_passes < 4096) A.flood_passes *= 2;

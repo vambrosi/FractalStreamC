@@ -1179,6 +1179,25 @@ static int gfx_queue_family(VkPhysicalDevice pd) {
     return found;
 }
 
+/* The device's driver (VK_KHR_driver_properties): its id (0 if unknown) and name, e.g. "MoltenVK" */
+static int gfx_driver_of(VkPhysicalDevice d, char *name, int cap) {
+    if (name && cap > 0) name[0] = 0;
+    if (!gx.props2) return 0;
+    u32 n = 0;
+    VkExtensionProperties *exts = gfx_device_exts(d, &n);
+    bool has = gfx_has_ext(exts, n, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
+    free(exts);
+    PFN_vkGetPhysicalDeviceProperties2KHR props2 =
+        (PFN_vkGetPhysicalDeviceProperties2KHR)vkGetInstanceProcAddr(gx.instance, "vkGetPhysicalDeviceProperties2KHR");
+    if (!has || !props2) return 0;
+    VkPhysicalDeviceDriverProperties dp = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+    VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    p2.pNext = &dp;
+    props2(d, &p2);
+    if (name && cap > 0) snprintf(name, (size_t)cap, "%s %s", dp.driverName, dp.driverInfo);
+    return (int)dp.driverID;
+}
+
 static bool gfx_pick_device(void) {
     u32 n = 0;
     if (!gfx_vk(vkEnumeratePhysicalDevices(gx.instance, &n, NULL), "vkEnumeratePhysicalDevices")) return false;
@@ -1201,11 +1220,19 @@ static bool gfx_pick_device(void) {
             free(dext);
             if (!swapchain) continue;
         }
-        int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 4
-                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 3
-                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU ? 2
-                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? 1 : 0;
-        if (want && *want && gfx_contains_nocase(p.deviceName, want)) score += 100;
+        int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 40
+                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 30
+                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU ? 20
+                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? 10 : 0;
+        char driver[600];
+        int driver_id = gfx_driver_of(devs[i], driver, sizeof driver);
+        /* the same GPU through two drivers (a Vulkan SDK on macOS has MoltenVK and KosmicKrisp): MoltenVK, the one
+           the macOS app bundles */
+        if (driver_id == VK_DRIVER_ID_MOLTENVK) score += 1;
+        if (want && *want && (gfx_contains_nocase(p.deviceName, want) || gfx_contains_nocase(driver, want))) score += 1000;
+        if (getenv("FS_DEBUG"))
+            fprintf(stderr, "gfx: device %u: %s (type %d, Vulkan %u.%u, driver: %s)\n", i, p.deviceName, (int)p.deviceType,
+                    VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion), driver[0] ? driver : "?");
         if (score > best_score) { best = (int)i; best_score = score; best_q = q; }
     }
     if (best < 0)
@@ -1215,8 +1242,9 @@ static bool gfx_pick_device(void) {
     vkGetPhysicalDeviceProperties(gx.phys, &gx.props);
     vkGetPhysicalDeviceMemoryProperties(gx.phys, &gx.memprops);
     snprintf(gx.device_name, sizeof gx.device_name, "%s", gx.props.deviceName);
-    if (want && *want && best_score < 100)
+    if (want && *want && best_score < 1000)
         gfx_warn("FS_GPU=\"%s\" matches no usable device; using \"%s\"", want, gx.device_name);
+    if (getenv("FS_DEBUG")) fprintf(stderr, "gfx: using device %d (%s)\n", best, gx.device_name);
     return true;
 }
 
