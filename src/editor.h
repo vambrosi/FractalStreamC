@@ -129,6 +129,9 @@ void editor_clear_diagnostics(Editor *ed);
  * if the text changed during this call.  Everything is drawn inside (x, y, w, h). */
 bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus);
 bool editor_has_focus(const Editor *ed);
+/* The opacity of the widget's own backgrounds (the text, the gutter, the status bar): 1 (the default) is opaque;
+ * below 1 what was drawn under the widget shows through, e.g. a picture under a translucent pane. */
+void editor_set_background_alpha(Editor *ed, float alpha);
 /* Time source for undo grouping (seconds); editor_ui sets it from the UI input.  Tests can set it by hand. */
 void editor_set_clock(Editor *ed, double seconds);
 
