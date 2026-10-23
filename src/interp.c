@@ -1076,15 +1076,16 @@ void state_set_defaults(Program *p, u32 *state) {
     for (int v = 0; v < p->nviewers; v++) {
         Section *s = p->viewers[v];
         if (s->radius) state[s->radius->slot] = fw(2.0f);
+        if (s->conformal) state[s->conformal->slot] = 1; /* (a view of the sphere is conformal unless the script says) */
     }
 }
 
-/* Projective viewers look at the unit sphere from its centre: the ray through a pixel hits the sphere at
+/* Projective viewers (with NAME.conformal = false) look at the unit sphere from its centre: the ray through a pixel hits the sphere at
  * P = (X, Y, Z) (the view direction is -Z, the field of view is 100 degrees across the smaller side),
  * stereographic projection from the north pole gives w = (X + iY) / (1 - Z), and the view map
  * z = (a w + b) / (c w + d) is kept in NAME.mobius.  Computed in homogeneous coordinates
  * [X + iY : 1 - Z] so that w = infinity needs no special case.  codegen.c does the same on the GPU.
- * Conformal views (NAME.conformal) see the sphere from a point of it instead: the screen is the plane of the
+ * Conformal views (NAME.conformal, the default) see the sphere from a point of it instead: the screen is the plane of the
  * stereographic projection, w is proportional to the pixel's position (the same w as before at the edges of the
  * smaller side), and the whole view is the Möbius map. */
 #define PROJ_T 1.19175359f /* tan(50 degrees) */

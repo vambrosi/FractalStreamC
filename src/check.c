@@ -460,8 +460,8 @@ static void setup_internals(Checker *c) {
             vec_push(p->globals, s->mobius);
             s->conformal = new_sym(c, arena_printf(&p->arena, "%s.conformal", s->name), t_bool, SYM_GLOBAL, s->line, 1);
             s->conformal->viewer_index = v;
-            s->conformal->doc = "a conformal view: the sphere seen from a point of it (stereographic projection), "
-                                "instead of from its centre";
+            s->conformal->doc = "a conformal view (the default): the sphere seen from a point of it (stereographic "
+                                "projection); false: seen from its centre";
             vec_push(p->globals, s->conformal);
         }
     }

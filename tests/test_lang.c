@@ -529,11 +529,12 @@ TEST(automatic_differentiation) {
 
 TEST(projective_mapping) {
     Program *p = LOAD_OK(
-        "@config\nsphere.radius = 2\nsphere.center = 1 + i\n"
+        "@config\nsphere.radius = 2\nsphere.center = 1 + i\nsphere.conformal = false\n"
         "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
         "color = gray(|z|)\n");
     Section *v = p->viewers[0];
     CHECK(v->mobius != NULL);
+    CHECK(!viewer_conformal(v, p->initial_state));
     float re, im;
     viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 50, &re, &im);
     CHECK_NEAR(re, 1, 1e-5);
@@ -547,9 +548,9 @@ TEST(projective_mapping) {
     viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 50, &re, &im); /* (seen from the centre: not halfway) */
     CHECK(re > 2.1f);
     program_free(p);
-    /* conformal: seen from a point of the sphere, the view is the Möbius map of the pixel's position (the same points
-       at the centre and at the edges) */
-    p = LOAD_OK("@config\nsphere.radius = 2\nsphere.center = 1 + i\nsphere.conformal = true\n"
+    /* conformal (the default): seen from a point of the sphere, the view is the Möbius map of the pixel's position (the
+       same points at the centre and at the edges) */
+    p = LOAD_OK("@config\nsphere.radius = 2\nsphere.center = 1 + i\n"
                 "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
                 "color = gray(|z|)\n");
     v = p->viewers[0];
