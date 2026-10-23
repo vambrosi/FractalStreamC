@@ -1,4 +1,4 @@
-/* gfx.h - Vulkan renderer (owner: gfx agent).
+/* gfx.h - Vulkan renderer.
  *
  * A small Vulkan 1.0 renderer with one graphics queue and no threads. It is used
  *   - by the GUI: a swapchain on a GLFW window, viewer renders into offscreen
@@ -7,8 +7,8 @@
  *
  * Objects are small integer handles: > 0 is valid, 0 means "none" / "failed";
  * handles of destroyed objects are reused. At most 64 viewers and 64 targets.
- * Viewers are compiled fragment shaders (see "Viewer shader contract" in
- * agents/architecture.md); targets are RGBA8 offscreen images.
+ * Viewers are compiled fragment shaders (see "Viewer shader contract" below);
+ * targets are RGBA8 offscreen images.
  *
  * Typical GUI frame:
  *     if (gfx_frame_begin()) {
@@ -18,6 +18,19 @@
  *         gfx_frame_draw(&drawlist, clear_rgb);         (exactly once)
  *         gfx_frame_end();
  *     }
+ *
+ * Viewer shader contract (codegen.c produces, gfx.c consumes). A viewer is a
+ * SPIR-V 1.0 module with a Fragment entry point `main`, OriginUpperLeft:
+ *   - input: gl_FragCoord; output: a vec4 at Location 0 (rgb clamped to [0, 1], a = 1);
+ *   - set 0, binding 0: a read-only storage buffer (Block, std430) with the program's
+ *     global state; its layout is private to the compiler, gfx just uploads bytes;
+ *   - push constants (16 bytes, fragment stage): vec2 size at offset 0 (the logical
+ *     tile size in pixels, which maps pixels to the plane), vec2 offset at offset 8
+ *     (added to gl_FragCoord.xy, for sub-rectangles and supersampling);
+ *   - capabilities: Shader only; extended instructions: GLSL.std.450 only. Deep zooms
+ *     keep this interface (double-single arithmetic inside the shader); when the GPU
+ *     keeps exact floats they also declare SPV_KHR_float_controls (capability
+ *     SignedZeroInfNanPreserve, device extension VK_KHR_shader_float_controls).
  *
  * Errors: functions with an `err` buffer write a readable message into it
  * (when err != NULL) and return false/0. Functions without one print the

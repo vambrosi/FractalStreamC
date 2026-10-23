@@ -96,8 +96,8 @@ TEST(mandelbrot) {
     program_free(p);
 }
 
-TEST(brief_example) {
-    /* the illustration from AGENTS.md, made valid */
+TEST(language_sketch) {
+    /* the first sketch of the language, made valid */
     Program *p = LOAD_OK(
         "@global\n"
         "j : Z = 10\n"
@@ -1591,7 +1591,7 @@ static const TestCase tests_lang[] = {
     TESTCASE(projective_mapping),
     TESTCASE(automatic_differentiation),
     TESTCASE(variable_integer_powers),
-    TESTCASE(default_viewer), TESTCASE(mandelbrot), TESTCASE(brief_example), TESTCASE(types_and_conversions),
+    TESTCASE(default_viewer), TESTCASE(mandelbrot), TESTCASE(language_sketch), TESTCASE(types_and_conversions),
     TESTCASE(implicit_multiplication), TESTCASE(complex_functions), TESTCASE(loops_and_stuck),
     TESTCASE(epsilon_comparisons), TESTCASE(vectors_colors_lists), TESTCASE(functions_and_overloads),
     TESTCASE(sections_and_config), TESTCASE(errors), TESTCASE(runaway_tool_is_stopped),

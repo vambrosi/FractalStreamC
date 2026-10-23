@@ -1,6 +1,6 @@
 /* codegen.c - checked AST of a viewer -> SPIR-V fragment shader.
  *
- * Shader interface: see agents/architecture.md.  The state buffer is a
+ * Shader interface: the viewer shader contract in gfx.h.  The state buffer is a
  * BufferBlock in the Uniform storage class (the SPIR-V 1.0 way to declare a
  * storage buffer).  At entry, the globals the viewer uses are copied into
  * Private variables (so viewers may modify their own copy), the pixel is

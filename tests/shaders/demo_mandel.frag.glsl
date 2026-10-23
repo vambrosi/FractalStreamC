@@ -1,5 +1,5 @@
 // demo_mandel.frag.glsl - Mandelbrot viewer for the windowed demo (tests/gfx_demo.c).
-// Pixel -> plane mapping as in agents/architecture.md:
+// Pixel -> plane mapping, as the app's viewers do it:
 //   z = center + scale * ((p.x - w/2), -(p.y - h/2)),  scale = radius / (min(w,h)/2)
 #version 450
 

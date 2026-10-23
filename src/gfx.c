@@ -1,4 +1,4 @@
-/* gfx.c - Vulkan renderer. API: gfx.h. Contracts: agents/architecture.md.
+/* gfx.c - Vulkan renderer. API and viewer shader contract: gfx.h.
  *
  * Sections:
  *    1. Vulkan library loading and function pointers

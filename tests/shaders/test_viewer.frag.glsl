@@ -1,5 +1,5 @@
 // test_viewer.frag.glsl - viewer used by tests/test_gfx.c.
-// Follows the viewer contract (agents/architecture.md): push constants
+// Follows the viewer shader contract (src/gfx.h): push constants
 // {vec2 size; vec2 offset}, read-only storage buffer at set 0 binding 0.
 //   r = (x + offset.x) / size.x   (x = gl_FragCoord.x, a pixel center)
 //   g = (y + offset.y) / size.y

@@ -136,5 +136,5 @@ and publishes the downloads).
 
 The code is C11 in a unity build (`src/all.c`); third-party code (GLFW, Vulkan headers,
 stb_truetype/stb_image_write, DejaVu fonts, Google's Material Icons font) is vendored in
-`third_party/`, with its licenses. Architecture notes for
-contributors are in [`agents/architecture.md`](agents/architecture.md).
+`third_party/`, with its licenses. Each source file begins with a comment on what it does;
+[`src/gfx.h`](src/gfx.h) also describes the viewer shaders that the compiler (`src/codegen.c`) makes.
