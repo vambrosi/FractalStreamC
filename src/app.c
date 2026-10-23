@@ -4659,11 +4659,7 @@ static void frame(void) {
         gfx_frame_end();
     }
     double dt = fs_time_seconds() - t0;
-    static int fixed_bands = -1; /* (debugging: FS_BANDS=ROWS renders every view in bands of that many rows) */
-    if (fixed_bands < 0) fixed_bands = getenv("FS_BANDS") ? FS_MAX(atoi(getenv("FS_BANDS")), BAND_ALIGN) : 0;
-    if (fixed_bands > 0) {
-        A.band_rows = (fixed_bands + BAND_ALIGN - 1) / BAND_ALIGN * BAND_ALIGN;
-    } else if (busy || dt > 0.06) {
+    if (busy || dt > 0.06) {
         if (dt > 0.06 && A.band_rows > BAND_ALIGN) A.band_rows /= 2;
         else if (dt < 0.025 && A.band_rows < 8192) A.band_rows *= 2;
         if (dt > 0.06 && A.flood_passes > 4) A.flood_passes /= 2;

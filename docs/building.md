@@ -130,8 +130,6 @@ for VS", then
 | `FS_VULKAN_LIBRARY=<path>` | load this Vulkan library (or MoltenVK dylib) before the default ones |
 | `FS_VULKAN_VALIDATION=1` | enable the Vulkan validation layer and print its messages |
 | `FS_DEBUG=1` | print what the app decides at startup (the GPUs and their drivers, the one used; how deep zooms keep their arithmetic exact) |
-| `FS_SYNC=barrier` or `FS_SYNC=wait` | (debugging) between drawing the views and showing them, add a pipeline barrier, or submit the views' work first and wait for it (slow) |
-| `FS_BANDS=<rows>` | (debugging) redraw views in bands of this many rows (a multiple of 64; e.g. `8192`: a whole view at once) instead of sizes adapted to the frame time |
 | `MVK_CONFIG_FAST_MATH_ENABLED` | (macOS) set to `2` by the program unless already set: MoltenVK's fast maths, except in the shaders of deep zooms, which declare IEEE floats (SPIR-V float controls) and then need no per-operation workaround, the slow part of double precision before |
 | `MVK_CONFIG_LOG_LEVEL` | (macOS) set to `1` by the program unless already set: MoltenVK prints only its errors; `3` adds its informational messages |
 
@@ -151,6 +149,13 @@ installed and fail on any validation error. On Linux:
 
 Synchronization checking (slower) is enabled with
 `VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT`.
+
+Drivers differ in what they order for you. MoltenVK 1.3 and later (with Metal argument
+buffers and residency sets, macOS 15+) orders the work of a command buffer by pipeline
+barriers only and skips render-pass (subpass) dependencies, which the validation layer
+accepts. A missing barrier there shows as magenta or stale squares in a view that is being
+redrawn; to tell such a problem from others, compare with `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`
+(MoltenVK's older binding, which Metal orders by itself) or with `FS_GPU=kosmic` (KosmicKrisp).
 
 ## Fixed shaders
 

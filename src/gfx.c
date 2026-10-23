@@ -26,6 +26,9 @@
  *     COLOR_ATTACHMENT_OPTIMAL and back, readback moves them to TRANSFER_SRC and back.
  *     The external dependencies of the render passes order color writes against
  *     shader reads / copies (both ways), within a command buffer and across frames.
+ *     A view's render pass is also followed by the same dependency as a pipeline
+ *     barrier: MoltenVK 1.3+ (Metal argument buffers with residency sets, macOS 15+)
+ *     orders the passes of a command buffer by barriers only, not by subpass dependencies.
  *   - Up to GFX_FRAMES frames in flight. Each frame slot owns a command buffer, fence,
  *     acquire semaphore, descriptor pool and globals / vertex / index buffers, reused
  *     only after waiting for the slot's fence. Each swapchain image owns the semaphore
@@ -411,7 +414,6 @@ typedef struct GfxState {
     u32 image_index;            /* acquired swapchain image */
     bool recording;             /* between gfx_frame_begin and gfx_frame_end */
     bool drawn;                 /* gfx_frame_draw was called this frame */
-    bool frame_rendered;        /* a view was drawn (or a flood pass recorded) in this frame */
 
     /* synchronous work */
     VkCommandBuffer sync_cmd;
@@ -1913,6 +1915,16 @@ static void gfx_record_viewer(VkCommandBuffer cmd, const GfxTexture *t, const Gf
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gx.viewer_layout, 0, 1, &globals, 0, NULL);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    /* The render pass's external dependency again, as a barrier (see the synchronization model at the top): later
+       sampling, copies and render passes wait for this view. Without it, MoltenVK let the window show views still
+       being drawn (magenta and stale squares while they redraw). */
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                       VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
 
 /* Validates a draw list and copies it into the given buffers (which the GPU must not
@@ -2063,7 +2075,6 @@ bool gfx_frame_begin(void) {
     gfx_rec_reset(f);
     gx.recording = true;
     gx.drawn = false;
-    gx.frame_rendered = false;
     return true;
 }
 
@@ -2077,43 +2088,12 @@ void gfx_frame_render_viewer(int target, int viewer, const GfxViewerParams *p) {
     VkDescriptorSet set = gfx_frame_globals_set(f);
     if (!set) { gfx_warn("gfx_frame_render_viewer: %s", gx.err); return; }
     gfx_record_viewer(f->cmd, t, v, p, set);
-    gx.frame_rendered = true;
-}
-
-/* Debugging the order of a frame's work (FS_SYNC, see docs/building.md): the views drawn in a frame are sampled by its
-   2D pass, which the render passes' external dependencies order. FS_SYNC=barrier adds a pipeline barrier between them;
-   FS_SYNC=wait submits the views' work first and waits for it (slow, but leaves nothing to the driver). */
-static void gfx_frame_sync_views(GfxFrame *f) {
-    static int mode = -1;
-    if (mode < 0) {
-        const char *e = getenv("FS_SYNC");
-        mode = !e ? 0 : !strcmp(e, "barrier") ? 1 : !strcmp(e, "wait") ? 2 : 0;
-    }
-    if (mode == 1) {
-        VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-        mb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-    } else if (mode == 2) {
-        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        si.commandBufferCount = 1;
-        si.pCommandBuffers = &f->cmd;
-        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (!gfx_vk(vkEndCommandBuffer(f->cmd), "vkEndCommandBuffer") ||
-            !gfx_vk(vkQueueSubmit(gx.queue, 1, &si, VK_NULL_HANDLE), "vkQueueSubmit") ||
-            !gfx_vk(vkDeviceWaitIdle(gx.device), "vkDeviceWaitIdle") ||
-            !gfx_vk(vkBeginCommandBuffer(f->cmd, &bi), "vkBeginCommandBuffer"))
-            gfx_warn("FS_SYNC=wait: %s", gx.err);
-    }
 }
 
 void gfx_frame_draw(const GfxDrawList *dl, const float clear_rgb[3]) {
     if (!gx.recording) { gfx_warn("gfx_frame_draw outside gfx_frame_begin/end"); return; }
     if (gx.drawn) { gfx_warn("gfx_frame_draw called twice in one frame; ignored"); return; }
     GfxFrame *f = &gx.frames[gx.frame];
-    if (gx.frame_rendered) gfx_frame_sync_views(f);
     /* This slot's buffers are free: its previous submission was waited for in begin. */
     bool have = gfx_upload_drawlist(dl, &f->verts, &f->indices);
     VkClearValue clear = clear_rgb ? gfx_clear_color(clear_rgb[0], clear_rgb[1], clear_rgb[2], 1.0f)
@@ -2603,7 +2583,6 @@ void gfx_frame_fill_buffer(int buf, u64 offset, u64 bytes, u32 value) {
 void gfx_frame_dispatch(int pipe, const int *bufs, const void *push, u32 nx, u32 ny, u32 nz) {
     GfxFrame *f = gfx_rec("gfx_frame_dispatch");
     if (!f) return;
-    if (gx.recording) gx.frame_rendered = true;
     GfxCompute *c = gfx_compute_get(pipe);
     if (!c) { gfx_rec_fail("gfx_frame_dispatch: invalid compute pipeline %d", pipe); return; }
     GfxStorage *sb[GFX_COMPUTE_MAX_BUFFERS];
@@ -2718,7 +2697,6 @@ void gfx_frame_buffer_to_target(int buf, u64 offset, int target) {
     GfxStorage *b;
     GfxTexture *t;
     if (!f || !gfx_copy_args("gfx_frame_buffer_to_target", buf, offset, target, &b, &t)) return;
-    if (gx.recording) gx.frame_rendered = true;
     VkBufferImageCopy region = gfx_target_region(t, offset);
     gfx_target_copy_begin(f->cmd, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     vkCmdCopyBufferToImage(f->cmd, b->buf, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
