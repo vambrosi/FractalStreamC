@@ -18,6 +18,59 @@ else
 end
 ```
 
+## Download and run
+
+Ready-to-run downloads for Mac and Linux are on the [Releases page](../../releases/latest): no
+compiler, Homebrew or git needed. (Windows: build it yourself, see [`docs/building.md`](docs/building.md).)
+
+<!-- Maintainer: replace OWNER/REPO in the commands below with this repository's GitHub path (e.g. jdoe/FractalStreamC). -->
+
+### Mac (macOS 12 or newer)
+
+1. Download **FractalStream-macos-arm64.zip** for a Mac with Apple silicon (M1, M2, M3, ...), or
+   **FractalStream-macos-x86_64.zip** for a Mac with an Intel processor. Apple menu > About This Mac
+   tells which: "Chip: Apple M..." or "Processor: ... Intel ...".
+2. Unzip it (double-click the zip, if the browser didn't) and drag **FractalStream** into **Applications**.
+3. Open it. The first time, macOS refuses, saying it could not verify that FractalStream is free of
+   malware: the app is not notarized by Apple (that needs a paid developer account). To open it anyway:
+   - macOS 15 (Sequoia) and newer: click **Done**, then open **System Settings > Privacy & Security**,
+     scroll down to the message about FractalStream, click **Open Anyway**, then **Open Anyway** again
+     and enter your password.
+   - macOS 14 and older: right-click (or Control-click) FractalStream in Applications, choose **Open**,
+     then click **Open** in the dialog.
+
+   macOS asks only once; afterwards FractalStream opens like any app.
+
+**Or install it with one command, without that warning**: paste this into Terminal (in
+Applications > Utilities) and press Return. It downloads the version for your Mac (`$(uname -m)` is
+`arm64` on Apple silicon, `x86_64` on Intel), puts FractalStream in Applications (replacing an older
+one) and opens it. Files downloaded by `curl` are not marked as coming from the internet, so macOS has
+nothing to ask; no developer tools are needed. The same command updates it later.
+
+```sh
+curl -fL -o /tmp/FractalStream.zip "https://github.com/OWNER/REPO/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+```
+
+(On a Mac where your account is not an administrator, "Permission denied": use `~/Applications`, the
+Applications folder in your home folder, instead of `/Applications` in the command; create it first.)
+If macOS ever says that FractalStream "is damaged and can't be opened", it is that internet mark
+again; this removes it: `xattr -dr com.apple.quarantine /Applications/FractalStream.app`.
+
+### Linux (64-bit PC: Ubuntu 22.04, Debian 12, Fedora 36 or newer)
+
+Download **FractalStream-linux-x86_64.tar.gz**, then in a terminal:
+
+```sh
+tar -xzf FractalStream-linux-x86_64.tar.gz
+FractalStream-linux-x86_64/fractalstream
+```
+
+or both in one go: `curl -fL https://github.com/OWNER/REPO/releases/latest/download/FractalStream-linux-x86_64.tar.gz | tar -xz && FractalStream-linux-x86_64/fractalstream`.
+The folder can be moved anywhere (the examples and the language reference are in it).
+FractalStream needs a Vulkan driver, which most desktops have; if it says "no Vulkan library found",
+install one: `sudo apt install libvulkan1 mesa-vulkan-drivers` (Ubuntu, Debian, Mint) or
+`sudo dnf install vulkan-loader mesa-vulkan-drivers` (Fedora). NVIDIA's own driver includes Vulkan.
+
 ## Using it
 
 - Open the app without arguments (or double-click it) to get an editor with an example
@@ -77,8 +130,11 @@ fractalstream --builtins                      print how the built-in functions a
 
 ## Building
 
-`./build.sh` (Linux, macOS), `build.bat` (Windows/MSVC), `./build.sh app` (macOS bundle with
-MoltenVK), `./build.sh test` (test suite). Details and requirements: [`docs/building.md`](docs/building.md).
+`./build.sh` (Linux, macOS), `build.bat` (Windows/MSVC), `./build.sh app` (macOS app with
+MoltenVK, and its zip), `tools/make_linux_release.sh` (the Linux download), `./build.sh test` (test
+suite). Details and requirements: [`docs/building.md`](docs/building.md), which also says how a release
+is made (pushing a version tag: [`.github/workflows/release.yml`](.github/workflows/release.yml) builds
+and publishes the downloads).
 
 The code is C11 in a unity build (`src/all.c`); third-party code (GLFW, Vulkan headers,
 stb_truetype/stb_image_write, DejaVu fonts, Google's Material Icons font) is vendored in
