@@ -1257,12 +1257,16 @@ void parse_tokens(Program *prog, Token *toks, int ntoks, const char **builtins, 
     p->nufuncs = nufuncs;
     p->gvars = gvars;
     p->ngvars = ngvars;
-    bool has_headers = false;
-    for (int i = 0; i < ntoks; i++)
+    bool has_headers = false, has_code = false;
+    for (int i = 0; i < ntoks; i++) {
         if (toks[i].kind == TK_SECTION) has_headers = true;
+        if (toks[i].kind != TK_NEWLINE && toks[i].kind != TK_EOF) has_code = true;
+    }
     int funcs_before = prog->funcs.len;
 
-    if (!has_headers) {
+    if (!has_headers && !has_code && !prelude) {
+        /* an empty script (or only comments): no sections, so no view either */
+    } else if (!has_headers) {
         Section *s = new_section(p, prelude ? SEC_GLOBAL : SEC_VIEWER, 1);
         if (!prelude) {
             s->name = "plane";

@@ -320,7 +320,12 @@ int cli_main(int argc, char **argv) {
         }
     } else if (!strcmp(mode, "--render")) {
         Section *v = cli_find_viewer(p, viewer);
-        if (!v) { fprintf(stderr, "error: no viewer named '%s'\n", viewer ? viewer : ""); rc = 2; goto done; }
+        if (!v) {
+            if (viewer) fprintf(stderr, "error: no viewer named '%s'\n", viewer);
+            else fprintf(stderr, "error: the script has no viewer\n");
+            rc = 2;
+            goto done;
+        }
         u8 *rgba = (u8 *)xmalloc((size_t)w * h * 4);
         char err[512] = "";
         bool ok = true;
