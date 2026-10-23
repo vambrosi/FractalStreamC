@@ -1083,15 +1083,34 @@ void state_set_defaults(Program *p, u32 *state) {
  * P = (X, Y, Z) (the view direction is -Z, the field of view is 100 degrees across the smaller side),
  * stereographic projection from the north pole gives w = (X + iY) / (1 - Z), and the view map
  * z = (a w + b) / (c w + d) is kept in NAME.mobius.  Computed in homogeneous coordinates
- * [X + iY : 1 - Z] so that w = infinity needs no special case.  codegen.c does the same on the GPU. */
+ * [X + iY : 1 - Z] so that w = infinity needs no special case.  codegen.c does the same on the GPU.
+ * Conformal views (NAME.conformal) see the sphere from a point of it instead: the screen is the plane of the
+ * stereographic projection, w is proportional to the pixel's position (the same w as before at the edges of the
+ * smaller side), and the whole view is the Möbius map. */
 #define PROJ_T 1.19175359f /* tan(50 degrees) */
 #define PROJ_EDGE 0.46630766f /* tan(25 degrees): |w| at the edge of the smaller side */
 
-static void proj_pixel_to_lift(const float *m8, float w, float h, float px, float py, float lift[4]) {
+/* the point w = u / v seen at screen position (x, y), in units where the edges of the smaller side are at +-PROJ_T */
+static void proj_screen_w(bool conformal, float x, float y, float u[2], float v[2]) {
+    if (conformal) {
+        u[0] = x * (PROJ_EDGE / PROJ_T);
+        u[1] = y * (PROJ_EDGE / PROJ_T);
+        v[0] = 1.0f;
+        v[1] = 0.0f;
+        return;
+    }
+    float n = 1.0f / sqrtf(x * x + y * y + 1.0f);
+    u[0] = x * n;
+    u[1] = y * n;
+    v[0] = 1.0f + n;
+    v[1] = 0.0f;
+}
+
+static void proj_pixel_to_lift(const float *m8, bool conformal, float w, float h, float px, float py, float lift[4]) {
     float m = 0.5f * FS_MIN(w, h);
     float x = (px - 0.5f * w) / m * PROJ_T, y = (0.5f * h - py) / m * PROJ_T;
-    float n = 1.0f / sqrtf(x * x + y * y + 1.0f);
-    float u[2] = {x * n, y * n}, v[2] = {1.0f + n, 0.0f};
+    float u[2], v[2];
+    proj_screen_w(conformal, x, y, u, v);
     float t1[2], t2[2];
     cmul(m8 + 0, u, t1);
     cmul(m8 + 2, v, t2);
@@ -1103,11 +1122,12 @@ static void proj_pixel_to_lift(const float *m8, float w, float h, float px, floa
     lift[3] = t1[1] + t2[1];
 }
 
-static void proj_pixel_to_plane(const float *m8, float w, float h, float px, float py, float *re, float *im) {
+static void proj_pixel_to_plane(const float *m8, bool conformal, float w, float h, float px, float py, float *re,
+                                float *im) {
     float m = 0.5f * FS_MIN(w, h);
     float x = (px - 0.5f * w) / m * PROJ_T, y = (0.5f * h - py) / m * PROJ_T;
-    float n = 1.0f / sqrtf(x * x + y * y + 1.0f);
-    float u[2] = {x * n, y * n}, v[2] = {1.0f + n, 0.0f};
+    float u[2], v[2];
+    proj_screen_w(conformal, x, y, u, v);
     float t1[2], t2[2], num[2], den[2], z[2];
     cmul(m8 + 0, u, t1);
     cmul(m8 + 2, v, t2);
@@ -1122,13 +1142,16 @@ static void proj_pixel_to_plane(const float *m8, float w, float h, float px, flo
     *im = z[1];
 }
 
+/* is the projective view v conformal (in this state)? */
+bool viewer_conformal(const Section *v, const u32 *state) { return v->conformal && state[v->conformal->slot] != 0; }
+
 /* Map pixel (px, py) of a w x h tile to the plane, exactly like the shader. */
 void viewer_pixel_to_plane(const Program *p, const u32 *state, const Section *v, float w, float h, float px, float py,
                            float *re, float *im) {
     if (v->mobius) {
         float m8[8];
         for (int k = 0; k < 8; k++) m8[k] = wf(state[v->mobius->slot + k]);
-        proj_pixel_to_plane(m8, w, h, px, py, re, im);
+        proj_pixel_to_plane(m8, viewer_conformal(v, state), w, h, px, py, re, im);
         return;
     }
     float cx = wf(state[v->center->slot]), cy = wf(state[v->center->slot + 1]);
@@ -1144,7 +1167,7 @@ void viewer_pixel_to_lift(const Program *p, const u32 *state, const Section *v, 
     if (v->mobius) {
         float m8[8];
         for (int k = 0; k < 8; k++) m8[k] = wf(state[v->mobius->slot + k]);
-        proj_pixel_to_lift(m8, w, h, px, py, lift);
+        proj_pixel_to_lift(m8, viewer_conformal(v, state), w, h, px, py, lift);
         return;
     }
     viewer_pixel_to_plane(p, state, v, w, h, px, py, &lift[0], &lift[1]);

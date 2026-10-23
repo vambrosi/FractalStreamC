@@ -360,14 +360,25 @@ static void mob_set(Sym *s, Mob x) {
     }
 }
 #define APP_PROJ_T 1.19175359f
-static Cx screen_to_w(Rect r, float x, float y) {
+#define APP_PROJ_EDGE 0.46630766f
+/* the point w (before the view's Möbius map) seen at screen position (x, y) of a projective view in r, and back:
+   from the sphere's centre, or (conformal) from a point of the sphere, see proj_screen_w in interp.c */
+static Cx screen_to_w(Rect r, bool conformal, float x, float y) {
     float m = 0.5f * FS_MIN(r.w, r.h);
     float sx = (x - r.x - 0.5f * r.w) / m * APP_PROJ_T, sy = (0.5f * r.h - (y - r.y)) / m * APP_PROJ_T;
+    if (conformal) return cx(sx * (APP_PROJ_EDGE / APP_PROJ_T), sy * (APP_PROJ_EDGE / APP_PROJ_T));
     float n = 1.0f / sqrtf(sx * sx + sy * sy + 1.0f);
     return cx(sx * n / (1 + n), sy * n / (1 + n));
 }
-static bool w_to_screen(Rect r, Cx w, float *x, float *y) {
+static bool w_to_screen(Rect r, bool conformal, Cx w, float *x, float *y) {
     float s2 = w.re * w.re + w.im * w.im;
+    if (conformal) {
+        float m = 0.5f * FS_MIN(r.w, r.h);
+        if (!(s2 < 1e12f)) return false; /* (the eye's own point, infinitely far) */
+        *x = r.x + 0.5f * r.w + w.re / APP_PROJ_EDGE * m;
+        *y = r.y + 0.5f * r.h - w.im / APP_PROJ_EDGE * m;
+        return true;
+    }
     if (!(s2 < 1.0f)) return false; /* behind the camera */
     float X = 2 * w.re / (1 + s2), Y = 2 * w.im / (1 + s2), Z = (s2 - 1) / (s2 + 1);
     float m = 0.5f * FS_MIN(r.w, r.h);
@@ -383,7 +394,8 @@ static void plane_of(int v, Rect r, float x, float y, float *re, float *im) {
 static void pixel_of(int v, Rect r, float re, float im, float *x, float *y) {
     Section *s = A.prog->viewers[v];
     if (s->mobius) {
-        if (!w_to_screen(r, mob_apply(mob_inv(mob_get(s->mobius)), cx(re, im)), x, y)) *x = *y = 1e9f;
+        if (!w_to_screen(r, viewer_conformal(s, A.state), mob_apply(mob_inv(mob_get(s->mobius)), cx(re, im)), x, y))
+            *x = *y = 1e9f;
         return;
     }
     float cx = wf(A.state[s->center->slot]), cy = wf(A.state[s->center->slot + 1]);
@@ -1895,7 +1907,7 @@ static void inspect_at(int v, float re, float im) {
 static void zoom_at(int v, Rect r, float x, float y, float factor) {
     Section *s = A.prog->viewers[v];
     if (s->mobius) { /* hyperbolic map fixing the point under the mouse and its antipode */
-        Cx p = screen_to_w(r, x, y);
+        Cx p = screen_to_w(r, viewer_conformal(s, A.state), x, y);
         Mob t = mob_to_zero(p), k = {cx(factor, 0), cx(0, 0), cx(0, 0), cx(1, 0)};
         mob_set(s->mobius, mob_mul(mob_get(s->mobius), mob_mul(mob_inv(t), mob_mul(k, t))));
         return;
@@ -1911,7 +1923,8 @@ static void pan_by(int v, Rect r, float dx, float dy) {
     Section *s = A.prog->viewers[v];
     if (s->mobius) { /* rotate the sphere so the point under the mouse follows it */
         float mx = A.in.mouse_x, my = A.in.mouse_y;
-        Cx p0 = screen_to_w(r, mx - dx, my - dy), p1 = screen_to_w(r, mx, my);
+        bool conf = viewer_conformal(s, A.state);
+        Cx p0 = screen_to_w(r, conf, mx - dx, my - dy), p1 = screen_to_w(r, conf, mx, my);
         Mob rot = mob_mul(mob_inv(mob_to_zero(p0)), mob_to_zero(p1));
         mob_set(s->mobius, mob_mul(mob_get(s->mobius), rot));
         return;

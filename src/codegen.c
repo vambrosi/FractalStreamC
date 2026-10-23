@@ -1504,6 +1504,7 @@ void codegen_viewer_deps(Program *p, Section *v, bool *used) {
     mark_block(&G, &v->body);
     v->center->used = v->radius->used = true;
     if (v->mobius) v->mobius->used = true;
+    if (v->conformal) v->conformal->used = true;
     for (int i = 0; i < p->globals.len; i++) used[i] = p->globals.data[i]->used;
     vec_free(G.visited);
 }
@@ -1578,6 +1579,12 @@ static u32 proj_plane_lift(Gen *g, u32 px, u32 py, u32 w, u32 h) {
     u32 n = op2(g, SpvOpFDiv, f, cf(g, 1), ext1(g, f, GLSLSqrt, r2));
     u32 u = vec2(g, op2(g, SpvOpFMul, f, x, n), op2(g, SpvOpFMul, f, y, n));
     u32 vv = vec2(g, op2(g, SpvOpFAdd, f, cf(g, 1), n), cf(g, 0));
+    if (v->conformal) { /* seen from a point of the sphere: w proportional to the position (interp.c proj_screen_w) */
+        u32 k = cf(g, 0.46630766f / 1.19175359f), on = global_value(g, v->conformal);
+        u32 uc = vec2(g, op2(g, SpvOpFMul, f, x, k), op2(g, SpvOpFMul, f, y, k)), vc = vec2(g, cf(g, 1), cf(g, 0));
+        u = sel2(g, on, uc, u);
+        vv = sel2(g, on, vc, vv);
+    }
     u32 mv = global_value(g, v->mobius);
     u32 ma = extract(g, g->tvec2, mv, 0), mb = extract(g, g->tvec2, mv, 1);
     u32 mc = extract(g, g->tvec2, mv, 2), md = extract(g, g->tvec2, mv, 3);
@@ -1917,6 +1924,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
     v->center->used = v->radius->used = true;
     if (g->df && v->center_lo) v->center_lo->used = true;
     if (v->mobius) v->mobius->used = true;
+    if (v->conformal) v->conformal->used = true;
 
     /* state buffer: struct of every global (layout from check.c) */
     int nmem = 0;

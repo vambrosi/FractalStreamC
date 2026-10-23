@@ -544,6 +544,26 @@ TEST(projective_mapping) {
     viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 0, &re, &im);
     CHECK_NEAR(re, 1, 1e-4);
     CHECK_NEAR(im, 3, 1e-4);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 50, &re, &im); /* (seen from the centre: not halfway) */
+    CHECK(re > 2.1f);
+    program_free(p);
+    /* conformal: seen from a point of the sphere, the view is the Möbius map of the pixel's position (the same points
+       at the centre and at the edges) */
+    p = LOAD_OK("@config\nsphere.radius = 2\nsphere.center = 1 + i\nsphere.conformal = true\n"
+                "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
+                "color = gray(|z|)\n");
+    v = p->viewers[0];
+    CHECK(viewer_conformal(v, p->initial_state));
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 50, &re, &im);
+    CHECK_NEAR(re, 1, 1e-5);
+    CHECK_NEAR(im, 1, 1e-5);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 150, 50, &re, &im);
+    CHECK_NEAR(re, 3, 1e-4);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 50, &re, &im); /* halfway */
+    CHECK_NEAR(re, 2, 1e-4);
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 25, &re, &im);
+    CHECK_NEAR(re, 2, 1e-4);
+    CHECK_NEAR(im, 2, 1e-4);
     program_free(p);
 }
 

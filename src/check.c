@@ -458,6 +458,11 @@ static void setup_internals(Checker *c) {
             s->mobius->is_internal = true;
             s->mobius->doc = "current view of the sphere";
             vec_push(p->globals, s->mobius);
+            s->conformal = new_sym(c, arena_printf(&p->arena, "%s.conformal", s->name), t_bool, SYM_GLOBAL, s->line, 1);
+            s->conformal->viewer_index = v;
+            s->conformal->doc = "a conformal view: the sphere seen from a point of it (stereographic projection), "
+                                "instead of from its centre";
+            vec_push(p->globals, s->conformal);
         }
     }
 }
@@ -1165,8 +1170,9 @@ static Type *chk(Checker *c, Expr *e) {
         }
         if (strcmp(e->name, "center") == 0 || strcmp(e->name, "centre") == 0) e->sym = v->center;
         else if (strcmp(e->name, "radius") == 0) e->sym = v->radius;
+        else if (strcmp(e->name, "conformal") == 0 && v->conformal) e->sym = v->conformal;
         else {
-            ERR(c, e, "viewers have .center and .radius, not .%s", e->name);
+            ERR(c, e, "viewers have .center and .radius%s, not .%s", v->conformal ? " (and .conformal)" : "", e->name);
             break;
         }
         t = e->sym->type;
