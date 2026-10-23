@@ -956,6 +956,9 @@ TEST(app_layout_empty_script) {
     CHECK(A.editor_open);
     app_test_ui_frame();
     CHECK_INT(A.nvis, 0);
+    A.overlay_panes = true;
+    app_test_ui_frame(); /* (over a quiet background) */
+    CHECK_INT(A.nvis, 0);
     CHECK_INT(bar_view(), -1);
     float x, y;
     CHECK(!app_test_bar_item(false, BI_FOCUS, 0, 0, &x, &y)); /* (no view to act on) */
@@ -986,6 +989,122 @@ TEST(app_split_beside_neighbour) {
     app_test_stop();
 }
 
+/* overlay panes: the views use the whole space between the bars, the panes float over them and take the mouse where
+   they are drawn; the views keep it elsewhere */
+TEST(app_overlay_panes) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb"), LOAD_OPEN));
+    A.overlay_panes = true;
+    A.editor_open = A.config_open = true;
+    A.nodes[A.root].ratio = -1; /* (the split as a new one: in the middle of what shows) */
+    app_test_ui_frame();
+    float bar = bar_width();
+    CHECK(A.area.x == bar && A.area.x + A.area.w == 800 - bar);
+    CHECK(A.free.x == A.editor_r.x + A.editor_r.w && A.free.x + A.free.w == A.config_r.x);
+    CHECK(A.free.w < A.area.w);
+    CHECK_INT(A.nvis, 2);
+    if (A.nvis == 2) {
+        VisTile *t0 = &A.vis[0], *t1 = &A.vis[1];
+        CHECK(t0->r.x == A.area.x && t1->r.x + t1->r.w == A.area.x + A.area.w); /* (rendered whole, under the panes) */
+        CHECK_NEAR(t0->r.x + t0->r.w, A.free.x + A.free.w / 2, 2);
+        CHECK(t0->vr.x == A.free.x && t0->vr.w < t0->r.w && t1->vr.x + t1->vr.w == A.free.x + A.free.w);
+        int tw, th;
+        export_size(0, 1, &tw, &th);
+        CHECK_INT(tw, (int)t0->r.w);
+    }
+    Sym *rad = A.prog->viewers[0]->radius;
+    float r0 = wf(A.state[rad->slot]);
+    /* the wheel over the script pane scrolls the script, not the view under it */
+    tu_move(A.editor_r.x + A.editor_r.w / 2, 300);
+    app_test_ui_frame();
+    T.scroll_y = 1;
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, -1);
+    CHECK(wf(A.state[rad->slot]) == r0);
+    /* a click there is the pane's too: the view doesn't pan */
+    ViewPlace pl0 = view_place(0);
+    tu_press(0, 1);
+    app_test_ui_frame();
+    tu_move(A.editor_r.x + A.editor_r.w / 2 + 30, 340);
+    app_test_ui_frame();
+    tu_release(0);
+    app_test_ui_frame();
+    ViewPlace pl1 = view_place(0);
+    CHECK(same_place(&pl0, &pl1) && A.drag == DRAG_NONE);
+    /* where no pane is, the view has the wheel */
+    tu_move(A.free.x + 20, 300);
+    app_test_ui_frame();
+    T.scroll_y = 1;
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, 0);
+    CHECK(wf(A.state[rad->slot]) < r0);
+    /* the gap around a pane's frame belongs to the view under it */
+    tu_move(A.editor_r.x + 2, 300);
+    app_test_ui_frame();
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, 0);
+    /* the config pane takes the mouse from the view under it */
+    tu_move(A.config_r.x + A.config_r.w / 2, 300);
+    app_test_ui_frame();
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, -1);
+    /* a view dropped on the free part of the first view splits it there; dropped on a pane, nothing happens */
+    int leaf;
+    Rect hl;
+    CHECK(drop_zone(A.editor_r.x + A.editor_r.w / 2, 300, &leaf, &hl) == DROP_NONE);
+    if (A.nvis == 2) {
+        Rect vr = A.vis[0].vr;
+        CHECK(drop_zone(vr.x + vr.w * 0.9f, vr.y + vr.h / 2, &leaf, &hl) == DROP_RIGHT);
+        CHECK(hl.x >= A.free.x); /* (what will show of the new tile) */
+    }
+    /* beside the views: the views are between the panes again */
+    A.overlay_panes = false;
+    app_test_ui_frame();
+    CHECK(A.area.x == A.free.x && A.area.w == A.free.w);
+    CHECK(A.nvis == 2 && A.vis[0].r.x == A.free.x && A.vis[0].vr.w == A.vis[0].r.w);
+    app_test_stop();
+}
+
+/* the panes over the views or beside them: a button in the right bar, kept in settings.txt with the interface's size */
+TEST(app_overlay_setting) {
+#if FS_OS_WINDOWS
+    SKIP("uses setenv");
+#else
+    const char *old = getenv("FS_CONFIG_DIR");
+    char *saved_env = old ? xstrdup(old) : NULL;
+    setenv("FS_CONFIG_DIR", "build/test-settings/overlay", 1);
+    remove("build/test-settings/overlay/settings.txt");
+    App saved = A;
+    memset(&A, 0, sizeof A);
+    load_settings();
+    CHECK(A.overlay_panes); /* (on unless the settings say otherwise) */
+    CHECK(A.ui_zoom == 1);
+    tu_reset(1.0f);
+    A.hover_viewer = A.hover_tile = -1;
+    layout_reset(-1);
+    app_test_bars_frame();
+    CHECK(app_test_bar_click(false, BI_OVERLAY, -1, 0));
+    CHECK(!A.overlay_panes);
+    A.ui_zoom = 1.5f;
+    save_settings();
+    A.overlay_panes = true;
+    A.ui_zoom = 1;
+    load_settings();
+    CHECK(!A.overlay_panes);
+    CHECK_NEAR(A.ui_zoom, 1.5, 1e-6);
+    CHECK(app_test_bar_click(false, BI_OVERLAY, -1, 0));
+    CHECK(A.overlay_panes);
+    A.overlay_panes = false;
+    load_settings();
+    CHECK(A.overlay_panes);
+    CHECK_NEAR(A.ui_zoom, 1.5, 1e-6);
+    A = saved;
+    if (saved_env) setenv("FS_CONFIG_DIR", saved_env, 1);
+    else unsetenv("FS_CONFIG_DIR");
+    free(saved_env);
+#endif
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -1003,4 +1122,6 @@ static const TestCase tests_app[] = {
     TESTCASE(app_layout_gone_while_errors),
     TESTCASE(app_layout_empty_script),
     TESTCASE(app_split_beside_neighbour),
+    TESTCASE(app_overlay_panes),
+    TESTCASE(app_overlay_setting),
 };

@@ -44,8 +44,8 @@ typedef struct Rect { float x, y, w, h; } Rect;
 /* a node of the layout tree: a leaf shows a viewer; a split shows a and b side by side (ratio: the share of a; < 0
    until the next layout, which splits the part of the node not under a pane in two) */
 typedef struct LNode { int kind; int a, b; float ratio; int viewer; Rect r; } LNode;
-/* a tile on screen: the viewer, its rectangle, its leaf (or float corner); vr is the part of r not under a pane,
-   where its labels go */
+/* a tile on screen: the viewer, its rectangle, its leaf (or float corner); vr is the part of r not under a pane
+   (overlay panes: the views use the whole area, the panes float over them), where its labels go */
 typedef struct VisTile { int viewer; Rect r; int node; int fl; Rect vr; } VisTile;
 
 /* where a view looks: Back / Forward go through the places a view has been */
@@ -111,8 +111,9 @@ typedef struct App {
     int focus_viewer;
     VisTile vis[MAX_TILES + MAX_FLOATS];
     int nvis;
-    Rect area;              /* where the tiles are: between the panes */
-    Rect free;              /* the part of the area no pane covers (all of it: the panes are beside the views) */
+    Rect area;              /* where the tiles are: between the panes, or (overlay panes) between the bars */
+    Rect free;              /* the part of the area no pane covers (= area unless the panes are overlays) */
+    bool overlay_panes;     /* the panes float over the views, translucent (a setting, kept in settings.txt) */
     int band_rows;
     int flood_passes;       /* flood-fill passes per frame (adapts to the GPU) */
     /* the bars at the window's edges, and the panes next to them */
@@ -1706,9 +1707,10 @@ static void note_recent(const char *file) {
     sb_free(&sb);
 }
 
-/* settings.txt: "key=value" lines (the size of the UI) */
+/* settings.txt: "key=value" lines (the size of the UI, the panes over the views or beside them) */
 static void load_settings(void) {
     A.ui_zoom = 1;
+    A.overlay_panes = true;
     const char *dir = config_dir();
     if (!dir) return;
     char path[1200];
@@ -1718,15 +1720,17 @@ static void load_settings(void) {
     if (!text) return;
     const char *z = strstr(text, "ui_zoom=");
     if (z) A.ui_zoom = FS_CLAMP((float)atof(z + 8), 0.5f, 3.0f);
+    const char *o = strstr(text, "overlay_panes=");
+    if (o) A.overlay_panes = atoi(o + 14) != 0;
     free(text);
 }
 
 static void save_settings(void) {
     const char *dir = config_dir();
     if (!dir || !fs_make_dirs(dir)) return;
-    char path[1200], text[64];
+    char path[1200], text[128];
     snprintf(path, sizeof path, "%s/settings.txt", dir);
-    int n = snprintf(text, sizeof text, "ui_zoom=%.3g\n", A.ui_zoom);
+    int n = snprintf(text, sizeof text, "ui_zoom=%.3g\noverlay_panes=%d\n", A.ui_zoom, A.overlay_panes ? 1 : 0);
     fs_write_file(path, text, (size_t)n);
 }
 
@@ -1735,6 +1739,13 @@ static void set_ui_zoom(float z) {
     if (fabsf(A.ui_zoom - 1) < 0.02f) A.ui_zoom = 1;
     save_settings();
     set_status(false, "Size of the interface: %d%% (" MODKEY "+0: 100%%)", (int)lroundf(A.ui_zoom * 100));
+}
+
+/* the script, config and info panes over the views (translucent, the views keep the whole window) or beside them */
+static void set_overlay_panes(bool on) {
+    A.overlay_panes = on;
+    save_settings();
+    set_status(false, on ? "The panes float over the views" : "The panes are beside the views");
 }
 
 static bool open_file(const char *path, bool reload) {
@@ -2635,7 +2646,7 @@ static void draw_tile(VisTile *t) {
         }
     }
     bool several = A.nvis > 1;
-    Rect vr = t->vr; /* its labels go in the part that shows */
+    Rect vr = t->vr; /* its labels go in the part that shows (overlay panes cover the rest) */
     ui_push_clip(vr.x, vr.y, vr.w, vr.h);
     if ((p->nviewers > 1 || t->fl >= 0) && vr.w > px(30)) { /* its number (its button in the left bar) and its name */
         const char *name = s->display ? s->display : s->name;
@@ -2702,9 +2713,10 @@ static void ensure_target(int v, int w, int h) {
  * number; a click shows the view in place of the focused one, or makes it the focused one; dragging it onto the views
  * places it: the middle of a view replaces it, its sides split it, the corners float) and, while the view is on screen,
  * its tools, the selected one highlighted.  Right: the config's button, then what can be done with the focused view
- * (the one clicked last): back, forward, reset, copy and paste its location, axes and grid, pictures, hide; the keys
- * at the bottom.  The bars stay when the panes next to them open, so their buttons never move away from the mouse. */
-enum { BI_SEP, BI_SCRIPT, BI_VIEW, BI_TOOL, BI_CONFIG, BI_INFO, BI_FOCUS, BI_ACTION, BI_HELP };
+ * (the one clicked last): back, forward, reset, copy and paste its location, axes and grid, pictures, hide; at the
+ * bottom the panes over the views (or beside them) and the keys.  The bars stay when the panes next to them open, so
+ * their buttons never move away from the mouse. */
+enum { BI_SEP, BI_SCRIPT, BI_VIEW, BI_TOOL, BI_CONFIG, BI_INFO, BI_FOCUS, BI_ACTION, BI_OVERLAY, BI_HELP };
 enum { ACT_BACK, ACT_FORWARD, ACT_RESET, ACT_COPY, ACT_PASTE, ACT_GRID, ACT_SAVE, ACT_SAVE_LARGE, ACT_HIDE, ACT_COUNT };
 typedef struct BarItem {
     int kind;
@@ -2800,6 +2812,7 @@ static int right_bar_items(BarItem *it, float *total) {
         }
     }
     n = bar_add(it, n, BI_SEP, -1, 0, &y, sep);
+    n = bar_add(it, n, BI_OVERLAY, -1, 0, &y, b);
     n = bar_add(it, n, BI_HELP, -1, 0, &y, b);
     *total = y + px(6);
     return n;
@@ -2964,6 +2977,14 @@ static int bar_ui(const char *id, Rect r, BarItem *items, int n, float total, fl
             break;
         }
         case BI_ACTION: bar_action(it->viewer, it->what, bx, y, b); break;
+        case BI_OVERLAY:
+            if (ui_icon_button_ex("##overlay", "layers", "L", bx, y, b, A.overlay_panes ? UI_SELECTED : UI_FLAT))
+                set_overlay_panes(!A.overlay_panes);
+            ui_tooltip(A.overlay_panes ? "The script, the config and the info float over the views, which keep the whole "
+                                         "window (a click puts them beside the views)"
+                                       : "The script, the config and the info are beside the views (a click makes them "
+                                         "float over the views, which then keep the whole window)");
+            break;
         case BI_HELP:
             if (ui_icon_button_ex("##help", "keyboard", "?", bx, y, b, A.help_open ? UI_SELECTED : UI_FLAT)) A.help_open = !A.help_open;
             ui_tooltip("The mouse and the keys (F1)");
@@ -3003,10 +3024,55 @@ static void bars(void) {
     }
 }
 
-/* the splitter at a pane's inner edge; returns the new edge position while dragged, else NAN */
+/* ---- the panes: beside the views, or floating over them ----------------------------------------------------------
+ * The script pane (left), the config and info panes (right) are next to the bars.  Beside the views (the panes
+ * opaque, the views in the space left between them), or (overlay panes, a setting) over the views, which then use
+ * the whole space between the bars: each pane is a rounded, translucent frame with a gap around it, the pictures
+ * showing through dimmed, a little more behind the text.  The panes then sit on the PANEL layer (above the tiles,
+ * whose input they cover) and their splitters one layer higher. */
+#define PANE_TINT UI_RGBA(12, 14, 18, 158)     /* a frame over the views: ~62% */
+#define PANE_EDGE UI_RGBA(255, 255, 255, 36)   /* its outline */
+#define PANE_LINE UI_RGBA(255, 255, 255, 22)   /* under its header */
+#define PANE_BODY 0.55f                        /* behind the text, on top of the frame: ~83% in all */
+
+static bool overlay_on(void) { return A.overlay_panes && A.prog; }
+static int pane_layer(void) { return overlay_on() ? UI_LAYER_PANEL : UI_LAYER_BASE; }
+static float pane_gap(void) { return overlay_on() ? px(8) : 0; }
+static float pane_inset(void) { return overlay_on() ? px(3) : 0; } /* (the body inside the frame's rounded corners) */
+
+/* the frame of a pane whose column is r */
+static Rect pane_frame(Rect r) {
+    float g = pane_gap();
+    Rect f = {r.x + g, r.y + g, FS_MAX(r.w - 2 * g, 1.0f), FS_MAX(r.h - 2 * g, 1.0f)};
+    return f;
+}
+
+/* an overlay pane's frame, with the line under its header (bh high); it takes the mouse from the views */
+static void pane_overlay_back(Rect f, float bh) {
+    float rad = px(10), in = pane_inset();
+    ui_occlude(f.x, f.y, f.w, f.h);
+    ui_rrect(f.x, f.y, f.w, f.h, rad, PANE_TINT);
+    ui_rrect_outline(f.x, f.y, f.w, f.h, rad, px(1), PANE_EDGE);
+    if (bh > 0) ui_rect(f.x + in, f.y + bh - px(1), f.w - 2 * in, px(1), PANE_LINE);
+}
+
+/* the background of the config or the info pane at pr, with its header (bh high) */
+static void pane_back(Rect pr, float bh) {
+    if (overlay_on()) {
+        float in = pane_inset();
+        pane_overlay_back(pr, bh);
+        ui_rect(pr.x + in, pr.y + bh, pr.w - 2 * in, pr.h - bh - in, ui_alpha(UI_COL_PANEL, PANE_BODY));
+        return;
+    }
+    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
+    ui_rect(pr.x, pr.y, px(1), pr.h, UI_COL_BORDER);
+    ui_panel_ex(pr.x, pr.y, pr.w, bh, UI_COL_PANEL_HI, 0);
+}
+
+/* the splitter at a pane's inner edge (above the pane); returns the new edge position while dragged, else NAN */
 static float pane_splitter(const char *id, float x, float H) {
     float g = px(5);
-    int prev = ui_layer(UI_LAYER_PANEL);
+    int prev = ui_layer(pane_layer() + 1);
     UiInteract it = ui_interact(id, x - g, 0, 2 * g, H);
     ui_layer(prev);
     if (it.hovered || it.held) ui_set_cursor(UI_CURSOR_HRESIZE);
@@ -3041,8 +3107,9 @@ static float find_bar(float x0, float ew, float y) {
     if (!A.find_open) return 0;
     float rh = px(38), b = px(28), pad = px(6), gap = px(4);
     float h = rh * (A.replace_open ? 2 : 1);
-    ui_panel_ex(x0, y, ew, h, UI_COL_PANEL_HI, 0);
-    ui_rect(x0, y + h - px(1), ew, px(1), UI_COL_BORDER);
+    if (overlay_on()) ui_rect(x0, y, ew, h, ui_alpha(UI_COL_PANEL_HI, 0.6f));
+    else ui_panel_ex(x0, y, ew, h, UI_COL_PANEL_HI, 0);
+    ui_rect(x0, y + h - px(1), ew, px(1), overlay_on() ? PANE_LINE : UI_COL_BORDER);
     float by = y + (rh - b) / 2;
     /* buttons from the right: close, replace toggle, match case, next, previous, count */
     float x = x0 + ew - pad - b;
@@ -3111,11 +3178,15 @@ static float find_bar(float x0, float ew, float y) {
 static void editor_pane(float H) {
     Rect r = A.editor_r;
     if (!A.editor_open || r.w < 1) return;
-    float x0 = r.x, ew = r.w;
+    bool ov = overlay_on();
+    int prev = ui_layer(pane_layer());
+    Rect f = pane_frame(r);
+    float x0 = f.x, ew = f.w, y0 = f.y, in = pane_inset();
     float bh = px(40);
-    ui_panel_ex(x0, 0, ew, bh, UI_COL_PANEL_HI, 0);
-    float x = x0 + px(8), y = px(6), bhh = bh - px(12);
-    ui_push_clip(x0, 0, ew, bh);
+    if (ov) pane_overlay_back(f, bh);
+    else ui_panel_ex(x0, 0, ew, bh, UI_COL_PANEL_HI, 0);
+    float x = x0 + px(8), y = y0 + px(6), bhh = bh - px(12);
+    ui_push_clip(x0, y0, ew, bh);
     bool wide = ew > px(340);
     float lh = ui_font_line_height(UI_FONT_SANS);
     float rw = wide ? ui_text_width(UI_FONT_SANS, "Run", -1) + bhh + px(12) : bhh;
@@ -3153,16 +3224,18 @@ static void editor_pane(float H) {
     ui_pop_clip();
     editor_set_clock(A.ed, fs_time_seconds());
     static float last_fh;
-    float fh = find_bar(x0, ew, bh);
+    float fh = find_bar(x0 + in, ew - 2 * in, y0 + bh);
     if (fh != last_fh) editor_reveal(A.ed); /* the editor got shorter or taller: keep the match in view */
     last_fh = fh;
-    editor_ui(A.ed, x0, bh + fh, ew, H - bh - fh, A.editor_grab);
+    editor_set_background_alpha(A.ed, ov ? PANE_BODY : 1.0f);
+    editor_ui(A.ed, x0 + in, y0 + bh + fh, ew - 2 * in, f.h - bh - fh - in, A.editor_grab);
     A.editor_grab = false;
-    ui_rect(x0 + ew - px(1), 0, px(1), H, UI_COL_BORDER);
+    if (!ov) ui_rect(x0 + ew - px(1), 0, px(1), H, UI_COL_BORDER);
     if (A.prog) { /* (alone in the window: nothing to share it with) */
         float nx = pane_splitter("##editor_split", x0 + ew, H);
-        if (nx == nx && A.in.fb_w > 0) A.editor_frac = FS_CLAMP((nx - x0) / (float)A.in.fb_w, 0.15f, 0.8f);
+        if (nx == nx && A.in.fb_w > 0) A.editor_frac = FS_CLAMP((nx + pane_gap() - r.x) / (float)A.in.fb_w, 0.15f, 0.8f);
     }
+    ui_layer(prev);
 }
 
 static float config_row_h(void) { return px(30); }
@@ -3901,10 +3974,8 @@ static void config_choice(Sym *s, float x, float y, float w) {
 static void config_pane(Rect pr) {
     if (pr.w < 1 || pr.h < 1) return;
     Program *p = A.prog;
-    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
-    ui_rect(pr.x, pr.y, px(1), pr.h, UI_COL_BORDER);
     float bh = px(40);
-    ui_panel_ex(pr.x, pr.y, pr.w, bh, UI_COL_PANEL_HI, 0);
+    pane_back(pr, bh);
     ui_text(UI_FONT_SANS, pr.x + px(14), pr.y + px(11), "Config", -1, UI_COL_TEXT);
     if (!p) return;
     /* the values changed since the script ran (a dot marks each): into the script, or back */
@@ -4055,10 +4126,8 @@ static float info_text(float x, float y, float w, const char *text, float clip_y
 static void info_pane(Rect pr) {
     if (pr.w < 1 || pr.h < 1) return;
     Program *p = A.prog;
-    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
-    ui_rect(pr.x, pr.y, px(1), pr.h, UI_COL_BORDER);
     float bh = px(40);
-    ui_panel_ex(pr.x, pr.y, pr.w, bh, UI_COL_PANEL_HI, 0);
+    pane_back(pr, bh);
     ui_text(UI_FONT_SANS, pr.x + px(14), pr.y + px(11), "Info", -1, UI_COL_TEXT);
     A.out_seen = out_total();
     if (!p) return;
@@ -4105,27 +4174,32 @@ static void info_pane(Rect pr) {
     ui_pop_clip();
 }
 
-/* the pane left of the right bar: the info on top of the config when both are open (the line between them drags) */
+/* The pane left of the right bar: the info on top of the config when both are open (the line between them drags;
+   over the views they are two frames, the gap between them drags) */
 static void right_pane(float W, float H) {
     Rect pr = A.config_r;
     if (pr.w < 1) return;
+    int prev = ui_layer(pane_layer());
+    Rect f = pane_frame(pr);
+    float g = pane_gap();
     if (A.info_open && A.config_open) {
         float ih = FS_CLAMP(floorf(H * A.info_frac), px(100), FS_MAX(px(100), H - px(140)));
-        info_pane((Rect){pr.x, 0, pr.w, ih});
-        config_pane((Rect){pr.x, ih, pr.w, H - ih});
-        ui_rect(pr.x, ih, pr.w, px(1), UI_COL_BORDER);
-        int prev = ui_layer(UI_LAYER_PANEL);
-        UiInteract it = ui_interact("##info_split", pr.x, ih - px(4), pr.w, px(8));
-        ui_layer(prev);
+        info_pane((Rect){f.x, f.y, f.w, ih - g / 2 - f.y});
+        config_pane((Rect){f.x, ih + g / 2, f.w, f.y + f.h - ih - g / 2});
+        if (!overlay_on()) ui_rect(pr.x, ih, pr.w, px(1), UI_COL_BORDER);
+        int prev2 = ui_layer(pane_layer() + 1);
+        UiInteract it = ui_interact("##info_split", f.x, ih - px(4), f.w, px(8));
+        ui_layer(prev2);
         if (it.hovered || it.held) ui_set_cursor(UI_CURSOR_VRESIZE);
         if (it.held && H > 0) A.info_frac = FS_CLAMP(A.in.mouse_y / H, 0.1f, 0.85f);
     } else if (A.info_open) {
-        info_pane(pr);
+        info_pane(f);
     } else {
-        config_pane(pr);
+        config_pane(f);
     }
-    float nx = pane_splitter("##config_split", pr.x, H);
-    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((A.rbar_r.x - nx) / W, 0.12f, 0.6f);
+    float nx = pane_splitter("##config_split", f.x, H);
+    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((A.rbar_r.x - (nx - g)) / W, 0.12f, 0.6f);
+    ui_layer(prev);
 }
 
 /* ---- overlays ------------------------------------------------------------------------- */
@@ -4139,6 +4213,7 @@ static void help_overlay(float W, float H) {
         {"Side buttons", "back / forward: where the view was"},
         {"Left bar", "the script; each view's number (click: show it; drag: split, float) and its tools"},
         {"Right bar", "the config; back, forward, reset, location, grid, pictures of the view clicked last"},
+        {"", "the panes over the views (translucent) or beside them; this help"},
         {"Keys", NULL},
         {MODKEY "+Enter or " MODKEY "+R", "run the script"},
         {MODKEY "+S, " MODKEY "+Shift+S", "save, save as"},
@@ -4818,12 +4893,12 @@ static bool viewers_busy(void) {
 }
 
 /* ---- main loop ----------------------------------------------------------------------- */
-/* the bars at the edges, the open panes next to them, the views in between */
+/* the bars at the edges, the open panes next to them, the views in between (or, overlay panes, under the panes too) */
 static void layout_panes(float W, float H) {
     float bar = bar_width();
     float ew = A.editor_open ? floorf(W * A.editor_frac) : 0;
     float cw = A.config_open || A.info_open ? FS_MAX(floorf(W * A.config_frac), px(300)) : 0;
-    /* the views keep at least a third of the window */
+    /* the views keep at least a third of the window (uncovered) */
     float room = W * 2 / 3 - 2 * bar;
     if (ew + cw > room) {
         float k = FS_MAX(room, 0.0f) / (ew + cw);
@@ -4835,7 +4910,7 @@ static void layout_panes(float W, float H) {
     A.config_r = (Rect){W - bar - cw, 0, cw, H};
     A.rbar_r = (Rect){W - bar, 0, bar, H};
     A.free = (Rect){bar + ew, 0, FS_MAX(W - 2 * bar - ew - cw, 1.0f), H};
-    A.area = A.free;
+    A.area = overlay_on() ? (Rect){bar, 0, FS_MAX(W - 2 * bar, 1.0f), H} : A.free;
 }
 
 /* the tiles on screen (A.vis): the tree's, then the floating views; each with the part of it no pane covers */
@@ -4884,7 +4959,7 @@ static void frame(void) {
     if (atlas) gfx_set_font_atlas(atlas, aw, ah);
     if (in->ndropped) request_open(in->dropped_files[0]); /* (the first file dropped) */
 
-    /* layout */
+    /* layout (a view under a pane is rendered whole: it shows through) */
     layout_tiles(W, H);
     for (int i = 0; i < A.nvis; i++) ensure_target(A.vis[i].viewer, (int)A.vis[i].r.w, (int)A.vis[i].r.h);
 
