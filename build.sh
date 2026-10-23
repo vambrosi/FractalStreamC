@@ -6,15 +6,23 @@
 #   ./build.sh dev        optimized, another name    -> build/fractalstream_dev
 #   ./build.sh test       build and run test suite   -> build/tests
 #   ./build.sh windows    cross-compile with MinGW   -> build/win/fractalstream.exe
-#   ./build.sh app        macOS .app bundle (bundles MoltenVK, see notes in docs/building.md)
+#   ./build.sh app        macOS app with MoltenVK    -> build/FractalStream.app, build/FractalStream-macos-<arch>.zip
+#                         (tools/make_macos_app.sh; the Linux download: tools/make_linux_release.sh)
 #
-# Environment: CC (compiler), MOLTENVK (path to libMoltenVK.dylib on macOS).
+# Environment: CC (compiler), MOLTENVK (where MoltenVK is, for `app`: see tools/make_macos_app.sh),
+# MACOSX_DEPLOYMENT_TARGET (the oldest macOS the program is built for, 11.0 if not set).
 set -e
 cd "$(dirname "$0")"
 MODE=${1:-release}
 OS=$(uname -s)
 case "$MODE" in windows) OS=Windows ;; esac
 case "$OS" in MINGW*|MSYS*|CYGWIN*) OS=Windows ;; esac
+if [ "$MODE" = app ] && [ "$OS" != Darwin ]; then
+  echo "./build.sh app makes the macOS app: run it on a Mac (the Linux download: tools/make_linux_release.sh)" >&2
+  exit 1
+fi
+# macOS: without this the compiler targets the macOS it runs on, and the app would not start on older ones
+[ "$OS" = Darwin ] && export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 if [ "$OS" = Windows ] && [ "$MODE" = windows ]; then
   CC=${CC:-x86_64-w64-mingw32-gcc}; AR=${AR:-x86_64-w64-mingw32-ar}
@@ -40,7 +48,12 @@ case "$OS" in
   *)       echo "unsupported OS: $OS"; exit 1 ;;
 esac
 
-# GLFW is compiled once per object and cached in $OUT/glfw.
+# GLFW is compiled once per object and cached in $OUT/glfw (compiled again when the compiler or its flags change).
+GLFW_BUILD="$CC -O2 $GLFW_DEF${MACOSX_DEPLOYMENT_TARGET:+ (macOS $MACOSX_DEPLOYMENT_TARGET)}"
+if [ "$(cat "$OUT/glfw/build.txt" 2>/dev/null)" != "$GLFW_BUILD" ]; then
+  rm -f "$OUT"/glfw/*.o
+  echo "$GLFW_BUILD" > "$OUT/glfw/build.txt"
+fi
 OBJS=""
 for f in $GLFW_SRC; do
   case "$f" in *.m) src="third_party/glfw/src/$f"; obj="$OUT/glfw/${f%.m}.o" ;;
