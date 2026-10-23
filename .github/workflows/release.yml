@@ -1,0 +1,158 @@
+# Release: builds the downloads and publishes them as a GitHub release.
+#
+# Pushing a tag v<version> (the FS_VERSION of src/base.h, e.g. v0.2.0) builds
+#   FractalStream-macos-arm64.zip       Macs with Apple silicon
+#   FractalStream-macos-x86_64.zip      Macs with an Intel processor
+#   FractalStream-linux-x86_64.tar.gz   Linux on 64-bit PCs
+# and attaches them to the release of that tag (created if needed). Run by hand (Actions > Release > Run workflow),
+# it only builds them: they are under the run's "Artifacts". Steps: docs/building.md, "Making a release".
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Built in Ubuntu 22.04: the program needs the glibc it was built with (2.35) or a newer one, so it runs on
+    # Ubuntu 22.04, Debian 12, Fedora 36 and later.
+    container: ubuntu:22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install the compiler and the X11 headers
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates git \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+      - uses: actions/checkout@v6
+      - name: Test suite (no Vulkan driver here, so the GPU tests are skipped)
+        run: ./build.sh test
+      - name: Pack FractalStream-linux-x86_64.tar.gz
+        run: tools/make_linux_release.sh
+      - name: Try the download as a user would (Vulkan by lavapipe, Mesa's software driver)
+        run: |
+          apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+          T=$(mktemp -d)
+          tar -xzf build/FractalStream-linux-x86_64.tar.gz -C "$T"
+          F=$T/FractalStream-linux-x86_64
+          cd "$(mktemp -d)"
+          "$F/fractalstream" --version
+          "$F/fractalstream" --check "$F/examples/mandelbrot.fstream"
+          "$F/fractalstream" --render mandelbrot.png --size 256x256 "$F/examples/mandelbrot.fstream"
+          test -s mandelbrot.png
+          echo "newest glibc symbol: $(objdump -T "$F/fractalstream" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FractalStream-linux-x86_64
+          path: build/FractalStream-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64             # Apple silicon
+            runner: macos-15
+          - arch: x86_64            # Intel (GitHub's last Intel image, macOS 15: retired in 2027)
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build FractalStream.app and FractalStream-macos-${{ matrix.arch }}.zip
+        # MOLTENVK=download: the official MoltenVK release (version and checksum in tools/make_macos_app.sh)
+        run: MOLTENVK=download ./build.sh app
+      - name: Check the app, unzipped as a user would
+        run: |
+          lipo build/FractalStream.app/Contents/MacOS/fractalstream -verify_arch ${{ matrix.arch }}
+          plutil -p build/FractalStream.app/Contents/Info.plist
+          T=$(mktemp -d)
+          ditto -x -k build/FractalStream-macos-${{ matrix.arch }}.zip "$T"
+          codesign --verify --deep --strict --verbose=2 "$T/FractalStream.app"
+          A=$T/FractalStream.app/Contents
+          cd /    # (the working directory of an app opened from the Finder)
+          "$A/MacOS/fractalstream" --version
+          "$A/MacOS/fractalstream" --check "$A/Resources/examples/mandelbrot.fstream"
+          test -f "$A/Resources/docs/language.md"
+      - name: Render with the bundled MoltenVK (for information; CI Macs may have no usable GPU)
+        continue-on-error: true
+        run: |
+          T=$(mktemp -d)
+          ditto -x -k build/FractalStream-macos-${{ matrix.arch }}.zip "$T"
+          cd "$T"
+          FractalStream.app/Contents/MacOS/fractalstream --render mandelbrot.png --size 256x256 \
+            FractalStream.app/Contents/Resources/examples/mandelbrot.fstream
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FractalStream-macos-${{ matrix.arch }}
+          path: build/FractalStream-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: [linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check that the tag is the program's version
+        run: |
+          VERSION=$(sed -n 's/^#define FS_VERSION "\(.*\)"/\1/p' src/base.h)
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::The tag is $TAG, but FS_VERSION in src/base.h is \"$VERSION\". Set FS_VERSION, commit, and tag that commit (docs/building.md, Making a release)."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release and attach the downloads
+        run: |
+          ls -l dist
+          cat > notes.md <<'EOF'
+          ## Download
+
+          | Your computer | File |
+          |---|---|
+          | Mac with Apple silicon (M1, M2, M3, ...) | **FractalStream-macos-arm64.zip** |
+          | Mac with an Intel processor | **FractalStream-macos-x86_64.zip** |
+          | Linux (64-bit PC) | **FractalStream-linux-x86_64.tar.gz** |
+
+          Which chip a Mac has: Apple menu > About This Mac.
+
+          **Mac** (macOS 12 or newer): unzip, move FractalStream to Applications, and open it. The first time, macOS
+          says it could not verify the app (it is not notarized by Apple): on macOS 15 and newer click Done, then
+          System Settings > Privacy & Security > Open Anyway; on older versions right-click the app > Open > Open.
+          Or install it with one command in Terminal, which avoids the question (it picks the right file for the Mac):
+
+              curl -fL -o /tmp/FractalStream.zip "https://github.com/@REPO@/releases/download/@TAG@/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+
+          **Linux**: `tar -xzf FractalStream-linux-x86_64.tar.gz`, then run `FractalStream-linux-x86_64/fractalstream`.
+          It needs a Vulkan driver (Ubuntu, Debian: `sudo apt install libvulkan1 mesa-vulkan-drivers`).
+
+          More: [Download and run](https://github.com/@REPO@#download-and-run).
+          EOF
+          sed -i -e "s#@REPO@#$GH_REPO#g" -e "s#@TAG@#$TAG#g" notes.md
+          case "$TAG" in *-*) PRERELEASE=--prerelease ;; *) PRERELEASE= ;; esac   # (v1.0.0-beta: a pre-release)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "FractalStream $TAG" --notes-file notes.md $PRERELEASE
+          fi
