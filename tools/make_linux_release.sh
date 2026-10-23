@@ -35,7 +35,7 @@ cp third_party/vulkan/LICENSE.md "$DIR/licenses/Vulkan-Headers.md"
 cp third_party/fonts/LICENSE-DejaVu.txt "$DIR/licenses/DejaVu-fonts.txt"
 cp third_party/fonts/LICENSE-MaterialIcons.txt "$DIR/licenses/Material-Icons.txt"
 find "$DIR" -name '.*' -type f -exec rm -f {} +   # (editor and desktop leftovers, e.g. .DS_Store)
-chmod 755 "$DIR/fractalstream"
+chmod -R u=rwX,go=rX "$DIR"   # (755 for the program and folders, 644 for the rest, whatever the umask)
 
 cat > "$DIR/README.txt" <<EOF
 FractalStream $VERSION for Linux ($ARCH)

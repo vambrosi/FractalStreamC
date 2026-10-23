@@ -135,7 +135,6 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resourc
          "$APP/Contents/Resources/licenses"
 cp "$BIN" "$APP/Contents/MacOS/$EXE"
 cp -L "$DYLIB" "$APP/Contents/Frameworks/libMoltenVK.dylib"
-chmod 755 "$APP/Contents/MacOS/$EXE" "$APP/Contents/Frameworks/libMoltenVK.dylib"   # (Homebrew's is read-only)
 cp -R examples "$APP/Contents/Resources/examples"
 cp docs/*.md "$APP/Contents/Resources/docs/"
 R=$APP/Contents/Resources/licenses
@@ -145,6 +144,8 @@ cp third_party/vulkan/LICENSE.md "$R/Vulkan-Headers.md"
 cp third_party/fonts/LICENSE-DejaVu.txt "$R/DejaVu-fonts.txt"
 cp third_party/fonts/LICENSE-MaterialIcons.txt "$R/Material-Icons.txt"
 find "$APP" -name '.*' -type f -exec rm -f {} +   # (.DS_Store and the like)
+chmod 755 "$APP/Contents/MacOS/$EXE" "$APP/Contents/Frameworks/libMoltenVK.dylib"   # (Homebrew's dylib is read-only)
+chmod -R u=rwX,go=rX "$APP"   # (755 for code and folders, 644 for the rest, whatever the umask)
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
