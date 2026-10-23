@@ -4053,7 +4053,7 @@ static void config_pane(Rect pr) {
         bool any = false;
         for (int i = 0; i < p->globals.len; i++)
             if (config_auto(p, p->globals.data[i], group)) any = true;
-        if (!any && group == 2) continue;
+        if (!any && (group == 2 || p->nviewers == 0)) continue; /* (the views' group has their Reset buttons) */
         y += px(8);
         ui_text(UI_FONT_SANS, x0, y + px(6), group == 1 ? "Views" : "Iteration", -1, UI_COL_ACCENT);
         y += rh;
