@@ -68,6 +68,9 @@ typedef struct GfxViewerParams {
 /* Load the Vulkan library and hand it to GLFW (glfwInitVulkanLoader) so both
    use the same loader. Call before glfwInit(). False if no Vulkan library was found. */
 bool gfx_preinit_loader(void);
+/* After gfx_preinit_loader failed: why a Vulkan library file that is there could not be loaded
+   (the system's message, e.g. a MoltenVK for another processor), or "" */
+const char *gfx_library_error(void);
 
 /* Create instance, device and (with a window) the swapchain. On failure all
    partial state is released and gfx_init may be called again. */

@@ -15,6 +15,11 @@
 #define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 #endif
+#if FS_OS_MACOS
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
+#endif
 
 #define MAX_TILES 12
 #define MAX_NODES (2 * MAX_TILES)
@@ -4688,6 +4693,32 @@ static void frame_editor_only(void) {
     }
 }
 
+/* An error before the window opens, on stderr.  On macOS also in a dialog when the app was opened from the
+   Finder (its parent is launchd): no terminal shows stderr then, and the app would just vanish. */
+static void startup_error(const char *fmt, ...) FS_PRINTF(1, 2);
+static void startup_error(const char *fmt, ...) {
+    char msg[1200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "error: %s\n", msg);
+#if FS_OS_MACOS
+    if (isatty(2) || getppid() != 1) return;
+    char text[2500], script[2700]; /* the message in an AppleScript string: \ and " escaped, lines as \n */
+    int k = 0;
+    for (const char *p = msg; *p && k < (int)sizeof text - 3; p++) {
+        if (*p == '"' || *p == '\\' || *p == '\n') text[k++] = '\\';
+        text[k++] = *p == '\n' ? 'n' : *p;
+    }
+    text[k] = 0;
+    snprintf(script, sizeof script, "display alert \"FractalStream could not start\" message \"%s\" as critical", text);
+    char *args[] = {"/usr/bin/osascript", "-e", script, NULL};
+    pid_t pid;
+    if (posix_spawn(&pid, args[0], NULL, NULL, args, environ) == 0) waitpid(pid, NULL, 0);
+#endif
+}
+
 int app_run(const char *script_path) {
     memset(&A, 0, sizeof A);
     A.t0 = fs_time_seconds();
@@ -4727,12 +4758,13 @@ int app_run(const char *script_path) {
     }
     if (!script_path) ww = FS_MAX(ww, 1280);
     if (!gfx_preinit_loader()) {
-        fprintf(stderr, "error: no Vulkan library found. Install your GPU driver (or MoltenVK on macOS).\n");
+        const char *why = gfx_library_error();
+        startup_error("no Vulkan library found. Install your GPU driver (or MoltenVK on macOS).%s%s", why[0] ? "\n" : "", why);
         free(src);
         return 1;
     }
     if (!platform_init(FS_CLAMP(ww, 320, 8192), FS_CLAMP(wh, 240, 8192), "FractalStream", err, sizeof err)) {
-        fprintf(stderr, "error: %s\n", err);
+        startup_error("%s", err);
         free(src);
         return 1;
     }
@@ -4741,8 +4773,8 @@ int app_run(const char *script_path) {
     gd.vsync = true;
     gd.validation = getenv("FS_VALIDATION") != NULL;
     if (!gfx_init(&gd, err, sizeof err)) {
-        fprintf(stderr, "error: %s\n", err);
         platform_shutdown();
+        startup_error("%s", err);
         free(src);
         return 1;
     }

@@ -190,7 +190,9 @@ static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u
     GfxInitDesc d = {0};
     d.validation = getenv("FS_VALIDATION") != NULL;
     if (!gfx_preinit_loader()) {
-        snprintf(err, (size_t)errcap, "could not load the Vulkan library (is a Vulkan driver installed?)");
+        const char *why = gfx_library_error();
+        snprintf(err, (size_t)errcap, "could not load the Vulkan library (is a Vulkan driver installed?)%s%.400s",
+                 why[0] ? ": " : "", why);
         free(spv);
         return false;
     }
@@ -233,6 +235,8 @@ int cli_main(int argc, char **argv) {
 #ifdef __APPLE__
     /* MoltenVK: fast maths, except in the shaders that declare IEEE floats (deep zooms, see codegen.c) */
     setenv("MVK_CONFIG_FAST_MATH_ENABLED", "2", 0);
+    /* and only its errors in the terminal (its release builds also print informational messages) */
+    setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
 #endif
     const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL, *event = NULL;
     int w = 512, h = 512;
@@ -259,6 +263,7 @@ int cli_main(int argc, char **argv) {
         }
         if (!strcmp(a, "--cpu")) { cpu = true; continue; }
         if (!strcmp(a, "--set") && i + 1 < argc) { if (nsets < 32) sets[nsets++] = argv[++i]; continue; }
+        if (!strncmp(a, "-psn_", 5)) continue; /* (macOS: the process serial number the Finder may pass to an app) */
         if (a[0] == '-' && a[1]) {
             fprintf(stderr, "error: unknown option %s\n\n%s", a, cli_usage);
             return 2;

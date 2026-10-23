@@ -290,7 +290,13 @@ bool fs_absolute(const char *path, char *out, int cap) {
     char buf[PATH_MAX];
     bool ok = realpath(path[0] ? path : ".", buf) != NULL;
 #endif
-    snprintf(out, (size_t)cap, "%s", ok ? buf : path);
+    /* (copied by hand, cut at cap - 1: snprintf here makes gcc 11 warn at every caller with a smaller buffer) */
+    if (cap <= 0) return ok;
+    const char *src = ok ? buf : path;
+    size_t n = strlen(src);
+    if (n >= (size_t)cap) n = (size_t)cap - 1;
+    memmove(out, src, n);
+    out[n] = 0;
     return ok;
 }
 

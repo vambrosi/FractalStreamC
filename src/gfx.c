@@ -180,6 +180,8 @@ static const char *gfx_load_swapchain_funcs(VkDevice dev) {
 }
 #undef GFX_LOAD_FN
 
+static char gfx_lib_error[600]; /* why the first library file that exists did not load (gfx_library_error) */
+
 static bool gfx_try_library(const char *path) {
 #if FS_OS_WINDOWS
     HMODULE lib = LoadLibraryA(path);
@@ -189,7 +191,12 @@ static bool gfx_try_library(const char *path) {
     if (!fn) { FreeLibrary(lib); return false; }
 #else
     void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!lib) return false;
+    if (!lib) {
+        const char *why = dlerror(); /* (a file that is there but can't be used: wrong architecture, damaged) */
+        if (path[0] == '/' && !gfx_lib_error[0] && access(path, F_OK) == 0)
+            snprintf(gfx_lib_error, sizeof gfx_lib_error, "%s", why ? why : path);
+        return false;
+    }
     void *sym = dlsym(lib, "vkGetInstanceProcAddr");
     PFN_vkGetInstanceProcAddr fn;
     memcpy(&fn, &sym, sizeof fn);   /* POSIX: dlsym results convert to function pointers */
@@ -253,6 +260,8 @@ static bool gfx_load_library(void) {
     return gfx_try_library("libvulkan.so.1") || gfx_try_library("libvulkan.so");
 #endif
 }
+
+const char *gfx_library_error(void) { return gfx_lib_error; }
 
 bool gfx_preinit_loader(void) {
     if (!gfx_load_library()) return false;

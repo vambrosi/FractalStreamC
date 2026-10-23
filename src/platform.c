@@ -289,6 +289,9 @@ bool platform_init(int w, int h, const char *title, char *err, int errcap) {
     plat.in.content_scale = 1.0f;
     plat.in.focused = true;
     glfwSetErrorCallback(cb_error);
+    /* macOS: GLFW would make the .app's Resources folder the working directory, and a script named on the
+       command line (relative to where the program started) would no longer be found or saved there */
+    glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, GLFW_FALSE);
     if (!glfwInit()) {
         plat_set_err(err, errcap, "cannot initialize the window system");
         return false;
