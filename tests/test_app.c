@@ -1065,6 +1065,47 @@ TEST(app_overlay_panes) {
     app_test_stop();
 }
 
+/* a pane's dragged edge follows the mouse, also when both panes are open and share what the views leave them */
+TEST(app_pane_edges_follow_the_mouse) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va"), LOAD_OPEN));
+    for (int mode = 0; mode < 2; mode++) {
+        A.overlay_panes = mode == 1;
+        A.editor_open = A.config_open = true;
+        A.editor_frac = 0.45f;
+        A.config_frac = 0.27f;
+        app_test_ui_frame();
+        float g = pane_gap();
+        CHECK(A.editor_r.w < floorf(800 * 0.45f)); /* (both shrunk: the views keep a third of the window) */
+        float edge = A.editor_r.x + A.editor_r.w - g, to = edge + 40;
+        tu_move(edge, 300);
+        app_test_ui_frame();
+        tu_press(0, 1);
+        app_test_ui_frame();
+        tu_move(to, 300);
+        app_test_ui_frame();
+        app_test_ui_frame();
+        tu_release(0);
+        app_test_ui_frame();
+        CHECK_NEAR(A.editor_r.x + A.editor_r.w - g, to, 2);
+        edge = A.config_r.x + g;
+        to = edge - 30;
+        tu_move(edge, 300);
+        app_test_ui_frame();
+        tu_press(0, 1);
+        app_test_ui_frame();
+        tu_move(to, 300);
+        app_test_ui_frame();
+        app_test_ui_frame();
+        tu_release(0);
+        app_test_ui_frame();
+        CHECK_NEAR(A.config_r.x + g, to, 2);
+        tu_move(-100, -100);
+        app_test_ui_frame();
+    }
+    app_test_stop();
+}
+
 /* the panes over the views or beside them: a button in the right bar, kept in settings.txt with the interface's size */
 TEST(app_overlay_setting) {
 #if FS_OS_WINDOWS
@@ -1123,5 +1164,6 @@ static const TestCase tests_app[] = {
     TESTCASE(app_layout_empty_script),
     TESTCASE(app_split_beside_neighbour),
     TESTCASE(app_overlay_panes),
+    TESTCASE(app_pane_edges_follow_the_mouse),
     TESTCASE(app_overlay_setting),
 };

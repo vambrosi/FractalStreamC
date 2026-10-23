@@ -3047,6 +3047,19 @@ static Rect pane_frame(Rect r) {
     return f;
 }
 
+/* The widths the panes ask for in a window W wide; layout_panes shrinks both when together they would leave the views
+   less than a third of the window (beside them, or uncovered). */
+static float editor_want(float W) { return A.editor_open ? floorf(W * A.editor_frac) : 0; }
+static float config_want(float W) { return A.config_open || A.info_open ? FS_MAX(floorf(W * A.config_frac), px(300)) : 0; }
+static float views_room(float W) { return W * 2 / 3 - 2 * bar_width(); }
+
+/* what a pane must ask for to be w wide next to the other one (asking for `other`): a dragged edge follows the mouse */
+static float pane_ask(float w, float other, float W) {
+    float room = views_room(W);
+    if (other <= 0 || w + other <= room) return w;
+    return w * other / FS_MAX(room - w, 1.0f);
+}
+
 /* an overlay pane's frame, with the line under its header (bh high); it takes the mouse from the views */
 static void pane_overlay_back(Rect f, float bh) {
     float rad = px(10), in = pane_inset();
@@ -3232,8 +3245,8 @@ static void editor_pane(float H) {
     A.editor_grab = false;
     if (!ov) ui_rect(x0 + ew - px(1), 0, px(1), H, UI_COL_BORDER);
     if (A.prog) { /* (alone in the window: nothing to share it with) */
-        float nx = pane_splitter("##editor_split", x0 + ew, H);
-        if (nx == nx && A.in.fb_w > 0) A.editor_frac = FS_CLAMP((nx + pane_gap() - r.x) / (float)A.in.fb_w, 0.15f, 0.8f);
+        float nx = pane_splitter("##editor_split", x0 + ew, H), W = (float)A.in.fb_w;
+        if (nx == nx && W > 0) A.editor_frac = FS_CLAMP(pane_ask(nx + pane_gap() - r.x, config_want(W), W) / W, 0.15f, 0.8f);
     }
     ui_layer(prev);
 }
@@ -4198,7 +4211,7 @@ static void right_pane(float W, float H) {
         config_pane(f);
     }
     float nx = pane_splitter("##config_split", f.x, H);
-    if (nx == nx && W > 0) A.config_frac = FS_CLAMP((A.rbar_r.x - (nx - g)) / W, 0.12f, 0.6f);
+    if (nx == nx && W > 0) A.config_frac = FS_CLAMP(pane_ask(A.rbar_r.x - (nx - g), editor_want(W), W) / W, 0.12f, 0.6f);
     ui_layer(prev);
 }
 
@@ -4896,10 +4909,9 @@ static bool viewers_busy(void) {
 /* the bars at the edges, the open panes next to them, the views in between (or, overlay panes, under the panes too) */
 static void layout_panes(float W, float H) {
     float bar = bar_width();
-    float ew = A.editor_open ? floorf(W * A.editor_frac) : 0;
-    float cw = A.config_open || A.info_open ? FS_MAX(floorf(W * A.config_frac), px(300)) : 0;
+    float ew = editor_want(W), cw = config_want(W);
     /* the views keep at least a third of the window (uncovered) */
-    float room = W * 2 / 3 - 2 * bar;
+    float room = views_room(W);
     if (ew + cw > room) {
         float k = FS_MAX(room, 0.0f) / (ew + cw);
         ew = floorf(ew * k);
@@ -4932,16 +4944,19 @@ static void layout_tiles(float W, float H) {
 static void empty_hint(void) {
     if (A.nvis > 0 || !A.prog || A.prog->nviewers > 0) return;
     Rect r = A.free;
-    float w = FS_MIN(r.w - px(40), px(420));
+    float w = FS_MIN(r.w - px(40), px(400));
     if (w < px(160)) return;
-    const char *text = A.editor_open ? "Code without sections is one view of the plane, z the point of each pixel; "
-                                       "more views start with @viewer NAME z."
-                                     : "Code without sections is one view of the plane, z the point of each pixel; "
-                                       "more views start with @viewer NAME z. " MODKEY "+E shows the script.";
-    float lh = ui_font_line_height(UI_FONT_SANS), th = ui_text_wrapped(UI_FONT_SANS, 0, 0, w, text, 0, false);
-    float x = r.x + (r.w - w) / 2, y = r.y + (r.h - lh - px(8) - th) / 2;
+    const char *lines[3] = {"Code without sections is one view of the plane (z is the point of each pixel).",
+                            "A section @viewer NAME z starts a view of its own.",
+                            A.editor_open ? "" : MODKEY "+E shows the script."};
+    float lh = ui_font_line_height(UI_FONT_SANS), gap = px(8), th = lh;
+    for (int k = 0; k < 3; k++)
+        if (lines[k][0]) th += gap + ui_text_wrapped(UI_FONT_SANS, 0, 0, w, lines[k], 0, false);
+    float x = r.x + (r.w - w) / 2, y = r.y + (r.h - th) / 2;
     ui_text(UI_FONT_SANS, x, y, "No views", -1, UI_COL_TEXT);
-    ui_text_wrapped(UI_FONT_SANS, x, y + lh + px(8), w, text, UI_COL_TEXT_DIM, true);
+    y += lh;
+    for (int k = 0; k < 3; k++)
+        if (lines[k][0]) y += gap + ui_text_wrapped(UI_FONT_SANS, x, y + gap, w, lines[k], UI_COL_TEXT_DIM, true);
 }
 
 static void frame_ui(float W, float H);
