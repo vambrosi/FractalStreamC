@@ -130,6 +130,7 @@ for VS", then
 | `FS_VULKAN_LIBRARY=<path>` | load this Vulkan library (or MoltenVK dylib) before the default ones |
 | `FS_VULKAN_VALIDATION=1` | enable the Vulkan validation layer and print its messages |
 | `FS_DEBUG=1` | print what the app decides at startup (the GPUs and their drivers, the one used; how deep zooms keep their arithmetic exact) |
+| `FS_SYNC=barrier` or `FS_SYNC=wait` | (debugging) between drawing the views and showing them, add a pipeline barrier, or submit the views' work first and wait for it (slow) |
 | `FS_BANDS=<rows>` | (debugging) redraw views in bands of this many rows (a multiple of 64; e.g. `8192`: a whole view at once) instead of sizes adapted to the frame time |
 | `MVK_CONFIG_FAST_MATH_ENABLED` | (macOS) set to `2` by the program unless already set: MoltenVK's fast maths, except in the shaders of deep zooms, which declare IEEE floats (SPIR-V float controls) and then need no per-operation workaround, the slow part of double precision before |
 | `MVK_CONFIG_LOG_LEVEL` | (macOS) set to `1` by the program unless already set: MoltenVK prints only its errors; `3` adds its informational messages |
