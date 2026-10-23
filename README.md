@@ -23,8 +23,6 @@ end
 Ready-to-run downloads for Mac and Linux are on the [Releases page](../../releases/latest): no
 compiler, Homebrew or git needed. (Windows: build it yourself, see [`docs/building.md`](docs/building.md).)
 
-<!-- Maintainer: replace OWNER/REPO in the commands below with this repository's GitHub path (e.g. jdoe/FractalStreamC). -->
-
 ### Mac (macOS 12 or newer)
 
 1. Download **FractalStream-macos-arm64.zip** for a Mac with Apple silicon (M1, M2, M3, ...), or
@@ -48,7 +46,7 @@ one) and opens it. Files downloaded by `curl` are not marked as coming from the 
 nothing to ask; no developer tools are needed. The same command updates it later.
 
 ```sh
-curl -fL -o /tmp/FractalStream.zip "https://github.com/OWNER/REPO/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+curl -fL -o /tmp/FractalStream.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
 ```
 
 (On a Mac where your account is not an administrator, "Permission denied": use `~/Applications`, the
@@ -65,7 +63,7 @@ tar -xzf FractalStream-linux-x86_64.tar.gz
 FractalStream-linux-x86_64/fractalstream
 ```
 
-or both in one go: `curl -fL https://github.com/OWNER/REPO/releases/latest/download/FractalStream-linux-x86_64.tar.gz | tar -xz && FractalStream-linux-x86_64/fractalstream`.
+or both in one go: `curl -fL https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStream-linux-x86_64.tar.gz | tar -xz && FractalStream-linux-x86_64/fractalstream`.
 The folder can be moved anywhere (the examples and the language reference are in it).
 FractalStream needs a Vulkan driver, which most desktops have; if it says "no Vulkan library found",
 install one: `sudo apt install libvulkan1 mesa-vulkan-drivers` (Ubuntu, Debian, Mint) or

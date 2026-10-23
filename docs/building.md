@@ -21,7 +21,7 @@ Other `build.sh` modes: `debug` (sanitizers, `build/fractalstream_debug`) and
 
 ## Downloads (nothing to build)
 
-The [releases](https://github.com/OWNER/REPO/releases/latest) have ready-made downloads (made as described
+The [releases](https://github.com/vambrosi/FractalStreamC/releases/latest) have ready-made downloads (made as described
 in "Making a release" below); the README's "Download and run" has the details.
 
 - **Mac** (macOS 12 or newer): `FractalStream-macos-arm64.zip` for Apple silicon (M1, M2, ...),
@@ -33,7 +33,7 @@ in "Making a release" below); the README's "Download and run" has the details.
   question, as files downloaded by `curl` are not marked as coming from the internet (`uname -m` picks
   the file for the Mac; no developer tools needed):
 
-      curl -fL -o /tmp/FractalStream.zip "https://github.com/OWNER/REPO/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+      curl -fL -o /tmp/FractalStream.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
 
 - **Linux** (x86_64, glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later):
   `tar -xzf FractalStream-linux-x86_64.tar.gz`, then run `FractalStream-linux-x86_64/fractalstream`.
@@ -179,8 +179,7 @@ A release is the set of downloads above, published on GitHub by the workflow
 
 To build the downloads without publishing anything: Actions > Release > Run workflow; the files are
 then under that run's Artifacts. The file names don't change between releases, so links ending in
-`releases/latest/download/<file>` (README, "Download and run") always give the newest; replace `OWNER/REPO`
-there (and in "Downloads" above) with the repository's path once.
+`releases/latest/download/<file>` (README, "Download and run") always give the newest.
 
 Notes for later:
 
