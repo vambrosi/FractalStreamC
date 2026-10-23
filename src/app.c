@@ -41,8 +41,12 @@ enum { DRAG_NONE, DRAG_PAN, DRAG_TOOL, DRAG_PICK, DRAG_CLICK, DRAG_SPLIT, DRAG_V
 enum { DROP_NONE, DROP_REPLACE, DROP_LEFT, DROP_RIGHT, DROP_TOP, DROP_BOTTOM, DROP_FLOAT };
 
 typedef struct Rect { float x, y, w, h; } Rect;
+/* a node of the layout tree: a leaf shows a viewer; a split shows a and b side by side (ratio: the share of a; < 0
+   until the next layout, which splits the part of the node not under a pane in two) */
 typedef struct LNode { int kind; int a, b; float ratio; int viewer; Rect r; } LNode;
-typedef struct VisTile { int viewer; Rect r; int node; int fl; } VisTile;
+/* a tile on screen: the viewer, its rectangle, its leaf (or float corner); vr is the part of r not under a pane,
+   where its labels go */
+typedef struct VisTile { int viewer; Rect r; int node; int fl; Rect vr; } VisTile;
 
 /* where a view looks: Back / Forward go through the places a view has been */
 typedef struct ViewPlace {
@@ -82,6 +86,8 @@ typedef struct ViewerRT {
     bool flood_checked; /* flood viewers: the start pixel's result was looked at */
     ViewHistory *hist;  /* Back / Forward (made on the first move; kept when the script runs again) */
     bool grid;          /* show the axes and a grid with their values (flat views) */
+    bool gone;          /* its section is gone from the script, which has errors (so this program still runs): its
+                           tile is closed, and comes back if the section does (see mark_gone) */
 } ViewerRT;
 
 typedef struct App {
@@ -105,7 +111,8 @@ typedef struct App {
     int focus_viewer;
     VisTile vis[MAX_TILES + MAX_FLOATS];
     int nvis;
-    Rect area;              /* viewer area, between the panes */
+    Rect area;              /* where the tiles are: between the panes */
+    Rect free;              /* the part of the area no pane covers (all of it: the panes are beside the views) */
     int band_rows;
     int flood_passes;       /* flood-fill passes per frame (adapts to the GPU) */
     /* the bars at the window's edges, and the panes next to them */
@@ -299,6 +306,12 @@ bool app_init_exact_floats(void) {
 /* ---- small helpers ----------------------------------------------------------- */
 static float px(float v) { return ui_px(v); }
 static bool in_rect(Rect r, float x, float y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
+/* the common part of two rectangles (width or height 0 if none) */
+static Rect rect_and(Rect a, Rect b) {
+    float x0 = FS_MAX(a.x, b.x), y0 = FS_MAX(a.y, b.y), x1 = FS_MIN(a.x + a.w, b.x + b.w), y1 = FS_MIN(a.y + a.h, b.y + b.h);
+    Rect r = {x0, y0, FS_MAX(x1 - x0, 0.0f), FS_MAX(y1 - y0, 0.0f)};
+    return r;
+}
 
 static void set_status(bool err, const char *fmt, ...) FS_PRINTF(2, 3);
 static void set_status(bool err, const char *fmt, ...) {
@@ -700,31 +713,60 @@ static int node_alloc(void) {
     return -1;
 }
 
+/* The tree of tiles has its root at A.root, -1 when nothing is shown (a script without views).  A leaf whose
+   viewer is gone (see ViewerRT.gone) stays in the tree but takes no room: its neighbour has it until the
+   script runs again. */
+static bool leaf_gone(int n) {
+    int v = A.nodes[n].viewer;
+    return A.nodes[n].kind == N_LEAF && A.prog && A.vrt && v >= 0 && v < A.prog->nviewers && A.vrt[v].gone;
+}
+
+/* the layout: viewer alone (-1: nothing at all), no floating views */
 static void layout_reset(int viewer) {
     memset(A.nodes, 0, sizeof A.nodes);
     for (int i = 0; i < MAX_FLOATS; i++) A.floats[i] = -1;
-    A.root = 0;
-    A.nodes[0].kind = N_LEAF;
+    A.root = viewer >= 0 ? 0 : -1;
+    A.nodes[0].kind = viewer >= 0 ? N_LEAF : N_FREE;
     A.nodes[0].viewer = viewer;
     A.focus_viewer = viewer;
 }
 
 static int count_leaves(int n) {
+    if (n < 0) return 0;
     if (A.nodes[n].kind == N_LEAF) return 1;
     return count_leaves(A.nodes[n].a) + count_leaves(A.nodes[n].b);
 }
 
+/* the leaves that take room (not gone) */
+static int count_shown(int n) {
+    if (n < 0) return 0;
+    if (A.nodes[n].kind == N_LEAF) return leaf_gone(n) ? 0 : 1;
+    return count_shown(A.nodes[n].a) + count_shown(A.nodes[n].b);
+}
+
 static int find_leaf(int n, int viewer) {
+    if (n < 0) return -1;
     if (A.nodes[n].kind == N_LEAF) return A.nodes[n].viewer == viewer ? n : -1;
     int r = find_leaf(A.nodes[n].a, viewer);
     return r >= 0 ? r : find_leaf(A.nodes[n].b, viewer);
 }
 
 static int find_parent(int n, int child) {
-    if (A.nodes[n].kind == N_LEAF) return -1;
+    if (n < 0 || A.nodes[n].kind == N_LEAF) return -1;
     if (A.nodes[n].a == child || A.nodes[n].b == child) return n;
     int r = find_parent(A.nodes[n].a, child);
     return r >= 0 ? r : find_parent(A.nodes[n].b, child);
+}
+
+/* the leaves under n, in order (left to right, top to bottom); returns how many */
+static int collect_leaves(int n, int *out, int k) {
+    if (n < 0) return k;
+    if (A.nodes[n].kind == N_LEAF) {
+        if (k < MAX_NODES) out[k++] = n;
+        return k;
+    }
+    k = collect_leaves(A.nodes[n].a, out, k);
+    return collect_leaves(A.nodes[n].b, out, k);
 }
 
 static int find_float(int viewer) {
@@ -733,15 +775,31 @@ static int find_float(int viewer) {
     return -1;
 }
 
-static bool viewer_visible(int v) { return find_leaf(A.root, v) >= 0 || find_float(v) >= 0; }
+static bool viewer_visible(int v) {
+    if (A.prog && A.vrt && v >= 0 && v < A.prog->nviewers && A.vrt[v].gone) return false;
+    return find_leaf(A.root, v) >= 0 || find_float(v) >= 0;
+}
 
-static void remove_leaf(int n) {
+/* take leaf n out of the tree: its neighbour takes its room (the root: nothing is left) */
+static void remove_leaf_any(int n) {
     int p = find_parent(A.root, n);
-    if (p < 0) return; /* the last tile stays */
+    if (p < 0) {
+        if (n == A.root) {
+            A.nodes[n].kind = N_FREE;
+            A.root = -1;
+        }
+        return;
+    }
     int sib = A.nodes[p].a == n ? A.nodes[p].b : A.nodes[p].a;
     A.nodes[p] = A.nodes[sib];
     A.nodes[sib].kind = N_FREE;
     A.nodes[n].kind = N_FREE;
+}
+
+/* the same, but the last tile on screen stays */
+static void remove_leaf(int n) {
+    if (find_parent(A.root, n) < 0 || count_shown(A.root) <= 1) return;
+    remove_leaf_any(n);
 }
 
 /* take viewer v out of wherever it is shown (unless it is the last tile) */
@@ -749,7 +807,7 @@ static void detach_viewer(int v) {
     int f = find_float(v);
     if (f >= 0) A.floats[f] = -1;
     int n = find_leaf(A.root, v);
-    if (n >= 0 && count_leaves(A.root) > 1) remove_leaf(n);
+    if (n >= 0) remove_leaf(n);
 }
 
 /* show v in leaf n (swapping if v is visible in another tile) */
@@ -764,19 +822,21 @@ static void show_in_leaf(int n, int v) {
     A.focus_viewer = v;
 }
 
+/* split leaf n: v goes to its `side` (DROP_LEFT ...); the line between them goes in the middle of the part of the
+   leaf no pane covers (decided by the next layout_compute) */
 static void split_leaf(int n, int side, int v) {
     if (count_leaves(A.root) >= MAX_TILES) {
         set_status(true, "Too many views on screen");
         return;
     }
-    if (A.nodes[n].viewer == v) return;
+    if (A.nodes[n].kind != N_LEAF || A.nodes[n].viewer == v) return;
+    int target = A.nodes[n].viewer;
     int f = find_float(v);
     if (f >= 0) A.floats[f] = -1;
     int other = find_leaf(A.root, v);
     if (other >= 0) {
-        remove_leaf(other);
-        /* the tree changed: find the target again */
-        n = find_leaf(A.root, A.nodes[n].kind == N_LEAF ? A.nodes[n].viewer : -1);
+        remove_leaf_any(other);
+        n = find_leaf(A.root, target); /* (the tree changed: the target may have moved up) */
         if (n < 0) return;
     }
     int a = node_alloc(), b = -1;
@@ -788,15 +848,146 @@ static void split_leaf(int n, int side, int v) {
     A.nodes[b].viewer = v;
     LNode *s = &A.nodes[n];
     s->kind = (side == DROP_LEFT || side == DROP_RIGHT) ? N_HSPLIT : N_VSPLIT;
-    s->ratio = 0.5f;
+    s->ratio = -1;
     bool new_first = side == DROP_LEFT || side == DROP_TOP;
     s->a = new_first ? b : a;
     s->b = new_first ? a : b;
     A.focus_viewer = v;
 }
 
+/* the layout of a script just opened: its first view, and the second one beside it (nothing without views) */
+static void layout_default(int nviewers) {
+    layout_reset(nviewers > 0 ? 0 : -1);
+    if (nviewers >= 2) {
+        split_leaf(A.root, DROP_RIGHT, 1);
+        A.focus_viewer = 0;
+    }
+}
+
+/* The script ran again (the same script, edited): the layout follows the views to their new numbers, remap[v] for
+ * each old view v (-1: its section is gone).  A view that is gone leaves its tile to a view new in this run (its
+ * section renamed, or another one written in its place), else its tile closes and the neighbour takes the room (a
+ * floating view goes away); the other views keep their places.  If nothing is left on screen, the first views show
+ * as for a script just opened.  True if a view on screen was closed. */
+static bool layout_follow(const int *remap, int old_n, int new_n) {
+    bool *taken = (bool *)xcalloc((size_t)new_n + 1, sizeof(bool)); /* (on screen, or the same view as before) */
+    for (int ov = 0; ov < old_n; ov++)
+        if (remap[ov] >= 0) taken[remap[ov]] = true;
+    int fresh = 0, focus = -1;
+    bool closed = false;
+    int leaves[MAX_NODES], nl = collect_leaves(A.root, leaves, 0);
+    for (int i = 0; i < nl + MAX_FLOATS; i++) { /* the tiles in order, then the floating views */
+        int *slot = i < nl ? &A.nodes[leaves[i]].viewer : &A.floats[i - nl];
+        int ov = *slot;
+        if (i >= nl && ov < 0) continue; /* (an empty corner) */
+        int nv = ov >= 0 && ov < old_n ? remap[ov] : -1;
+        if (nv < 0) { /* gone: the next view new in this run, if any, takes its place */
+            while (fresh < new_n && taken[fresh]) fresh++;
+            if (fresh < new_n) {
+                nv = fresh;
+                taken[fresh] = true;
+            }
+        }
+        if (ov >= 0 && ov == A.focus_viewer) focus = nv;
+        closed = closed || nv < 0;
+        *slot = nv;
+    }
+    free(taken);
+    for (int n; (n = find_leaf(A.root, -1)) >= 0;) remove_leaf_any(n); /* close the tiles left empty */
+    if (A.root < 0) { /* no tile left: a floating view takes the window, or the first views as for a new script */
+        int f = 0;
+        while (f < MAX_FLOATS && A.floats[f] < 0) f++;
+        if (f < MAX_FLOATS) {
+            A.root = node_alloc();
+            A.nodes[A.root].kind = N_LEAF;
+            A.nodes[A.root].viewer = A.floats[f];
+            A.floats[f] = -1;
+        } else {
+            layout_default(new_n);
+        }
+    }
+    A.focus_viewer = focus >= 0 && focus < new_n ? focus : A.focus_viewer >= 0 && A.focus_viewer < old_n ? remap[A.focus_viewer] : -1;
+    if (A.focus_viewer < 0 || !viewer_visible(A.focus_viewer)) { /* the first view on screen */
+        nl = collect_leaves(A.root, leaves, 0);
+        A.focus_viewer = nl > 0 ? A.nodes[leaves[0]].viewer : -1;
+    }
+    return closed;
+}
+
+/* A run of the script that closes views (their sections gone) keeps the layout as it was before, by the views'
+   names; if a later run brings them all back (an undo, say) while the layout is still as the close left it, they come
+   back where they were. */
+typedef struct NamedLayout {
+    int n;                                  /* names in use (0: nothing kept) */
+    LNode nodes[MAX_NODES];                 /* (a leaf's viewer: an index into names, -1 none) */
+    int root, floats[MAX_FLOATS], focus;
+    char names[MAX_NODES + MAX_FLOATS][64];
+    u32 after;                              /* layout_hash of the layout the close left */
+} NamedLayout;
+static NamedLayout closed_layout;
+
+static int named_view(NamedLayout *L, Program *p, int v) {
+    if (v < 0 || v >= p->nviewers) return -1;
+    for (int i = 0; i < L->n; i++)
+        if (!strcmp(L->names[i], p->viewers[v]->name)) return i;
+    if (L->n >= ARRAY_COUNT(L->names)) return -1;
+    snprintf(L->names[L->n], sizeof L->names[0], "%s", p->viewers[v]->name);
+    return L->n++;
+}
+
+/* the layout now, with the names of program p's views */
+static void layout_by_names(Program *p, NamedLayout *L) {
+    L->n = 0;
+    memcpy(L->nodes, A.nodes, sizeof A.nodes);
+    L->root = A.root;
+    for (int i = 0; i < MAX_NODES; i++)
+        if (L->nodes[i].kind == N_LEAF) L->nodes[i].viewer = named_view(L, p, A.nodes[i].viewer);
+    for (int i = 0; i < MAX_FLOATS; i++) L->floats[i] = named_view(L, p, A.floats[i]);
+    L->focus = named_view(L, p, A.focus_viewer);
+}
+
+/* the shape of the layout and the names in it (not the sizes) */
+static u32 hash_text(u32 h, const char *s) {
+    for (; *s; s++) h = (h ^ (u8)*s) * 16777619u;
+    return (h ^ 0xff) * 16777619u;
+}
+static u32 hash_node(Program *p, int n, u32 h) {
+    if (n < 0) return hash_text(h, "-");
+    if (A.nodes[n].kind != N_LEAF) {
+        h = hash_text(h, A.nodes[n].kind == N_HSPLIT ? "|" : "/");
+        return hash_node(p, A.nodes[n].b, hash_node(p, A.nodes[n].a, h));
+    }
+    int v = A.nodes[n].viewer;
+    return hash_text(h, v >= 0 && v < p->nviewers ? p->viewers[v]->name : "?");
+}
+static u32 layout_hash(Program *p) {
+    u32 h = hash_node(p, A.root, 2166136261u);
+    for (int i = 0; i < MAX_FLOATS; i++)
+        h = hash_text(h, A.floats[i] >= 0 && A.floats[i] < p->nviewers ? p->viewers[A.floats[i]]->name : "-");
+    return h;
+}
+
+/* the layout L, the names being views of program p: false (nothing changed) unless they all are */
+static bool layout_from_names(const NamedLayout *L, Program *p) {
+    int idx[ARRAY_COUNT(L->names)];
+    for (int i = 0; i < L->n; i++) {
+        idx[i] = -1;
+        for (int v = 0; v < p->nviewers && idx[i] < 0; v++)
+            if (!strcmp(p->viewers[v]->name, L->names[i])) idx[i] = v;
+        if (idx[i] < 0) return false;
+    }
+    memcpy(A.nodes, L->nodes, sizeof A.nodes);
+    A.root = L->root;
+    for (int i = 0; i < MAX_NODES; i++)
+        if (A.nodes[i].kind == N_LEAF) A.nodes[i].viewer = A.nodes[i].viewer >= 0 ? idx[A.nodes[i].viewer] : -1;
+    for (int i = 0; i < MAX_FLOATS; i++) A.floats[i] = L->floats[i] >= 0 ? idx[L->floats[i]] : -1;
+    A.focus_viewer = L->focus >= 0 ? idx[L->focus] : -1;
+    return true;
+}
+
+/* the corners of the part of the window the panes leave free: where views float */
 static Rect float_rect(int corner) {
-    Rect ar = A.area;
+    Rect ar = A.free;
     float w = FS_MAX(ar.w * 0.3f, px(160)), h = FS_MAX(ar.h * 0.3f, px(120));
     float m = px(12);
     Rect r = {corner & 1 ? ar.x + ar.w - w - m : ar.x + m, corner & 2 ? ar.y + ar.h - h - m : ar.y + m, w, h};
@@ -804,17 +995,28 @@ static Rect float_rect(int corner) {
 }
 
 static void layout_compute(int n, Rect r) {
+    if (n < 0) return;
     LNode *nd = &A.nodes[n];
     nd->r = r;
     if (nd->kind == N_LEAF) {
-        if (A.nvis < MAX_TILES) {
-            VisTile t = {nd->viewer, r, n, -1};
+        if (A.nvis < MAX_TILES && !leaf_gone(n)) {
+            VisTile t = {nd->viewer, r, n, -1, r};
             A.vis[A.nvis++] = t;
         }
         return;
     }
+    if (!count_shown(nd->a) || !count_shown(nd->b)) { /* one side is gone: the other one has the room */
+        layout_compute(count_shown(nd->a) ? nd->a : nd->b, r);
+        return;
+    }
+    bool h = nd->kind == N_HSPLIT;
+    if (nd->ratio < 0) { /* a new split: in the middle of the part no pane covers */
+        Rect vr = rect_and(r, A.free);
+        float mid = h ? vr.x + vr.w / 2 - r.x : vr.y + vr.h / 2 - r.y, len = h ? r.w : r.h;
+        nd->ratio = vr.w > 0 && vr.h > 0 && len > 0 ? FS_CLAMP(mid / len, 0.1f, 0.9f) : 0.5f;
+    }
     float g = px(1);
-    if (nd->kind == N_HSPLIT) {
+    if (h) {
         float w0 = floorf(r.w * nd->ratio);
         Rect ra = {r.x, r.y, w0 - g, r.h}, rb = {r.x + w0 + g, r.y, r.w - w0 - g, r.h};
         layout_compute(nd->a, ra);
@@ -829,8 +1031,10 @@ static void layout_compute(int n, Rect r) {
 
 /* splitter under (x, y): node index or -1 */
 static int splitter_at(int n, float x, float y) {
+    if (n < 0) return -1;
     LNode *nd = &A.nodes[n];
     if (nd->kind == N_LEAF) return -1;
+    if (!count_shown(nd->a) || !count_shown(nd->b)) return splitter_at(count_shown(nd->a) ? nd->a : nd->b, x, y);
     float t = px(4);
     Rect s;
     if (nd->kind == N_HSPLIT) {
@@ -1244,27 +1448,36 @@ static bool same_value(Type *t, const u32 *a, const u32 *b) {
     return memcmp(a, b, sizeof(u32) * (size_t)t->size) == 0;
 }
 
-/* compile `src`; on success replace the running program.  LOAD_RUN (the same script, edited or changed on disk) keeps
-   the layout, the views and their history, the tools, and the values changed since the last run (unless the script
-   now gives them another value); LOAD_OPEN (another script) starts afresh. */
+/* Compiling `src`, and on success replacing the running program.  LOAD_RUN (the same script, edited or changed on
+   disk) keeps the layout, the views and their history, the tools, and the values changed since the last run (unless
+   the script now gives them another value); LOAD_OPEN (another script) starts afresh. */
 enum { LOAD_OPEN, LOAD_RUN };
-static bool load_source(const char *src, int mode) {
-    Program *p = program_load(src, A.path[0] ? A.path : "untitled");
-    diags_to_editor(p);
-    A.compiled_version = editor_version(A.ed);
-    A.script_errors = p->nerrors;
-    if (p->nerrors) {
-        set_status(true, "%d error%s in the script%s", p->nerrors, p->nerrors == 1 ? "" : "s",
-                   A.editor_open ? "" : " (Ctrl+E shows it)");
-        program_free(p);
-        return false;
+
+/* The script has errors, so the program keeps running as it was; but a view whose @viewer section is gone from the
+   text closes all the same (it comes back where it was if its section does, after an undo say; the script running
+   without errors closes it for good, see layout_follow). */
+static void mark_gone(Program *failed) {
+    for (int v = 0; A.prog && v < A.prog->nviewers; v++) {
+        bool there = false;
+        for (int i = 0; i < failed->sections.len && !there; i++) {
+            Section *s = failed->sections.data[i];
+            there = s->kind == SEC_VIEWER && s->name && !strcmp(s->name, A.prog->viewers[v]->name);
+        }
+        A.vrt[v].gone = !there;
     }
-    if (p->nviewers == 0) {
-        set_status(true, "The script has no @viewer section");
-        program_free(p);
-        return false;
+    if (A.drag != DRAG_NONE && A.drag_viewer >= 0 && A.prog && A.drag_viewer < A.prog->nviewers && A.vrt[A.drag_viewer].gone)
+        A.drag = DRAG_NONE;
+    if (A.focus_viewer >= 0 && !viewer_visible(A.focus_viewer)) { /* the focus goes to a view still shown */
+        int leaves[MAX_NODES], nl = collect_leaves(A.root, leaves, 0);
+        A.focus_viewer = -1;
+        for (int i = 0; i < nl && A.focus_viewer < 0; i++)
+            if (!leaf_gone(leaves[i])) A.focus_viewer = A.nodes[leaves[i]].viewer;
     }
-    ViewerRT *vrt = (ViewerRT *)xcalloc((size_t)p->nviewers, sizeof(ViewerRT));
+}
+
+/* the viewers of a program that compiled, on the GPU; NULL (and a message) if the GPU rejects one */
+static ViewerRT *make_viewers(Program *p) {
+    ViewerRT *vrt = (ViewerRT *)xcalloc((size_t)p->nviewers + 1, sizeof(ViewerRT));
     char err[512];
     for (int v = 0; v < p->nviewers; v++) {
         Section *s = p->viewers[v];
@@ -1279,33 +1492,39 @@ static bool load_source(const char *src, int mode) {
             free(words);
             ok = vrt[v].pipeline > 0;
         }
-        vrt[v].used = (bool *)xcalloc((size_t)p->globals.len + 1, sizeof(bool));
         if (!ok) {
             set_status(true, "The GPU rejected the viewer '%s': %s", s->name, err);
             destroy_rts(vrt, v + 1);
-            program_free(p);
-            return false;
+            return NULL;
         }
+    }
+    return vrt;
+}
+
+/* Replace the running program by p (compiled, without errors), whose viewers are on the GPU in vrt (see make_viewers;
+   zeroed entries work too, without a GPU: the tests). */
+static void adopt_program(Program *p, ViewerRT *vrt, int mode) {
+    for (int v = 0; v < p->nviewers; v++) {
+        Section *s = p->viewers[v];
+        vrt[v].used = (bool *)xcalloc((size_t)p->globals.len + 1, sizeof(bool));
         codegen_viewer_deps(p, s, vrt[v].used);
         for (int i = 0; i < p->globals.len; i++) /* (read by the deep zoom version) */
             if (p->globals.data[i] == s->center_lo) vrt[v].used[i] = true;
         for (int i = 0; i < p->globals.len; i++)
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
         vrt[v].tool = TOOL_PAN;
-    }
-    for (int v = 0; v < p->nviewers; v++) { /* (the script's centre has its low part: see check_center_lo) */
-        Section *s = p->viewers[v];
-        vrt[v].center_bits[0] = p->initial_state[s->center->slot];
+        vrt[v].center_bits[0] = p->initial_state[s->center->slot]; /* (the script's centre has its low part: see
+                                                                      check_center_lo) */
         vrt[v].center_bits[1] = p->initial_state[s->center->slot + 1];
     }
     /* new state; keep the views, picked points and tools of viewers that still exist */
     bool same = mode == LOAD_RUN && A.prog;
+    int old_n = A.prog ? A.prog->nviewers : 0;
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
-    int *remap = (int *)xmalloc(sizeof(int) * (size_t)(A.prog ? A.prog->nviewers : 1));
-    for (int ov = 0; A.prog && ov < A.prog->nviewers; ov++) remap[ov] = -1;
-    for (int ov = 0; same && ov < A.prog->nviewers; ov++) {
-        remap[ov] = -1;
+    int *remap = (int *)xmalloc(sizeof(int) * (size_t)(old_n + 1));
+    for (int ov = 0; ov < old_n; ov++) remap[ov] = -1;
+    for (int ov = 0; same && ov < old_n; ov++) {
         Section *os = A.prog->viewers[ov];
         for (int v = 0; v < p->nviewers; v++) {
             Section *s = p->viewers[v];
@@ -1346,21 +1565,15 @@ static bool load_source(const char *src, int mode) {
             break;
         }
     }
-    /* keep the layout if all the viewers in it still exist */
-    bool keep = same;
-    for (int i = 0; keep && i < MAX_NODES; i++)
-        if (A.nodes[i].kind == N_LEAF && remap[A.nodes[i].viewer] < 0) keep = false;
-    for (int i = 0; keep && i < MAX_FLOATS; i++)
-        if (A.floats[i] >= 0 && remap[A.floats[i]] < 0) keep = false;
-    if (keep) {
-        for (int i = 0; i < MAX_NODES; i++)
-            if (A.nodes[i].kind == N_LEAF) A.nodes[i].viewer = remap[A.nodes[i].viewer];
-        for (int i = 0; i < MAX_FLOATS; i++)
-            if (A.floats[i] >= 0) A.floats[i] = remap[A.floats[i]];
-        A.focus_viewer = A.focus_viewer >= 0 && A.focus_viewer < A.prog->nviewers ? remap[A.focus_viewer] : 0;
-        if (A.focus_viewer < 0) A.focus_viewer = 0;
+    /* views an earlier run closed come back with their sections (an undo), if the layout is as that run left it */
+    NamedLayout before = {0};
+    bool reopened = false;
+    if (same && closed_layout.n) {
+        if (layout_hash(A.prog) != closed_layout.after) closed_layout.n = 0; /* (the layout changed since) */
+        else if (layout_from_names(&closed_layout, p)) reopened = true;
     }
-    free(remap);
+    if (reopened || !same) closed_layout.n = 0;
+    if (same && !reopened) layout_by_names(A.prog, &before);
     free_viewers();
     if (A.prog) interp_free(&A.interp);
     outs_free();
@@ -1371,6 +1584,25 @@ static bool load_source(const char *src, int mode) {
     A.state = state;
     A.uploaded = NULL;
     A.vrt = vrt;
+    /* the layout follows the views (the ones gone close, the others stay where they are), or starts afresh */
+    if (same && !reopened) {
+        if (layout_follow(remap, old_n, p->nviewers)) {
+            closed_layout = before;
+            closed_layout.after = layout_hash(p);
+        }
+    } else if (!same) {
+        layout_default(p->nviewers);
+    }
+    /* what was going on with a view goes on with the same view, or stops */
+    int nd = same && A.drag_viewer >= 0 && A.drag_viewer < old_n ? remap[A.drag_viewer] : -1;
+    if (A.drag != DRAG_NONE && nd < 0) A.drag = DRAG_NONE;
+    A.drag_viewer = nd;
+    int ne = same && A.export_viewer >= 0 && A.export_viewer < old_n ? remap[A.export_viewer] : -1;
+    if (A.req_export[0] && ne < 0) A.req_export[0] = 0;
+    A.export_viewer = FS_MAX(ne, 0);
+    A.hover_viewer = A.hover_tile = -1;
+    A.nvis = 0; /* (until the next layout) */
+    free(remap);
     A.draws = (DrawItemVec *)xcalloc((size_t)p->ntools + 1, sizeof(DrawItemVec));
     outs_init();
     A.choice_open = NULL;
@@ -1379,19 +1611,33 @@ static bool load_source(const char *src, int mode) {
     A.prepare_snap = NULL;
     interp_init(&A.interp, p, A.state);
     A.interp.step_limit = 3e7;
-    if (!keep) {
-        layout_reset(0);
-        if (p->nviewers >= 2) { /* the first two views side by side */
-            split_leaf(A.root, DROP_RIGHT, 1);
-            A.focus_viewer = 0;
-        }
-    }
     for (int v = 0; v < p->nviewers; v++) {
         Sym *ps = p->viewers[v]->picked;
         if (ps && (state[ps->slot] || state[ps->slot + 1])) vrt[v].picked = true;
     }
+    if (p->nviewers == 0) A.editor_open = true; /* (nothing else to show) */
     update_completions(p);
     update_title();
+}
+
+static bool load_source(const char *src, int mode) {
+    Program *p = program_load(src, A.path[0] ? A.path : "untitled");
+    diags_to_editor(p);
+    A.compiled_version = editor_version(A.ed);
+    A.script_errors = p->nerrors;
+    if (p->nerrors) {
+        set_status(true, "%d error%s in the script%s", p->nerrors, p->nerrors == 1 ? "" : "s",
+                   A.editor_open ? "" : " (Ctrl+E shows it)");
+        if (mode == LOAD_RUN && A.prog) mark_gone(p);
+        program_free(p);
+        return false;
+    }
+    ViewerRT *vrt = make_viewers(p);
+    if (!vrt) {
+        program_free(p);
+        return false;
+    }
+    adopt_program(p, vrt, mode);
     return true;
 }
 
@@ -1931,8 +2177,11 @@ static void reset_view(int v) {
 }
 
 /* ---- dropping a view somewhere -------------------------------------------------------- */
+/* Where a view dragged to (x, y) goes: DROP_FLOAT (*leaf: the corner), DROP_REPLACE or a side of a tile (*leaf: its
+   node).  Only where no pane covers the views; the sides are those of the part of the tile that shows (a new split
+   goes in its middle), and *hl is the part of the new place that will show. */
 static int drop_zone(float x, float y, int *leaf, Rect *hl) {
-    Rect ar = A.area;
+    Rect ar = A.free;
     if (!in_rect(ar, x, y)) return DROP_NONE;
     float cs = 0.16f * FS_MIN(ar.w, ar.h);
     for (int c = 0; c < 4; c++) {
@@ -1945,8 +2194,8 @@ static int drop_zone(float x, float y, int *leaf, Rect *hl) {
     }
     for (int i = 0; i < A.nvis; i++) {
         VisTile *t = &A.vis[i];
-        if (t->fl >= 0 || !in_rect(t->r, x, y)) continue;
-        Rect r = t->r;
+        if (t->fl >= 0 || !in_rect(t->vr, x, y)) continue;
+        Rect r = t->vr;
         float u = (x - r.x) / r.w, v = (y - r.y) / r.h;
         *leaf = t->node;
         if (u > 0.3f && u < 0.7f && v > 0.3f && v < 0.7f) {
@@ -1970,7 +2219,7 @@ static void apply_drop(int viewer, float x, float y) {
     int z = drop_zone(x, y, &leaf, &hl);
     if (z == DROP_NONE) return;
     if (z == DROP_FLOAT) {
-        if (find_leaf(A.root, viewer) >= 0 && count_leaves(A.root) == 1) {
+        if (find_leaf(A.root, viewer) >= 0 && count_shown(A.root) == 1) {
             set_status(true, "The last view on screen can't float");
             return;
         }
@@ -2298,21 +2547,28 @@ static void draw_grid(VisTile *t) {
     u32 line = UI_RGBA(255, 255, 255, 46), axis = UI_RGBA(255, 255, 255, 150), ink = UI_RGBA(255, 255, 255, 215),
         shadow = UI_RGBA(0, 0, 0, 170);
     char label[80];
+    Rect vr = t->vr; /* (the values go along the edges of the part that shows) */
     for (double k = ceil(xl / step); k * step <= xr; k++) { /* vertical lines, values along the bottom */
         float X = (float)(r.x + 0.5 * r.w + (k * step - cx) / sc);
         ui_rect(X - px(0.5f), r.y, FS_MAX(px(1), 1.0f), r.h, k == 0 ? axis : line);
+        if (X < vr.x || X >= vr.x + vr.w) continue;
         grid_label(label, sizeof label, k * step, dec, false);
-        float ty = r.y + r.h - lh - px(3);
+        float ty = vr.y + vr.h - lh - px(3);
+        ui_push_clip(vr.x, vr.y, vr.w, vr.h);
         ui_text(UI_FONT_MONO, X + px(4), ty + px(1), label, -1, shadow);
         ui_text(UI_FONT_MONO, X + px(3), ty, label, -1, ink);
+        ui_pop_clip();
     }
     for (double k = ceil(yb / step); k * step <= yt; k++) { /* horizontal lines, values along the left */
         float Y = (float)(r.y + 0.5 * r.h - (k * step - cy) / sc);
         ui_rect(r.x, Y - px(0.5f), r.w, FS_MAX(px(1), 1.0f), k == 0 ? axis : line);
+        if (vr.w < px(60)) continue;
         grid_label(label, sizeof label, k * step, dec, true);
-        float tx = r.x + px(40); /* (right of the tool strip's badge) */
+        float tx = vr.x + px(40);
+        ui_push_clip(vr.x, vr.y, vr.w, vr.h);
         ui_text(UI_FONT_MONO, tx + px(1), Y - lh - px(1) + px(1), label, -1, shadow);
         ui_text(UI_FONT_MONO, tx, Y - lh - px(1), label, -1, ink);
+        ui_pop_clip();
     }
 }
 
@@ -2326,7 +2582,8 @@ static void deep_note(VisTile *t) {
     if (s->mobius || A.state[p->s_double->slot] || !rt->target || !viewer_deep(p, A.state, s, rt->tw, rt->th, false)) return;
     const char *text = "Finer than single precision: click here for double precision (slower)";
     float lh = ui_font_line_height(UI_FONT_SANS), tw = ui_text_width(UI_FONT_SANS, text, -1) + px(20), th = lh + px(10);
-    Rect r = t->r;
+    Rect r = t->vr; /* (in the part of the view that shows) */
+    if (r.w < px(80) || r.h < th + px(60)) return;
     tw = FS_MIN(tw, r.w - px(12));
     float x = r.x + (r.w - tw) / 2, y = r.y + r.h - th - px(40);
     int prev = ui_layer(UI_LAYER_MENU); /* (above floating views too) */
@@ -2378,20 +2635,24 @@ static void draw_tile(VisTile *t) {
         }
     }
     bool several = A.nvis > 1;
-    if (p->nviewers > 1 || t->fl >= 0) { /* its number (its button in the left bar) and its name */
+    Rect vr = t->vr; /* its labels go in the part that shows */
+    ui_push_clip(vr.x, vr.y, vr.w, vr.h);
+    if ((p->nviewers > 1 || t->fl >= 0) && vr.w > px(30)) { /* its number (its button in the left bar) and its name */
         const char *name = s->display ? s->display : s->name;
         char num[16];
         snprintf(num, sizeof num, "%d", t->viewer + 1);
         float nw = ui_text_width(UI_FONT_SANS, num, -1) + px(8);
         float tw = nw + ui_text_width(UI_FONT_SANS, name, -1) + px(12), th = ui_font_line_height(UI_FONT_SANS) + px(4);
-        float lx = r.x + r.w - tw - px(6), ly = r.y + px(6); /* (top right: the coordinates are at the bottom) */
+        bool full = tw <= vr.w - px(12); /* (too narrow for the name: the number alone) */
+        if (!full) tw = nw + px(4);
+        float lx = vr.x + vr.w - tw - px(6), ly = vr.y + px(6); /* (top right: the coordinates are at the bottom) */
         ui_rrect(lx, ly, tw, th, px(4), UI_RGBA(0, 0, 0, 120));
         ui_text(UI_FONT_SANS, lx + px(6), ly + px(2), num, -1, ui_alpha(UI_COL_ACCENT_HOVER, 0.9f));
-        ui_text(UI_FONT_SANS, lx + px(6) + nw, ly + px(2), name, -1, UI_RGBA(255, 255, 255, 200));
+        if (full) ui_text(UI_FONT_SANS, lx + px(6) + nw, ly + px(2), name, -1, UI_RGBA(255, 255, 255, 200));
     }
     /* where the mouse is, in the plane (as many decimals as the pixels resolve) */
     if (A.hover_tile >= 0 && &A.vis[A.hover_tile] == t && A.in.mouse_in_window && A.drag != DRAG_VIEWER &&
-        in_rect(r, A.in.mouse_x, A.in.mouse_y)) {
+        in_rect(vr, A.in.mouse_x, A.in.mouse_y)) {
         double re, im, pxs;
         if (s->mobius) {
             float fr, fi, fr1, fi1;
@@ -2414,12 +2675,13 @@ static void draw_tile(VisTile *t) {
         else
             snprintf(co, sizeof co, "%.20s = %.4g %c %.4gi", s->var ? s->var : "z", re, im < 0 ? '-' : '+', fabs(im));
         float tw = ui_text_width(UI_FONT_MONO, co, -1) + px(12), th = ui_font_line_height(UI_FONT_MONO) + px(4);
-        float bx = r.x + px(6), by = r.y + r.h - th - px(6);
+        float bx = vr.x + px(6), by = vr.y + vr.h - th - px(6);
         ui_rrect(bx, by, tw, th, px(4), UI_RGBA(0, 0, 0, 120));
         ui_text(UI_FONT_MONO, bx + px(6), by + px(2), co, -1, UI_RGBA(255, 255, 255, 210));
     }
     if (t->fl >= 0) ui_rect_outline(r.x, r.y, r.w, r.h, px(2), A.hover_viewer == t->viewer ? UI_COL_ACCENT : UI_COL_BORDER);
-    else if (several && A.focus_viewer == t->viewer) ui_rect_outline(r.x, r.y, r.w, r.h, px(1), UI_COL_ACCENT_DIM);
+    else if (several && A.focus_viewer == t->viewer) ui_rect_outline(vr.x, vr.y, vr.w, vr.h, px(1), UI_COL_ACCENT_DIM);
+    ui_pop_clip();
     ui_pop_clip();
 }
 
@@ -2462,13 +2724,15 @@ static int bar_view(void) {
 }
 
 /* can view v be hidden (it floats, or it isn't the last tile)? */
-static bool view_hideable(int v) { return find_float(v) >= 0 || (find_leaf(A.root, v) >= 0 && count_leaves(A.root) > 1); }
+static bool view_hideable(int v) {
+    return viewer_visible(v) && (find_float(v) >= 0 || (find_leaf(A.root, v) >= 0 && count_shown(A.root) > 1));
+}
 
 static void hide_view(int v) {
+    if (!view_hideable(v)) return;
     int f = find_float(v), leaf = find_leaf(A.root, v);
     if (f >= 0) A.floats[f] = -1;
-    else if (leaf >= 0 && count_leaves(A.root) > 1) remove_leaf(leaf);
-    else return;
+    else remove_leaf(leaf);
     if (A.focus_viewer == v) /* the focus goes to a view still shown */
         for (int w = 0; w < A.prog->nviewers; w++)
             if (viewer_visible(w)) {
@@ -2479,17 +2743,22 @@ static void hide_view(int v) {
 
 /* show view v in place of the focused view (or where the focused view is, if it floats) */
 static void show_view(int v) {
+    if (A.vrt[v].gone) return; /* (its section is gone from the script) */
     if (viewer_visible(v)) {
         A.focus_viewer = v;
         return;
     }
     int leaf = find_leaf(A.root, A.focus_viewer), f = find_float(A.focus_viewer);
-    if (leaf >= 0) show_in_leaf(leaf, v);
+    if (leaf >= 0 && !leaf_gone(leaf)) show_in_leaf(leaf, v);
     else if (f >= 0) A.floats[f] = v;
-    else { /* (no focused view on screen: the first tile) */
-        int n = A.root;
-        while (A.nodes[n].kind != N_LEAF) n = A.nodes[n].a;
-        show_in_leaf(n, v);
+    else if (A.root < 0) { /* (nothing on screen) */
+        A.root = node_alloc();
+        A.nodes[A.root].kind = N_LEAF;
+        A.nodes[A.root].viewer = v;
+    } else { /* (no focused view on screen: the first tile, which may be closed) */
+        int leaves[MAX_NODES];
+        collect_leaves(A.root, leaves, 0);
+        show_in_leaf(leaves[0], v);
     }
     A.focus_viewer = v;
 }
@@ -2556,6 +2825,16 @@ static void bar_view_button(int v, float x, float y, float b) {
     char id[32], tip[512], sc[48];
     snprintf(id, sizeof id, "##bar_view%d", v);
     UiInteract it = ui_interact(id, x, y, b, b);
+    if (A.vrt[v].gone) { /* its section is gone from the script (which has errors): closed, struck out */
+        view_badge(v, x, y, b, 0, UI_COL_TEXT_OFF);
+        ui_line(x + b * 0.25f, y + b * 0.75f, x + b * 0.75f, y + b * 0.25f, px(1.5f), UI_COL_TEXT_OFF);
+        if (it.hovered) {
+            snprintf(tip, sizeof tip, "%d: %.200s\nIts section is gone from the script: the view is closed (it comes back "
+                     "if its section does)", v + 1, view_name(v));
+            ui_tooltip(tip);
+        }
+        return;
+    }
     u32 fill = it.held ? UI_COL_WIDGET_ACTIVE : it.hovered || A.hover_viewer == v ? UI_COL_WIDGET_HOVER : shown ? UI_COL_WIDGET : 0;
     view_badge(v, x, y, b, fill, shown ? UI_COL_TEXT : UI_COL_TEXT_DIM);
     if (shown && A.focus_viewer == v && A.nvis > 1) ui_rrect_outline(x, y, b, b, px(6), px(1.5f), UI_COL_ACCENT);
@@ -2703,7 +2982,7 @@ static void outline_view(int v) {
     for (int i = 0; i < A.nvis; i++)
         if (A.vis[i].viewer == v) {
             int prev = ui_layer(UI_LAYER_PANEL);
-            Rect t = A.vis[i].r;
+            Rect t = A.vis[i].vr.w >= 1 ? A.vis[i].vr : A.vis[i].r; /* (the part that shows, if any) */
             float o = px(1);
             ui_rect_outline(t.x, t.y, t.w, t.h, px(4), UI_RGBA(0, 0, 0, 150));
             ui_rect_outline(t.x + o, t.y + o, t.w - 2 * o, t.h - 2 * o, px(2), UI_RGBA(235, 240, 250, 235));
@@ -4273,7 +4552,7 @@ static void status_line(float W, float H) {
     float a = (float)FS_MIN(1.0, (A.status_until - now) / 0.5);
     float tw = FS_MIN(ui_text_width(UI_FONT_SANS, A.status, -1) + px(24), W - px(20));
     float th = ui_font_line_height(UI_FONT_SANS) + px(12);
-    Rect r = {A.area.x + px(10), H - th - px(10), tw, th};
+    Rect r = {A.free.x + px(10), H - th - px(10), tw, th};
     ui_rrect(r.x, r.y, r.w, r.h, px(6), ui_alpha(A.status_err ? UI_RGBA(80, 24, 28, 235) : UI_RGBA(28, 32, 40, 235), a));
     ui_push_clip(r.x, r.y, r.w, r.h);
     ui_text(UI_FONT_SANS, r.x + px(12), r.y + px(6), A.status, -1, ui_alpha(UI_COL_TEXT, a));
@@ -4340,10 +4619,11 @@ static void shortcuts(void) {
     for (int v = 0; v < p->nviewers; v++) {
         Shortcut sc = viewer_shortcut(v);
         if (sc.key == UI_KEY_NONE || (!(sc.mods & (UI_MOD_MOD | UI_MOD_ALT)) && ui_wants_keyboard())) continue;
-        if (ui_shortcut(sc.key, sc.mods)) {
+        if (ui_shortcut(sc.key, sc.mods) && !A.vrt[v].gone) {
             int leaf = find_leaf(A.root, A.focus_viewer);
             if (leaf < 0) leaf = A.root;
-            if (A.nodes[leaf].kind == N_LEAF) show_in_leaf(leaf, v);
+            if (leaf >= 0 && A.nodes[leaf].kind == N_LEAF && !leaf_gone(leaf)) show_in_leaf(leaf, v);
+            else show_view(v);
         }
     }
     if (ui_wants_keyboard()) return;
@@ -4554,8 +4834,42 @@ static void layout_panes(float W, float H) {
     A.editor_r = (Rect){bar, 0, ew, H};
     A.config_r = (Rect){W - bar - cw, 0, cw, H};
     A.rbar_r = (Rect){W - bar, 0, bar, H};
-    A.area = (Rect){bar + ew, 0, FS_MAX(W - 2 * bar - ew - cw, 1.0f), H};
+    A.free = (Rect){bar + ew, 0, FS_MAX(W - 2 * bar - ew - cw, 1.0f), H};
+    A.area = A.free;
 }
+
+/* the tiles on screen (A.vis): the tree's, then the floating views; each with the part of it no pane covers */
+static void layout_tiles(float W, float H) {
+    layout_panes(W, H);
+    A.nvis = 0;
+    layout_compute(A.root, A.area);
+    for (int c = 0; c < MAX_FLOATS; c++)
+        if (A.floats[c] >= 0 && A.nvis < MAX_TILES + MAX_FLOATS && !(A.vrt && A.vrt[A.floats[c]].gone)) {
+            Rect r = float_rect(c);
+            VisTile t = {A.floats[c], r, -1, c, r};
+            A.vis[A.nvis++] = t;
+        }
+    for (int i = 0; i < A.nvis; i++)
+        if (A.vis[i].fl < 0) A.vis[i].vr = rect_and(A.vis[i].r, A.free);
+}
+
+/* nothing on screen because the script has no view: a word about it, in the middle of the free part of the window */
+static void empty_hint(void) {
+    if (A.nvis > 0 || !A.prog || A.prog->nviewers > 0) return;
+    Rect r = A.free;
+    float w = FS_MIN(r.w - px(40), px(420));
+    if (w < px(160)) return;
+    const char *text = A.editor_open ? "Code without sections is one view of the plane, z the point of each pixel; "
+                                       "more views start with @viewer NAME z."
+                                     : "Code without sections is one view of the plane, z the point of each pixel; "
+                                       "more views start with @viewer NAME z. " MODKEY "+E shows the script.";
+    float lh = ui_font_line_height(UI_FONT_SANS), th = ui_text_wrapped(UI_FONT_SANS, 0, 0, w, text, 0, false);
+    float x = r.x + (r.w - w) / 2, y = r.y + (r.h - lh - px(8) - th) / 2;
+    ui_text(UI_FONT_SANS, x, y, "No views", -1, UI_COL_TEXT);
+    ui_text_wrapped(UI_FONT_SANS, x, y + lh + px(8), w, text, UI_COL_TEXT_DIM, true);
+}
+
+static void frame_ui(float W, float H);
 
 static void frame(void) {
     UiInput *in = &A.in;
@@ -4571,59 +4885,14 @@ static void frame(void) {
     if (in->ndropped) request_open(in->dropped_files[0]); /* (the first file dropped) */
 
     /* layout */
-    layout_panes(W, H);
-    A.nvis = 0;
-    layout_compute(A.root, A.area);
-    for (int c = 0; c < MAX_FLOATS; c++)
-        if (A.floats[c] >= 0 && A.nvis < MAX_TILES + MAX_FLOATS) {
-            VisTile t = {A.floats[c], float_rect(c), -1, c};
-            A.vis[A.nvis++] = t;
-        }
+    layout_tiles(W, H);
     for (int i = 0; i < A.nvis; i++) ensure_target(A.vis[i].viewer, (int)A.vis[i].r.w, (int)A.vis[i].r.h);
-    A.hover_tile = -1;
-    for (int i = A.nvis - 1; i >= 0; i--)
-        if (in_rect(A.vis[i].r, in->mouse_x, in->mouse_y)) {
-            A.hover_tile = i;
-            break;
-        }
 
     /* time */
     float t = (float)(fs_time_seconds() - A.t0);
     A.state[p->s_time->slot] = fw(t);
 
-    viewer_interaction();
-    tools_show();
-    for (int i = 0; i < A.nvis; i++) {
-        int prev = ui_layer(tile_layer(&A.vis[i]));
-        draw_tile(&A.vis[i]);
-        if (A.vis[i].fl >= 0) ui_occlude(A.vis[i].r.x, A.vis[i].r.y, A.vis[i].r.w, A.vis[i].r.h);
-        ui_layer(prev);
-    }
-    for (int i = 0; i < A.nvis; i++) deep_note(&A.vis[i]);
-    /* drop zones while dragging a view */
-    if (A.drag == DRAG_VIEWER) {
-        int prev = ui_layer(UI_LAYER_TOOLTIP);
-        int leaf;
-        Rect hl;
-        if (drop_zone(in->mouse_x, in->mouse_y, &leaf, &hl) != DROP_NONE) {
-            ui_rect(hl.x, hl.y, hl.w, hl.h, UI_RGBA(90, 160, 240, 70));
-            ui_rect_outline(hl.x, hl.y, hl.w, hl.h, px(2), UI_COL_ACCENT);
-        }
-        Section *s = p->viewers[A.drag_viewer];
-        const char *name = s->display ? s->display : s->name;
-        float tw = ui_text_width(UI_FONT_SANS, name, -1) + px(20);
-        ui_rrect(in->mouse_x + px(12), in->mouse_y + px(12), tw, px(28), px(6), UI_COL_ACCENT_DIM);
-        ui_text(UI_FONT_SANS, in->mouse_x + px(22), in->mouse_y + px(16), name, -1, UI_COL_TEXT);
-        ui_layer(prev);
-    }
-    editor_pane(H);
-    right_pane(W, H);
-    bars();
-    help_overlay(W, H);
-    refdoc_ui(W, H, &A.ref_open);
-    modal_dialog(W, H);
-    status_line(W, H);
-    if (!A.modal) shortcuts();
+    frame_ui(W, H);
     const GfxDrawList *dl = ui_end_frame();
     if (ui_wants_mouse() && A.drag == DRAG_NONE) platform_set_cursor(ui_cursor());
 
@@ -4667,6 +4936,53 @@ static void frame(void) {
     }
 }
 
+/* The UI of a frame (after layout_tiles; nothing for the GPU but the draw list): the views' mouse, the tiles, the
+   panes, the bars, the overlays and the keys */
+static void frame_ui(float W, float H) {
+    UiInput *in = &A.in;
+    Program *p = A.prog;
+    A.hover_tile = -1;
+    for (int i = A.nvis - 1; i >= 0; i--)
+        if (in_rect(A.vis[i].r, in->mouse_x, in->mouse_y)) {
+            A.hover_tile = i;
+            break;
+        }
+    viewer_interaction();
+    tools_show();
+    for (int i = 0; i < A.nvis; i++) {
+        int prev = ui_layer(tile_layer(&A.vis[i]));
+        draw_tile(&A.vis[i]);
+        if (A.vis[i].fl >= 0) ui_occlude(A.vis[i].r.x, A.vis[i].r.y, A.vis[i].r.w, A.vis[i].r.h);
+        ui_layer(prev);
+    }
+    empty_hint();
+    for (int i = 0; i < A.nvis; i++) deep_note(&A.vis[i]);
+    /* drop zones while dragging a view */
+    if (A.drag == DRAG_VIEWER) {
+        int prev = ui_layer(UI_LAYER_TOOLTIP);
+        int leaf;
+        Rect hl;
+        if (drop_zone(in->mouse_x, in->mouse_y, &leaf, &hl) != DROP_NONE) {
+            ui_rect(hl.x, hl.y, hl.w, hl.h, UI_RGBA(90, 160, 240, 70));
+            ui_rect_outline(hl.x, hl.y, hl.w, hl.h, px(2), UI_COL_ACCENT);
+        }
+        Section *s = p->viewers[A.drag_viewer];
+        const char *name = s->display ? s->display : s->name;
+        float tw = ui_text_width(UI_FONT_SANS, name, -1) + px(20);
+        ui_rrect(in->mouse_x + px(12), in->mouse_y + px(12), tw, px(28), px(6), UI_COL_ACCENT_DIM);
+        ui_text(UI_FONT_SANS, in->mouse_x + px(22), in->mouse_y + px(16), name, -1, UI_COL_TEXT);
+        ui_layer(prev);
+    }
+    editor_pane(H);
+    right_pane(W, H);
+    bars();
+    help_overlay(W, H);
+    refdoc_ui(W, H, &A.ref_open);
+    modal_dialog(W, H);
+    status_line(W, H);
+    if (!A.modal) shortcuts();
+}
+
 /* nothing could be loaded yet: only the editor (full width) */
 static void frame_editor_only(void) {
     UiInput *in = &A.in;
@@ -4679,7 +4995,7 @@ static void frame_editor_only(void) {
     if (atlas) gfx_set_font_atlas(atlas, aw, ah);
     A.editor_open = true;
     A.editor_r = (Rect){0, 0, (float)in->fb_w, (float)in->fb_h};
-    A.area = (Rect){(float)in->fb_w, 0, 0, (float)in->fb_h};
+    A.area = A.free = (Rect){(float)in->fb_w, 0, 0, (float)in->fb_h};
     editor_pane((float)in->fb_h);
     status_line((float)in->fb_w, (float)in->fb_h);
     modal_dialog((float)in->fb_w, (float)in->fb_h);
