@@ -918,11 +918,12 @@ static bool layout_follow(const int *remap, int old_n, int new_n) {
 /* A run of the script that closes views (their sections gone) keeps the layout as it was before, by the views'
    names; if a later run brings them all back (an undo, say) while the layout is still as the close left it, they come
    back where they were. */
+#define NAMED_VIEWS (MAX_NODES + MAX_FLOATS)
 typedef struct NamedLayout {
     int n;                                  /* names in use (0: nothing kept) */
     LNode nodes[MAX_NODES];                 /* (a leaf's viewer: an index into names, -1 none) */
     int root, floats[MAX_FLOATS], focus;
-    char names[MAX_NODES + MAX_FLOATS][64];
+    char names[NAMED_VIEWS][64];
     u32 after;                              /* layout_hash of the layout the close left */
 } NamedLayout;
 static NamedLayout closed_layout;
@@ -931,7 +932,7 @@ static int named_view(NamedLayout *L, Program *p, int v) {
     if (v < 0 || v >= p->nviewers) return -1;
     for (int i = 0; i < L->n; i++)
         if (!strcmp(L->names[i], p->viewers[v]->name)) return i;
-    if (L->n >= ARRAY_COUNT(L->names)) return -1;
+    if (L->n >= NAMED_VIEWS) return -1;
     snprintf(L->names[L->n], sizeof L->names[0], "%s", p->viewers[v]->name);
     return L->n++;
 }
@@ -970,7 +971,7 @@ static u32 layout_hash(Program *p) {
 
 /* the layout L, the names being views of program p: false (nothing changed) unless they all are */
 static bool layout_from_names(const NamedLayout *L, Program *p) {
-    int idx[ARRAY_COUNT(L->names)];
+    int idx[NAMED_VIEWS];
     for (int i = 0; i < L->n; i++) {
         idx[i] = -1;
         for (int v = 0; v < p->nviewers && idx[i] < 0; v++)
