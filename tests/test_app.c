@@ -1038,11 +1038,11 @@ TEST(app_overlay_panes) {
     app_test_ui_frame();
     CHECK_INT(A.hover_viewer, 0);
     CHECK(wf(A.state[rad->slot]) < r0);
-    /* the gap around a pane's frame belongs to the view under it */
+    /* the panes are flush with the bars: right at its edge, the mouse is the pane's */
     tu_move(A.editor_r.x + 2, 300);
     app_test_ui_frame();
     app_test_ui_frame();
-    CHECK_INT(A.hover_viewer, 0);
+    CHECK_INT(A.hover_viewer, -1);
     /* the config pane takes the mouse from the view under it */
     tu_move(A.config_r.x + A.config_r.w / 2, 300);
     app_test_ui_frame();
@@ -1075,9 +1075,8 @@ TEST(app_pane_edges_follow_the_mouse) {
         A.editor_frac = 0.45f;
         A.config_frac = 0.27f;
         app_test_ui_frame();
-        float g = pane_gap();
         CHECK(A.editor_r.w < floorf(800 * 0.45f)); /* (both shrunk: the views keep a third of the window) */
-        float edge = A.editor_r.x + A.editor_r.w - g, to = edge + 40;
+        float edge = A.editor_r.x + A.editor_r.w, to = edge + 40;
         tu_move(edge, 300);
         app_test_ui_frame();
         tu_press(0, 1);
@@ -1087,8 +1086,8 @@ TEST(app_pane_edges_follow_the_mouse) {
         app_test_ui_frame();
         tu_release(0);
         app_test_ui_frame();
-        CHECK_NEAR(A.editor_r.x + A.editor_r.w - g, to, 2);
-        edge = A.config_r.x + g;
+        CHECK_NEAR(A.editor_r.x + A.editor_r.w, to, 2);
+        edge = A.config_r.x;
         to = edge - 30;
         tu_move(edge, 300);
         app_test_ui_frame();
@@ -1099,7 +1098,7 @@ TEST(app_pane_edges_follow_the_mouse) {
         app_test_ui_frame();
         tu_release(0);
         app_test_ui_frame();
-        CHECK_NEAR(A.config_r.x + g, to, 2);
+        CHECK_NEAR(A.config_r.x, to, 2);
         tu_move(-100, -100);
         app_test_ui_frame();
     }

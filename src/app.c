@@ -3028,25 +3028,16 @@ static void bars(void) {
 /* ---- the panes: beside the views, or floating over them ----------------------------------------------------------
  * The script pane (left), the config and info panes (right) are next to the bars.  Beside the views (the panes
  * opaque, the views in the space left between them), or (overlay panes, a setting) over the views, which then use
- * the whole space between the bars: each pane is a rounded, translucent frame with a gap around it, the pictures
- * showing through dimmed, a little more behind the text.  The panes then sit on the PANEL layer (above the tiles,
+ * the whole space between the bars: each pane is translucent and flush with its bar, the pictures showing through
+ * dimmed, a little more behind the text.  The panes then sit on the PANEL layer (above the tiles,
  * whose input they cover) and their splitters one layer higher. */
 #define PANE_TINT UI_RGBA(12, 14, 18, 158)     /* a frame over the views: ~62% */
-#define PANE_EDGE UI_RGBA(255, 255, 255, 36)   /* its outline */
+#define PANE_EDGE UI_RGBA(255, 255, 255, 36)   /* its edge toward the views */
 #define PANE_LINE UI_RGBA(255, 255, 255, 22)   /* under its header */
 #define PANE_BODY 0.55f                        /* behind the text, on top of the frame: ~83% in all */
 
 static bool overlay_on(void) { return A.overlay_panes && A.prog; }
 static int pane_layer(void) { return overlay_on() ? UI_LAYER_PANEL : UI_LAYER_BASE; }
-static float pane_gap(void) { return overlay_on() ? px(8) : 0; }
-static float pane_inset(void) { return overlay_on() ? px(3) : 0; } /* (the body inside the frame's rounded corners) */
-
-/* the frame of a pane whose column is r */
-static Rect pane_frame(Rect r) {
-    float g = pane_gap();
-    Rect f = {r.x + g, r.y + g, FS_MAX(r.w - 2 * g, 1.0f), FS_MAX(r.h - 2 * g, 1.0f)};
-    return f;
-}
 
 /* The widths the panes ask for in a window W wide; layout_panes shrinks both when together they would leave the views
    less than a third of the window (beside them, or uncovered). */
@@ -3061,21 +3052,19 @@ static float pane_ask(float w, float other, float W) {
     return w * other / FS_MAX(room - w, 1.0f);
 }
 
-/* an overlay pane's frame, with the line under its header (bh high); it takes the mouse from the views */
+/* an overlay pane's background, with the line under its header (bh high); it takes the mouse from the views */
 static void pane_overlay_back(Rect f, float bh) {
-    float rad = px(10), in = pane_inset();
     ui_occlude(f.x, f.y, f.w, f.h);
-    ui_rrect(f.x, f.y, f.w, f.h, rad, PANE_TINT);
-    ui_rrect_outline(f.x, f.y, f.w, f.h, rad, px(1), PANE_EDGE);
-    if (bh > 0) ui_rect(f.x + in, f.y + bh - px(1), f.w - 2 * in, px(1), PANE_LINE);
+    ui_rect(f.x, f.y, f.w, f.h, PANE_TINT);
+    if (bh > 0) ui_rect(f.x, f.y + bh - px(1), f.w, px(1), PANE_LINE);
 }
 
 /* the background of the config or the info pane at pr, with its header (bh high) */
 static void pane_back(Rect pr, float bh) {
     if (overlay_on()) {
-        float in = pane_inset();
         pane_overlay_back(pr, bh);
-        ui_rect(pr.x + in, pr.y + bh, pr.w - 2 * in, pr.h - bh - in, ui_alpha(UI_COL_PANEL, PANE_BODY));
+        ui_rect(pr.x, pr.y + bh, pr.w, pr.h - bh, ui_alpha(UI_COL_PANEL, PANE_BODY));
+        ui_rect(pr.x, pr.y, px(1), pr.h, PANE_EDGE);
         return;
     }
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_COL_PANEL, 0);
@@ -3194,8 +3183,8 @@ static void editor_pane(float H) {
     if (!A.editor_open || r.w < 1) return;
     bool ov = overlay_on();
     int prev = ui_layer(pane_layer());
-    Rect f = pane_frame(r);
-    float x0 = f.x, ew = f.w, y0 = f.y, in = pane_inset();
+    Rect f = r;
+    float x0 = f.x, ew = f.w, y0 = f.y;
     float bh = px(40);
     if (ov) pane_overlay_back(f, bh);
     else ui_panel_ex(x0, 0, ew, bh, UI_COL_PANEL_HI, 0);
@@ -3238,16 +3227,16 @@ static void editor_pane(float H) {
     ui_pop_clip();
     editor_set_clock(A.ed, fs_time_seconds());
     static float last_fh;
-    float fh = find_bar(x0 + in, ew - 2 * in, y0 + bh);
+    float fh = find_bar(x0, ew, y0 + bh);
     if (fh != last_fh) editor_reveal(A.ed); /* the editor got shorter or taller: keep the match in view */
     last_fh = fh;
     editor_set_background_alpha(A.ed, ov ? PANE_BODY : 1.0f);
-    editor_ui(A.ed, x0 + in, y0 + bh + fh, ew - 2 * in, f.h - bh - fh - in, A.editor_grab);
+    editor_ui(A.ed, x0, y0 + bh + fh, ew, f.h - bh - fh, A.editor_grab);
     A.editor_grab = false;
-    if (!ov) ui_rect(x0 + ew - px(1), 0, px(1), H, UI_COL_BORDER);
+    ui_rect(x0 + ew - px(1), 0, px(1), H, ov ? PANE_EDGE : UI_COL_BORDER);
     if (A.prog) { /* (alone in the window: nothing to share it with) */
         float nx = pane_splitter("##editor_split", x0 + ew, H), W = (float)A.in.fb_w;
-        if (nx == nx && W > 0) A.editor_frac = FS_CLAMP(pane_ask(nx + pane_gap() - r.x, config_want(W), W) / W, 0.15f, 0.8f);
+        if (nx == nx && W > 0) A.editor_frac = FS_CLAMP(pane_ask(nx - r.x, config_want(W), W) / W, 0.15f, 0.8f);
     }
     ui_layer(prev);
 }
@@ -4188,19 +4177,17 @@ static void info_pane(Rect pr) {
     ui_pop_clip();
 }
 
-/* The pane left of the right bar: the info on top of the config when both are open (the line between them drags;
-   over the views they are two frames, the gap between them drags) */
+/* The pane left of the right bar: the info on top of the config when both are open (the line between them drags) */
 static void right_pane(float W, float H) {
     Rect pr = A.config_r;
     if (pr.w < 1) return;
     int prev = ui_layer(pane_layer());
-    Rect f = pane_frame(pr);
-    float g = pane_gap();
+    Rect f = pr;
     if (A.info_open && A.config_open) {
         float ih = FS_CLAMP(floorf(H * A.info_frac), px(100), FS_MAX(px(100), H - px(140)));
-        info_pane((Rect){f.x, f.y, f.w, ih - g / 2 - f.y});
-        config_pane((Rect){f.x, ih + g / 2, f.w, f.y + f.h - ih - g / 2});
-        if (!overlay_on()) ui_rect(pr.x, ih, pr.w, px(1), UI_COL_BORDER);
+        info_pane((Rect){f.x, f.y, f.w, ih - f.y});
+        config_pane((Rect){f.x, ih, f.w, f.y + f.h - ih});
+        ui_rect(pr.x, ih, pr.w, px(1), overlay_on() ? PANE_EDGE : UI_COL_BORDER);
         int prev2 = ui_layer(pane_layer() + 1);
         UiInteract it = ui_interact("##info_split", f.x, ih - px(4), f.w, px(8));
         ui_layer(prev2);
@@ -4212,7 +4199,7 @@ static void right_pane(float W, float H) {
         config_pane(f);
     }
     float nx = pane_splitter("##config_split", f.x, H);
-    if (nx == nx && W > 0) A.config_frac = FS_CLAMP(pane_ask(A.rbar_r.x - (nx - g), editor_want(W), W) / W, 0.12f, 0.6f);
+    if (nx == nx && W > 0) A.config_frac = FS_CLAMP(pane_ask(A.rbar_r.x - nx, editor_want(W), W) / W, 0.12f, 0.6f);
     ui_layer(prev);
 }
 
