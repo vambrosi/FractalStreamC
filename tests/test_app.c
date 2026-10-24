@@ -559,14 +559,7 @@ TEST(app_config_point) {
 static void app_test_bars_frame(void) {
     A.in = T;
     tu_begin();
-    layout_panes(800, 600);
-    A.nvis = 0;
-    layout_compute(A.root, A.area);
-    for (int c = 0; c < MAX_FLOATS; c++)
-        if (A.floats[c] >= 0) {
-            VisTile t = {A.floats[c], float_rect(c), -1, c};
-            A.vis[A.nvis++] = t;
-        }
+    layout_tiles(800, 600);
     bars();
     tu_end();
 }
@@ -758,6 +751,400 @@ TEST(app_info_and_inspect) {
     app_test_end();
 }
 
+/* ---- the layout as the script changes (no GPU: the viewers have no pipelines) ----------------------------------- */
+#define APP_TEST_VIEW(name) "@viewer " name " z\ncolor = .black\n"
+
+/* load `src` as the app does (LOAD_OPEN: another script, LOAD_RUN: the same script edited); false if it has errors
+   (then the running program stays, and the views whose sections are gone close) */
+static bool app_test_load(const char *src, int mode) {
+    Program *p = program_load(src, "t");
+    if (p->nerrors) {
+        if (mode == LOAD_RUN && A.prog) mark_gone(p);
+        program_free(p);
+        return false;
+    }
+    adopt_program(p, (ViewerRT *)xcalloc((size_t)p->nviewers + 1, sizeof(ViewerRT)), mode);
+    return true;
+}
+
+static App app_test_saved_app;
+static void app_test_start(void) {
+    app_test_saved_app = A;
+    memset(&A, 0, sizeof A);
+    A.ed = editor_create();
+    A.editor_frac = 0.4f;
+    A.config_frac = 0.27f;
+    A.info_frac = 0.4f;
+    A.hover_viewer = A.hover_tile = -1;
+    closed_layout.n = 0;
+    tu_reset(1.0f);
+}
+static void app_test_stop(void) {
+    if (A.prog) {
+        free_viewers();
+        interp_free(&A.interp);
+        outs_free();
+        program_free(A.prog);
+    }
+    free(A.state);
+    free(A.uploaded);
+    free(A.prepare_snap);
+    editor_destroy(A.ed);
+    closed_layout.n = 0;
+    A = app_test_saved_app;
+}
+
+static void app_test_layout_node(int n, StrBuf *sb) {
+    if (n < 0) {
+        sb_puts(sb, "-");
+        return;
+    }
+    LNode *nd = &A.nodes[n];
+    if (nd->kind == N_LEAF) {
+        int v = nd->viewer;
+        sb_printf(sb, "%s%s", leaf_gone(n) ? "~" : "", v >= 0 && v < A.prog->nviewers ? A.prog->viewers[v]->name : "?");
+        return;
+    }
+    sb_putc(sb, '(');
+    app_test_layout_node(nd->a, sb);
+    sb_putc(sb, nd->kind == N_HSPLIT ? '|' : '/');
+    app_test_layout_node(nd->b, sb);
+    sb_putc(sb, ')');
+}
+
+/* the layout as text: "(va|(vb/vc))" (| side by side, / one over the other, ~ closed: its section is gone), then the
+   floating views ("vc@1": in corner 1) and the focused view ("*va") */
+static const char *app_test_layout(void) {
+    static char out[512];
+    StrBuf sb = {0};
+    app_test_layout_node(A.root, &sb);
+    for (int c = 0; c < MAX_FLOATS; c++)
+        if (A.floats[c] >= 0) sb_printf(&sb, " %s@%d", A.prog->viewers[A.floats[c]]->name, c);
+    sb_printf(&sb, " *%s", A.focus_viewer >= 0 ? A.prog->viewers[A.focus_viewer]->name : "-");
+    snprintf(out, sizeof out, "%s", sb_cstr(&sb));
+    sb_free(&sb);
+    return out;
+}
+
+/* one frame of the whole UI (as frame() builds it, without the GPU), 800 x 600 */
+static void app_test_ui_frame(void) {
+    A.in = T;
+    tu_begin();
+    layout_tiles(800, 600);
+    frame_ui(800, 600);
+    tu_end();
+}
+
+/* a view whose section is deleted closes; the others keep their places; a renamed view keeps its place; an undo brings
+   a closed view back where it was */
+TEST(app_layout_follows_the_script) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb") APP_TEST_VIEW("vc"), LOAD_OPEN));
+    CHECK_STR(app_test_layout(), "(va|vb) *va"); /* (a script just opened: the first two side by side) */
+    split_leaf(find_leaf(A.root, 1), DROP_BOTTOM, 2);
+    A.focus_viewer = 1;
+    A.nodes[A.root].ratio = 0.3f;
+    CHECK_STR(app_test_layout(), "(va|(vb/vc)) *vb");
+    /* vb's section deleted: its tile closes, vc takes its room, va stays as it was */
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|vc) *va");
+    CHECK(A.nodes[A.root].ratio == 0.3f);
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 2);
+    /* undo: vb is back where it was */
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|(vb/vc)) *vb");
+    /* ... but not once the layout changed in between */
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|vc) *va");
+    A.nodes[A.root].kind = N_VSPLIT;
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va/vc) *va");
+    A.nodes[A.root].kind = N_HSPLIT;
+    split_leaf(find_leaf(A.root, 2), DROP_TOP, 1);
+    A.focus_viewer = 1;
+    CHECK_STR(app_test_layout(), "(va|(vb/vc)) *vb");
+    /* a renamed view keeps its place (and the focus) */
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("bee") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|(bee/vc)) *bee");
+    /* a floating view whose section is gone goes away */
+    detach_viewer(2);
+    A.floats[1] = 2;
+    CHECK_STR(app_test_layout(), "(va|bee) vc@1 *bee");
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("bee"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|bee) *bee");
+    /* every view on screen gone: new views take their places (the focus follows its tile) */
+    CHECK(app_test_load(APP_TEST_VIEW("x1") APP_TEST_VIEW("x2") APP_TEST_VIEW("x3"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(x1|x2) *x2");
+    /* x1 renamed y1 takes its place; x2 gone, and x3 isn't new: x2's tile closes */
+    CHECK(app_test_load(APP_TEST_VIEW("y1") APP_TEST_VIEW("x3"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "y1 *y1");
+    /* every view on screen gone and none new: the first views of the script, as when it is opened */
+    CHECK(app_test_load(APP_TEST_VIEW("x3"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "x3 *x3");
+    CHECK(app_test_load(APP_TEST_VIEW("x3") APP_TEST_VIEW("q1") APP_TEST_VIEW("q2"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "x3 *x3");
+    CHECK(app_test_load(APP_TEST_VIEW("q1") APP_TEST_VIEW("q2"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(q1|q2) *q1");
+    hide_view(0);
+    CHECK_STR(app_test_layout(), "q2 *q2");
+    CHECK(app_test_load(APP_TEST_VIEW("y1") APP_TEST_VIEW("x3"), LOAD_RUN)); /* (q2 gone: y1, new, takes its place) */
+    CHECK_STR(app_test_layout(), "y1 *y1");
+    /* the last tile gone while a view floats: the floating view takes the window */
+    split_leaf(A.root, DROP_RIGHT, 1);
+    detach_viewer(1);
+    A.floats[3] = 1;
+    CHECK_STR(app_test_layout(), "y1 x3@3 *x3");
+    CHECK(app_test_load(APP_TEST_VIEW("x3"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "x3 *x3");
+    app_test_stop();
+}
+
+/* while the script has errors the program keeps running, but a view whose section is gone closes at once (and comes
+   back if the section does) */
+TEST(app_layout_gone_while_errors) {
+    app_test_start();
+    const char *abc = APP_TEST_VIEW("va") APP_TEST_VIEW("vb") APP_TEST_VIEW("vc");
+    CHECK(app_test_load(abc, LOAD_OPEN));
+    split_leaf(find_leaf(A.root, 1), DROP_BOTTOM, 2);
+    A.focus_viewer = 1;
+    /* vb's section deleted, and a mistake elsewhere: vb's tile closes, the others share its room */
+    CHECK(!app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vc") "w = = 2\n", LOAD_RUN));
+    CHECK_INT(A.prog->nviewers, 3); /* (still the program that ran) */
+    CHECK_STR(app_test_layout(), "(va|(~vb/vc)) *va");
+    CHECK(!viewer_visible(1) && viewer_visible(0) && viewer_visible(2));
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 2);
+    for (int i = 0; i < A.nvis; i++) CHECK(A.vis[i].viewer != 1);
+    if (A.nvis == 2) CHECK(A.vis[1].r.y == 0 && A.vis[1].r.h == 600); /* (vc has the whole height) */
+    CHECK(!view_hideable(1));
+    show_view(1); /* (its button does nothing) */
+    CHECK(!viewer_visible(1));
+    /* the section back (an undo), still with the mistake: vb shows again in its place */
+    CHECK(!app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb") APP_TEST_VIEW("vc") "w = = 2\n", LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|(vb/vc)) *va");
+    /* gone again, and the mistake fixed: closed for good */
+    CHECK(!app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vc") "w = = 2\n", LOAD_RUN));
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|vc) *va");
+    CHECK(!A.vrt[0].gone && !A.vrt[1].gone);
+    /* the usual case: the @config line about a deleted view makes an error; its tile closes all the same */
+    CHECK(app_test_load("@config\nvc.radius = 3\n" APP_TEST_VIEW("va") APP_TEST_VIEW("vc"), LOAD_RUN));
+    CHECK(!app_test_load("@config\nvc.radius = 3\n" APP_TEST_VIEW("va"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "(va|~vc) *va");
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 1);
+    if (A.nvis == 1) CHECK(A.vis[0].r.w == A.area.w);
+    CHECK(app_test_load(APP_TEST_VIEW("va"), LOAD_RUN));
+    CHECK_STR(app_test_layout(), "va *va");
+    app_test_stop();
+}
+
+/* an empty script (or one with only comments) has no view: no tiles, the script's pane open */
+TEST(app_layout_empty_script) {
+    app_test_start();
+    Program *p = program_load("# nothing yet\n\n", "t");
+    CHECK_INT(p->nerrors, 0);
+    CHECK_INT(p->nviewers, 0);
+    program_free(p);
+    p = program_load("w := z\ncolor = .white\n", "t"); /* (code without sections: one view) */
+    CHECK_INT(p->nviewers, 1);
+    program_free(p);
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb"), LOAD_OPEN));
+    CHECK(app_test_load("", LOAD_RUN));
+    CHECK_STR(app_test_layout(), "- *-");
+    CHECK(A.editor_open);
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 0);
+    A.overlay_panes = true;
+    app_test_ui_frame(); /* (over a quiet background) */
+    CHECK_INT(A.nvis, 0);
+    CHECK_INT(bar_view(), -1);
+    float x, y;
+    CHECK(!app_test_bar_item(false, BI_FOCUS, 0, 0, &x, &y)); /* (no view to act on) */
+    /* code typed: its view shows */
+    CHECK(app_test_load("w := z\ncolor = .white\n", LOAD_RUN));
+    CHECK_STR(app_test_layout(), "plane *plane");
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 1);
+    /* and a script opened without views */
+    CHECK(app_test_load("@config\nk : Z = 2 in 1..5\n", LOAD_OPEN));
+    CHECK_STR(app_test_layout(), "- *-");
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 0);
+    app_test_stop();
+}
+
+/* a view dropped beside the view next to it moves there (it used to vanish) */
+TEST(app_split_beside_neighbour) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb"), LOAD_OPEN));
+    CHECK_STR(app_test_layout(), "(va|vb) *va");
+    split_leaf(find_leaf(A.root, 0), DROP_LEFT, 1);
+    CHECK_STR(app_test_layout(), "(vb|va) *vb");
+    split_leaf(find_leaf(A.root, 1), DROP_BOTTOM, 0);
+    CHECK_STR(app_test_layout(), "(vb/va) *va");
+    app_test_ui_frame();
+    CHECK_INT(A.nvis, 2);
+    app_test_stop();
+}
+
+/* overlay panes: the views use the whole space between the bars, the panes float over them and take the mouse where
+   they are drawn; the views keep it elsewhere */
+TEST(app_overlay_panes) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb"), LOAD_OPEN));
+    A.overlay_panes = true;
+    A.editor_open = A.config_open = true;
+    A.nodes[A.root].ratio = -1; /* (the split as a new one: in the middle of what shows) */
+    app_test_ui_frame();
+    float bar = bar_width();
+    CHECK(A.area.x == bar && A.area.x + A.area.w == 800 - bar);
+    CHECK(A.free.x == A.editor_r.x + A.editor_r.w && A.free.x + A.free.w == A.config_r.x);
+    CHECK(A.free.w < A.area.w);
+    CHECK_INT(A.nvis, 2);
+    if (A.nvis == 2) {
+        VisTile *t0 = &A.vis[0], *t1 = &A.vis[1];
+        CHECK(t0->r.x == A.area.x && t1->r.x + t1->r.w == A.area.x + A.area.w); /* (rendered whole, under the panes) */
+        CHECK_NEAR(t0->r.x + t0->r.w, A.free.x + A.free.w / 2, 2);
+        CHECK(t0->vr.x == A.free.x && t0->vr.w < t0->r.w && t1->vr.x + t1->vr.w == A.free.x + A.free.w);
+        int tw, th;
+        export_size(0, 1, &tw, &th);
+        CHECK_INT(tw, (int)t0->r.w);
+    }
+    Sym *rad = A.prog->viewers[0]->radius;
+    float r0 = wf(A.state[rad->slot]);
+    /* the wheel over the script pane scrolls the script, not the view under it */
+    tu_move(A.editor_r.x + A.editor_r.w / 2, 300);
+    app_test_ui_frame();
+    T.scroll_y = 1;
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, -1);
+    CHECK(wf(A.state[rad->slot]) == r0);
+    /* a click there is the pane's too: the view doesn't pan */
+    ViewPlace pl0 = view_place(0);
+    tu_press(0, 1);
+    app_test_ui_frame();
+    tu_move(A.editor_r.x + A.editor_r.w / 2 + 30, 340);
+    app_test_ui_frame();
+    tu_release(0);
+    app_test_ui_frame();
+    ViewPlace pl1 = view_place(0);
+    CHECK(same_place(&pl0, &pl1) && A.drag == DRAG_NONE);
+    /* where no pane is, the view has the wheel */
+    tu_move(A.free.x + 20, 300);
+    app_test_ui_frame();
+    T.scroll_y = 1;
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, 0);
+    CHECK(wf(A.state[rad->slot]) < r0);
+    /* the panes are flush with the bars: right at its edge, the mouse is the pane's */
+    tu_move(A.editor_r.x + 2, 300);
+    app_test_ui_frame();
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, -1);
+    /* the config pane takes the mouse from the view under it */
+    tu_move(A.config_r.x + A.config_r.w / 2, 300);
+    app_test_ui_frame();
+    app_test_ui_frame();
+    CHECK_INT(A.hover_viewer, -1);
+    /* a view dropped on the free part of the first view splits it there; dropped on a pane, nothing happens */
+    int leaf;
+    Rect hl;
+    CHECK(drop_zone(A.editor_r.x + A.editor_r.w / 2, 300, &leaf, &hl) == DROP_NONE);
+    if (A.nvis == 2) {
+        Rect vr = A.vis[0].vr;
+        CHECK(drop_zone(vr.x + vr.w * 0.9f, vr.y + vr.h / 2, &leaf, &hl) == DROP_RIGHT);
+        CHECK(hl.x >= A.free.x); /* (what will show of the new tile) */
+    }
+    /* beside the views: the views are between the panes again */
+    A.overlay_panes = false;
+    app_test_ui_frame();
+    CHECK(A.area.x == A.free.x && A.area.w == A.free.w);
+    CHECK(A.nvis == 2 && A.vis[0].r.x == A.free.x && A.vis[0].vr.w == A.vis[0].r.w);
+    app_test_stop();
+}
+
+/* a pane's dragged edge follows the mouse, also when both panes are open and share what the views leave them */
+TEST(app_pane_edges_follow_the_mouse) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va"), LOAD_OPEN));
+    for (int mode = 0; mode < 2; mode++) {
+        A.overlay_panes = mode == 1;
+        A.editor_open = A.config_open = true;
+        A.editor_frac = 0.45f;
+        A.config_frac = 0.27f;
+        app_test_ui_frame();
+        CHECK(A.editor_r.w < floorf(800 * 0.45f)); /* (both shrunk: the views keep a third of the window) */
+        float edge = A.editor_r.x + A.editor_r.w, to = edge + 40;
+        tu_move(edge, 300);
+        app_test_ui_frame();
+        tu_press(0, 1);
+        app_test_ui_frame();
+        tu_move(to, 300);
+        app_test_ui_frame();
+        app_test_ui_frame();
+        tu_release(0);
+        app_test_ui_frame();
+        CHECK_NEAR(A.editor_r.x + A.editor_r.w, to, 2);
+        edge = A.config_r.x;
+        to = edge - 30;
+        tu_move(edge, 300);
+        app_test_ui_frame();
+        tu_press(0, 1);
+        app_test_ui_frame();
+        tu_move(to, 300);
+        app_test_ui_frame();
+        app_test_ui_frame();
+        tu_release(0);
+        app_test_ui_frame();
+        CHECK_NEAR(A.config_r.x, to, 2);
+        tu_move(-100, -100);
+        app_test_ui_frame();
+    }
+    app_test_stop();
+}
+
+/* the panes over the views or beside them: a button in the right bar, kept in settings.txt with the interface's size */
+TEST(app_overlay_setting) {
+#if FS_OS_WINDOWS
+    SKIP("uses setenv");
+#else
+    const char *old = getenv("FS_CONFIG_DIR");
+    char *saved_env = old ? xstrdup(old) : NULL;
+    setenv("FS_CONFIG_DIR", "build/test-settings/overlay", 1);
+    remove("build/test-settings/overlay/settings.txt");
+    App saved = A;
+    memset(&A, 0, sizeof A);
+    load_settings();
+    CHECK(A.overlay_panes); /* (on unless the settings say otherwise) */
+    CHECK(A.ui_zoom == 1);
+    tu_reset(1.0f);
+    A.hover_viewer = A.hover_tile = -1;
+    layout_reset(-1);
+    app_test_bars_frame();
+    CHECK(app_test_bar_click(false, BI_OVERLAY, -1, 0));
+    CHECK(!A.overlay_panes);
+    A.ui_zoom = 1.5f;
+    save_settings();
+    A.overlay_panes = true;
+    A.ui_zoom = 1;
+    load_settings();
+    CHECK(!A.overlay_panes);
+    CHECK_NEAR(A.ui_zoom, 1.5, 1e-6);
+    CHECK(app_test_bar_click(false, BI_OVERLAY, -1, 0));
+    CHECK(A.overlay_panes);
+    A.overlay_panes = false;
+    load_settings();
+    CHECK(A.overlay_panes);
+    CHECK_NEAR(A.ui_zoom, 1.5, 1e-6);
+    A = saved;
+    if (saved_env) setenv("FS_CONFIG_DIR", saved_env, 1);
+    else unsetenv("FS_CONFIG_DIR");
+    free(saved_env);
+#endif
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -771,4 +1158,11 @@ static const TestCase tests_app[] = {
     TESTCASE(app_config_point),
     TESTCASE(app_bars),
     TESTCASE(app_info_and_inspect),
+    TESTCASE(app_layout_follows_the_script),
+    TESTCASE(app_layout_gone_while_errors),
+    TESTCASE(app_layout_empty_script),
+    TESTCASE(app_split_beside_neighbour),
+    TESTCASE(app_overlay_panes),
+    TESTCASE(app_pane_edges_follow_the_mouse),
+    TESTCASE(app_overlay_setting),
 };

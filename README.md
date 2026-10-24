@@ -88,6 +88,14 @@ install one: `sudo apt install libvulkan1 mesa-vulkan-drivers` (Ubuntu, Debian, 
   hide it; and the list of keys. Drag the edge of a pane to resize it. Ctrl+F finds (and Ctrl+Alt+F replaces) in the script; while you
   type a name, the editor offers the ones it could be (Tab takes one), and resting the mouse on a
   name says what it is. Changes made to the file in another editor are picked up automatically.
+- The script, config and info panes float over the views, translucent: the views keep the whole
+  space between the bars and show through the panes, dimmed; the mouse belongs to a pane where it
+  is drawn and to the view under it everywhere else. The layers button at the bottom of the right
+  bar puts the panes beside the views instead (the choice is kept with the other settings).
+- Deleting a view's section from the script closes that view at once, even while the script has
+  errors (its number in the left bar is struck out until the script runs again); the other views
+  keep their places, and Undo brings it back where it was. A view renamed in its section keeps its
+  place. An empty script has no views: the window shows the script alone.
 - The coordinates of the point under the mouse show at the bottom left of the view; Ctrl+Shift+A
   (or the grid button in the right bar) adds the axes and grid lines with their values. Zoomed
   deep (radius below about 1e-4 for the Mandelbrot set), a view gets blocky in single precision;

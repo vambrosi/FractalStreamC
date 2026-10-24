@@ -28,8 +28,12 @@ end
 @tool ["Display name"] ["Shortcut"]
 ```
 
-- A file without section headers is one viewer: `@viewer plane z "z-plane" "Ctrl + 1"`.
+- A file without section headers is one viewer: `@viewer plane z "z-plane" "Ctrl + 1"`. A file
+  without any code (empty, or only comments) has no viewer: the app shows the script alone.
 - Code before the first header is treated as `@global`.
+- Deleting a viewer's section closes its view in the app at once, even while the script has errors;
+  the other views keep their places, and an undo brings it back where it was. A viewer renamed in
+  its header keeps its place on the screen.
 - `@global` and `@config` run once, in file order, when the script is loaded. The variables they
   declare are the program **state**. Config variables also get a control in the config panel.
 - `@prepare` runs (on the CPU) after them, and again whenever the state changes (a config value, a
@@ -486,6 +490,9 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 .maxIterations = 300 in 10..5000 "Iterations"               # sliders work on internals too
 ```
 
+- The config panel (like the script and the Info pane) floats over the views, translucent, so the
+  pictures keep the whole window; the layers button at the bottom of the right bar puts the panes
+  beside the views instead.
 - Every variable declared in `@config` gets a control in the config panel (Ctrl+T, Cmd+T on a
   Mac), in the order of the script: sliders for `Z` and `R` with a range (logarithmic when the
   range spans more than a factor 100), a list for choices, fields for complex numbers and points of

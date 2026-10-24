@@ -91,6 +91,7 @@ struct Editor {
     /* what a word under the mouse is (editor_set_hover) */
     EditorHoverFn hover_fn;
     void *hover_user;
+    float bg_alpha; /* opacity of the backgrounds (editor_set_background_alpha) */
 };
 
 Editor *editor_create(void) {
@@ -100,8 +101,11 @@ Editor *editor_create(void) {
     ed->lines_dirty = true;
     ed->want_col = -1;
     ed->page_rows = 20;
+    ed->bg_alpha = 1;
     return ed;
 }
+
+void editor_set_background_alpha(Editor *ed, float alpha) { ed->bg_alpha = FS_CLAMP(alpha, 0.0f, 1.0f); }
 
 static void edp_rec_free(EdRec *r) {
     free(r->removed);
@@ -1611,8 +1615,8 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
     int caret_line = edp_line_of(ed, ed->cursor);
     int sel_lo, sel_hi;
     edp_selection(ed, &sel_lo, &sel_hi);
-    ui_rect(x, y, w, h, UI_COL_PANEL);
-    ui_rect(x, y, L.gutter_w, L.th, EDC_GUTTER_BG);
+    ui_rect(x, y, w, h, ui_alpha(UI_COL_PANEL, ed->bg_alpha));
+    ui_rect(x, y, L.gutter_w, L.th, ui_alpha(EDC_GUTTER_BG, ed->bg_alpha));
     ui_rect(x + L.gutter_w - 1, y, 1, L.th, UI_COL_BORDER);
 
     int first = FS_MAX(0, (int)floorf(ed->scroll_y / L.row_h));
@@ -1683,7 +1687,7 @@ bool editor_ui(Editor *ed, float x, float y, float w, float h, bool grab_focus) 
 
     /* ---- status bar ---- */
     float sy = y + L.th;
-    ui_rect(x, sy, w, L.status_h, EDC_GUTTER_BG);
+    ui_rect(x, sy, w, L.status_h, ui_alpha(EDC_GUTTER_BG, ed->bg_alpha));
     ui_rect(x, sy, w, 1, UI_COL_BORDER);
     int caret_col_chars = edp_chars_between(ed, edp_ls(ed, caret_line), ed->cursor) + 1;
     char pos[64];
