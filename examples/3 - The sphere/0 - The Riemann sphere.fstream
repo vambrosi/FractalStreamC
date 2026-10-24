@@ -1,0 +1,24 @@
+# The whole Riemann sphere: "projective" at the end of
+# a view's header. Drag to rotate the sphere; the wheel
+# zooms around the mouse. Newton's method for z^3 - 1,
+# all the way to infinity.
+
+@config
+.title = "The Riemann sphere"
+.maxIterations = 60
+sphere.radius = 1.5             # where the view starts
+# sphere.conformal = false: see the sphere from its
+# centre instead of from a point of it (also a check box
+# in the config panel); circles then stop being circles
+
+@viewer sphere z "Riemann sphere" projective
+# z is a complex number here (huge near infinity)
+for k in 1..60 do
+    step := (z^3 - 1) / (3 z^2)
+    z -= step
+    if step vanishes then
+        break
+    end
+end
+color = hsv(arg(z) / tau + 0.1, 0.6, 1 - .iterations / 80)
+# sphere.mobius: the view now, as a Mobius map

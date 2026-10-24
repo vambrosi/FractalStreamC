@@ -1,0 +1,17 @@
+# root t -> f(t) with seed s: a zero of f, by Newton's
+# method from s. Here each point is the seed, so the
+# picture shows where Newton's method takes it.
+
+@config
+.title = "Roots"
+.maxIterations = 50             # Newton's steps, at most
+plane.radius = 2
+
+@viewer plane z "Newton for z^3 - 2z + 2"
+w := root t -> t^3 - 2 t + 2 with seed z
+if .stuck then                  # it did not converge (here:
+    color = .black              # the cycle 0 -> 1 -> 0 of
+    return                      # Newton's method)
+end
+# .iterations: the number of steps it took
+color = hsv(arg(w) / tau, 0.5, 1 - .iterations / 40)

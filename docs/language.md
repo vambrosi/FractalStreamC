@@ -4,6 +4,7 @@ A FractalStream script describes interactive pictures of the complex plane. It h
 **viewers** (code that runs for every pixel and produces a colour), **tools** (code that runs
 when you click in a viewer; it can change variables and draw shapes), **globals** (state shared
 by everything) and **config** (settings and variables you can tweak in the GUI).
+The examples (Ctrl+O, then Examples) show each feature in a short script, in order.
 
 ```
 # Mandelbrot set: the whole file is one viewer, `z` is the pixel's point
@@ -199,7 +200,8 @@ break    continue    return
 
 A statement ends at the end of its line, unless the line ends with an operator or a comma
 (`+ - * / ^ = := == < and or not mod ->` ...), or with `...` (or `…`), or a parenthesis or
-bracket is still open: then it goes on on the next line.
+bracket is still open: then it goes on on the next line (blank lines and comment lines in
+between don't end it).
 
 ```
 m : R = .iterations + 1 -
@@ -294,7 +296,7 @@ Derivatives use the *natural chart* of each point: the coordinate z near points 
 charts. Newton's method moves the point in its chart and changes chart when it leaves the unit disk;
 critical points are where the derivative of the map vanishes in any chart, so they are found at poles
 and at ∞ too. (Only maps written as formulas, or as one-line functions of points, can be
-differentiated; see `examples/attractors.fstream`.)
+differentiated; see `examples/3 - The sphere/2 - Attracting cycles.fstream`.)
 
 After `root` and `critical`, `.stuck` is true if Newton's method did not converge within
 `.maxIterations` steps, and `.iterations` is the number of steps. Newton's method also gives up
@@ -319,7 +321,7 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
   (they pass nothing on); pixels it can't reach at all start from the seed.
 - A solution with several branches (like the critical points in SaddleDrop) is followed
   continuously; where the fill comes back around an obstacle with another branch, the picture
-  shows a line. See [`examples/saddledrop.fstream`](../examples/saddledrop.fstream).
+  shows a line. See [SaddleDrop](../examples/5%20-%20Gallery/0%20-%20SaddleDrop.fstream) in the examples.
 - The fill travels along rays from `P`. Rows of pixels that pass between two nearby branch
   points come back with another branch and would carry it to the edge of the picture as a thin
   band. After the fill, such bands are solved again from their sides ("mending"): a band whose

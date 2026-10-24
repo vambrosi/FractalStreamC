@@ -1,0 +1,67 @@
+# Events: drag the roots of a polynomial and its Newton
+# basins follow. "Move" (M): press on a root, drag it.
+# "Add" (A): click to add a root; dragging still pans.
+
+@config
+.title = "Moving roots"
+plane.radius = 2
+
+@global
+roots : List of C = [1, -0.5 + 0.866i, -0.5 - 0.866i]
+held := 0                       # the root being moved
+
+@viewer plane z "Newton basins"
+# Newton's method for the product of the (z - r):
+# z - 1/s, with s the sum of the 1/(z - r)
+for k in 1..60 do
+    s := 0
+    on_root := false
+    for r in roots do
+        on_root = on_root or (z - r) vanishes
+        s += 1 / (z - r)
+    end
+    if on_root then             # (1/(z - r): no number)
+        break
+    end
+    z -= 1 / s
+end
+best := 1                       # the nearest root
+for j in 1..|roots| do
+    if |z - roots[j]| < |z - roots[best]| then
+        best = j
+    end
+end
+color = hsv(best / |roots|, 0.55, 0.9)
+
+@plane.tool "Move" "M" "open_with"
+# each event has its block, and its own variables:
+# share values between events through globals (held)
+on press do                     # the button went down at z
+    held = 0
+    for j in 1..|roots| do
+        if |roots[j] - z| < 12 px then
+            held = j
+        end
+    end
+end
+on drag do                      # moved to z, button down
+    if held > 0 then
+        roots[held] = z
+    end
+    # .dragStart: where the button went down
+    draw line between .dragStart and z with color .white
+end
+on release do                   # the button went up
+    held = 0
+end
+on show do                      # chosen, or a change
+    for r in roots do
+        draw circle at r with radius 6 px and color .white
+    end
+end
+
+@plane.tool "Add" "A" "add_circle"
+.panning = true                 # dragging pans the view,
+on click do                     # a click (no move) adds
+    append(roots, z)
+end

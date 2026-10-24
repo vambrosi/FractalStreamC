@@ -36,12 +36,14 @@ typedef struct Lexer {
     const char *src;
     int pos, line, line_start;
     int depth; /* ( and [ nesting */
+    bool cont; /* after "..." until the next token: blank and comment lines don't end the statement */
 } Lexer;
 
 static int lx_col(Lexer *lx, int pos) { return pos - lx->line_start + 1; }
 
 /* A line continues on the next one when it ends with an operator or a comma (it can't end a statement: `x = a +`),
- * after "..." or "…" at its end (as in FractalStream and Matlab), and inside ( ) and [ ]. */
+ * after "..." or "…" at its end (as in FractalStream and Matlab), and inside ( ) and [ ]; blank lines and comment
+ * lines in between don't end the statement either. */
 static bool continues_line(TokKind k) {
     switch (k) {
     case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH: case TK_CARET: case TK_COMMA: case TK_ASSIGN:
@@ -54,7 +56,7 @@ static bool continues_line(TokKind k) {
 }
 
 void lex_program(Program *prog, const char *src, int first_line) {
-    Lexer lx = {prog, src, 0, first_line, 0, 0};
+    Lexer lx = {prog, src, 0, first_line, 0, 0, false};
     bool space = true;
     for (;;) {
         const u8 *s = (const u8 *)src;
@@ -93,6 +95,7 @@ void lex_program(Program *prog, const char *src, int first_line) {
                     lx.line_start = lx.pos;
                 }
                 space = true;
+                lx.cont = true;
                 continue;
             }
         }
@@ -101,7 +104,7 @@ void lex_program(Program *prog, const char *src, int first_line) {
             lx.line++;
             lx.line_start = lx.pos;
             space = true;
-            if (lx.depth > 0) continue;
+            if (lx.depth > 0 || lx.cont) continue;
             if (prog->tokens.len > 0 && continues_line(vec_last(prog->tokens).kind)) continue;
             if (prog->tokens.len == 0 || vec_last(prog->tokens).kind == TK_NEWLINE) continue;
             t.kind = TK_NEWLINE;
@@ -109,6 +112,7 @@ void lex_program(Program *prog, const char *src, int first_line) {
             vec_push(prog->tokens, t);
             continue;
         }
+        lx.cont = false;   /* a token: a "..." before it has done its job */
         if (is_ident_start(c)) {
             while (is_ident_char(s[lx.pos])) lx.pos++;
             t.len = lx.pos - start;

@@ -1,0 +1,29 @@
+# derivative t -> f(t) at a: the derivative of f at a,
+# exact (automatic differentiation, not a difference
+# quotient), also through loops, ifs and functions.
+# Here: how far each c is from the Mandelbrot set.
+
+@config
+.title = "Distance estimate"
+.escapeRadius = 1000            # far out: a better estimate
+plane.center = -0.75
+plane.radius = 1.5
+
+@global
+define orbit(c) = z where       # the orbit of 0, until it
+    z = 0                       # escapes
+    while z not escapes do
+        z = z^2 + c
+    end
+end
+
+@viewer plane c "Distance to the set"
+z := orbit(c)
+if .stuck then
+    color = .black
+    return
+end
+dz := derivative t -> orbit(t) at c
+d := |z| log(|z|) / |dz|        # about the distance
+# .pixel: the size of a pixel; dark within 2 pixels
+color = gray(clamp(d / .pixel / 2, 0, 1))

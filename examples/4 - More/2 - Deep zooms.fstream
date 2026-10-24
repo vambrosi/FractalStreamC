@@ -1,0 +1,22 @@
+# Deep zooms. Reals are floats, with about 7 digits:
+# zoomed in past a radius of about 1e-4, a view gets
+# blocky. With .doublePrecision on, it is computed with
+# pairs of floats instead: slower, sharp to about 1e-12.
+# This view starts at a radius of 1e-9; turn
+# .doublePrecision off in the config (Ctrl+T) to compare.
+
+@config
+.title = "Deep zoom"
+.doublePrecision = true
+.maxIterations = 3000
+# a centre written in @config keeps all its digits
+plane.center = -0.743643887037151 + 0.131825904205330i
+plane.radius = 1e-9
+
+@viewer plane c "Seahorse valley"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black ...
+        else palette("fire", .iterations / 80)

@@ -1,0 +1,22 @@
+# Quaternions (H, or Quaternion): quat(a, b, c, d) is
+# a + b i + c .j + d .k. A slice of a quaternion Julia
+# set of q^2 + c: the view is the plane x + y i + h .j.
+# Move the slice with h in the config (Ctrl+T).
+
+@config
+.title = "Quaternions"
+h : R = 0 in -1..1 "Height of the slice"
+plane.radius = 1.6
+
+@global
+c := quat(-0.2, 0.6, 0.2, 0)
+
+@viewer plane z "A slice"
+q := quat(re z, im z, h, 0)     # = re(z) + im(z) i + h .j
+n := 0
+while |q| < 4 and n < 60 do     # |q|: the modulus
+    q = q^2 + c
+    n += 1
+end
+color = if n == 60 then .black else palette("viko", n / 20)
+# also conj(q), abs(q), and q[1] ... q[4], the parts

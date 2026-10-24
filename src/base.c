@@ -207,12 +207,29 @@ bool fs_is_dir(const char *path) {
 #endif
 }
 
+/* folders first, then by name: case aside, and numbers by their value ("9 - a" before "10 - b") */
 static int fs_dir_entry_cmp(const void *a, const void *b) {
     const FsDirEntry *x = (const FsDirEntry *)a, *y = (const FsDirEntry *)b;
     if (x->is_dir != y->is_dir) return x->is_dir ? -1 : 1;
-    for (const char *p = x->name, *q = y->name;; p++, q++) {
+    const char *p = x->name, *q = y->name;
+    for (;;) {
+        if (isdigit((unsigned char)*p) && isdigit((unsigned char)*q)) {
+            while (*p == '0') p++;
+            while (*q == '0') q++;
+            size_t m = 0, n = 0;
+            while (isdigit((unsigned char)p[m])) m++;
+            while (isdigit((unsigned char)q[n])) n++;
+            if (m != n) return m < n ? -1 : 1;   /* (without leading zeros, more digits: larger) */
+            int c = strncmp(p, q, m);
+            if (c) return c;
+            p += m;
+            q += n;
+            continue;
+        }
         int c = tolower((unsigned char)*p), d = tolower((unsigned char)*q);
         if (c != d || !c) return c != d ? c - d : strcmp(x->name, y->name);
+        p++;
+        q++;
     }
 }
 

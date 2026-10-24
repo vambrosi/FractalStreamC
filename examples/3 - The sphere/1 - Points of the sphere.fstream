@@ -1,0 +1,30 @@
+# z : P (or Projective) makes z a point of the sphere,
+# exact at infinity: [a : b] is a/b, and ∞ (or
+# .infinity) is [1 : 0]. A rational map written as one
+# formula is right everywhere, at ∞ too. Here
+# z^2 + lam / z^2: its Julia set is a Cantor set of
+# circles.
+
+@config
+.title = "Points of the sphere"
+.maxIterations = 100
+lam : C = 0.01                  # try 0.05, or -0.02i
+sphere.radius = 2.5
+
+@global
+define f(z : P) = z^2 + lam / z^2
+
+@viewer sphere z : P "McMullen map" projective
+w := z
+n := 0
+# chordal: the distance on the sphere, 0..1 (0 to ∞: 1)
+while chordal(w, ∞) > 1e-3 and n < .maxIterations do
+    w = f(w)
+    n += 1
+end
+color = if n == .maxIterations then .black ...
+        else palette("rose", n / 12)
+
+# Also: p[1], p[2] (a and b in [a : b]), complex(p)
+# (a/b, huge near ∞), |p|, p == q, p escapes, and lists
+# (List of P). Arithmetic is exact at ∞: 1/[0 : 1] is ∞.

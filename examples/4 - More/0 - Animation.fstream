@@ -1,0 +1,17 @@
+# .time: the seconds since the script started. A view
+# that uses it is drawn again and again. Here the Julia
+# set of z^2 + c, with c going around a circle.
+
+@config
+.title = "Animation"
+.maxIterations = 200
+speed := 0.3 in 0.05..2 "Speed"
+julia.radius = 1.6
+
+@viewer julia z "Julia set"
+c := 0.7885 cis(speed .time)
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black ...
+        else palette("romao", .iterations / 30)

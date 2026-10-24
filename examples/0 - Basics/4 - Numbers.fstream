@@ -1,0 +1,36 @@
+# Numbers. Z: integers, R: reals, C: complex numbers,
+# Bool (Boolean): true or false; H, P, vectors and
+# lists come in other examples. Numbers widen by
+# themselves, Z -> R -> C, never back: re, im, |z|,
+# floor, round go down. The picture: f(z) coloured by
+# its argument (hue) and modulus (bands); zeros and
+# poles stand out.
+
+@config
+.title = "Numbers"
+plane.radius = 2.5
+
+@viewer plane z "f(z)"
+n : Z = 3               # an integer (Integer works too)
+r : R = 0.5             # a real number (Real)
+w : C = z^n - 1         # a complex number (Complex); i is
+                        # the imaginary unit: 2 + 0.5i
+w = w / (z - r i)       # implicit multiplication: r i, 2z
+w = w + 0.1 sin z       # sin z is sin(z); careful, the
+                        # argument is the whole product:
+                        # im z i is im(z i), sin 2 pi t
+                        # is sin(2 pi t)
+hue : R = arg(w) / tau        # arg: -pi..pi; tau = 2 pi
+band : R = fract(log2(|w|))   # |w|: modulus; fract: 0..1
+ok : Bool = not isnan(band)   # isnan: not a number
+color = if ok then hsv(hue, 0.7, 0.55 + 0.45 band) ...
+        else .white
+
+# More: re im (or Re, Im) conj norm (|z|^2) abs
+# complex(x, y) cis(t) (= exp(i t)) polar(r, t) pi e;
+# for R and C: sin cos tan asin acos atan sinh cosh
+# tanh asinh acosh atanh exp log (= ln) sqrt; for R:
+# atan2(y, x) log2 log10 floor ceil round trunc fract
+# sign min max clamp smoothstep step isinf; and 7 mod 3
+# (the remainder). 1/2 is 0.5. sqrt(-4) is not a number
+# (a real function of a real number); sqrt(-4 + 0i) is 2i.

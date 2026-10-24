@@ -1,0 +1,30 @@
+# Tools: code that runs where you click. Choose "Orbit"
+# under the view's number in the left bar (or press O
+# over the view), then click or drag in the Julia set.
+
+@config
+.title = "Orbits"
+julia.radius = 1.6
+c : C = -0.12 + 0.75i           # the rabbit (Ctrl+T)
+
+@viewer julia z "Julia set"
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then gray(0.2) ...
+        else rainbow(.iterations / 30)
+
+# @VIEW.tool "Name" "Key" "icon": a tool of that view,
+# where z is the clicked point. Icons: Material Icons.
+@julia.tool "Orbit" "O" "timeline"
+w := z
+for k in 1..100 do
+    w2 := w^2 + c
+    draw line between w and w2 with color .white
+    w = w2
+end
+# px: pixels on the screen (without it, plane units)
+draw circle at z with radius 6 px and color .yellow ...
+    and width 2 px
+draw point at w with color .red    # where it ended
+# each run replaces the drawings of the one before

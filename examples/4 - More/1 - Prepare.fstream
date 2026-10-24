@@ -1,0 +1,42 @@
+# @prepare runs before the pictures are drawn, whenever
+# the state changes (a config value, a picked point, a
+# tool...). Use it for what the views need once, not at
+# every pixel: here the fixed point of z^2 + .c and its
+# multiplier. Pick .c (P) in the Mandelbrot set.
+
+@config
+.title = "Prepare"
+mandel.center = -0.5
+mandel.radius = 1.4
+
+@global
+.c = 0.2 + 0.4i                 # (.c: picked in the c view)
+fp : C = 0                      # fixed point of z^2 + .c
+mult : C = 0                    # its multiplier
+
+@prepare
+fp = (1 - sqrt(1 - 4 .c)) / 2
+mult = 2 fp
+print "c = " + .c + ": fixed point " + fp +
+      ", |multiplier| " + |mult|
+
+@viewer julia z "Julia set" "Ctrl + 1"
+n := 0
+while z not escapes and |z - fp| > 1e-3 do
+    z = z^2 + .c
+    n += 1
+end
+if z escapes then
+    color = rainbow(n / 30)
+else if .stuck then
+    color = .black
+else
+    color = gray(1 - n / 80)    # how fast it falls into fp
+end
+
+@viewer mandel c "Mandelbrot set" "Ctrl + 2"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black else rainbow(.iterations / 30)

@@ -1,0 +1,16 @@
+# The Mandelbrot set. A file without sections (@...) is
+# one view, and z is the point of each pixel.
+# Try: the wheel zooms, dragging pans, Home resets.
+# Edit the script and the picture follows. F1: keys.
+
+w := 0                  # := declares a variable
+while w not escapes do  # until |w| > .escapeRadius (2)
+    w = w^2 + z         # = changes a variable
+end
+# after a loop, .iterations counts its steps, and
+# .stuck says it hit the limit (.maxIterations, 1000)
+if .stuck then
+    color = .black      # color: what the pixel shows
+else
+    color = hsv(.iterations / 50, 0.8, 1)
+end

@@ -1,0 +1,48 @@
+# Colours. A colour is three numbers in 0..1: red,
+# green, blue. Try the styles in the config (Ctrl+T).
+
+@config
+.title = "Colours"
+plane.center = -0.75
+plane.radius = 1.5
+style : Z = 1 in ["rgb", "hsv", "gray", "mix", "palette",
+                  "cycle", "dark, light, invert"]
+
+@viewer plane c "Mandelbrot set"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+# named colours: .red .green .blue .black .white .gray
+# (.grey) .yellow .cyan .magenta .orange .purple .pink
+# .brown .violet
+if .stuck then
+    color = .black
+    return              # return: this pixel is done
+end
+# smooth escape time: a real number, without bands
+m := .iterations - log2(log2(|z|))
+s := 0.5 + 0.5 sin(m / 4)   # a wave between 0 and 1
+if style == 1 then
+    color = rgb(s, 0.3, 1 - s)
+else if style == 2 then
+    color = hsv(m / 40, 0.8, 1)   # hue in turns: 0 red,
+                                  # 1/3 green, 2/3 blue
+else if style == 3 then
+    color = gray(s)               # one number
+else if style == 4 then
+    color = mix(.orange, .blue, s)   # from a to b
+else if style == 5 then
+    color = palette("fire", m / 30)  # see "2 - Palettes"
+else if style == 6 then
+    # cycle(t, a, b): b, then a at t = 1/2, back to b
+    color = cycle(m / 20, .yellow, .purple)
+else
+    # dark, light: darker, lighter; invert: 1 - colour
+    color = if s < 0.33 then dark(.cyan) ...
+            else if s < 0.66 then light(.cyan) ...
+            else invert(.cyan)
+end
+# blend(t, a, b) is mix(b, a, t), as in the first
+# FractalStream. Colours are vectors (R^3): 0.5 color
+# and color + [0, 0, 0.2] work too.

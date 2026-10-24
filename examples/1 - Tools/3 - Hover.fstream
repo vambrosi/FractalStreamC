@@ -1,0 +1,32 @@
+# Hover: tools that follow the mouse, without a click.
+# Choose "Orbit" (O) or "Where" (W) and move the mouse
+# over the Julia set.
+
+@config
+.title = "Hover"
+julia.radius = 1.7
+c : C = -0.75 + 0.1i
+
+@viewer julia z "Julia set"
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then gray(0.15) ...
+        else palette("wheat", .iterations / 40)
+
+@julia.tool "Orbit" "O" "timeline"
+.hover = true                   # runs as the mouse moves
+w := z
+for k in 1..60 do
+    draw line between w and w^2 + c with color .white
+    w = w^2 + c
+end
+
+@julia.tool "Where" "W" "my_location"
+on hover do                     # the mouse moved, no button
+    # .mouse: the point under the mouse
+    draw text "" + .mouse at .mouse with color .white
+end
+on hide do                      # another tool was chosen
+    erase
+end

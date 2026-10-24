@@ -204,8 +204,8 @@ static const char *welcome_script =
     "# bar on the right has the config and what you can do\n"
     "# with the view you clicked last. Try \"Pick point\" in\n"
     "# the parameter plane: the Julia set follows the point.\n"
-    "# The language is described in docs/language.md (F2\n"
-    "# shows it here).\n"
+    "# Then try the examples (Ctrl+O, then Examples), in\n"
+    "# order; F2 shows the language reference.\n"
     "\n"
     "@config\n"
     ".title = \"Mandelbrot and Julia sets\"\n"
@@ -1255,24 +1255,26 @@ static void destroy_rts(ViewerRT *vrt, int n) {
 }
 
 /* ---- completions in the script editor ------------------------------------------------------------------------ */
+/* words of the language that aren't keywords of the lexer, and the internals (the examples' test checks that the
+   examples use them all) */
+static const char *const completion_words[] = {
+    "critical", "root", "derivative", "seed", "continuing", "from", "erase", "all", "on", "press", "drag", "release",
+    "click", "hover", "show", "hide", "button", "append", "clear", "line", "point", "circle", "disk", "text", "radius",
+    "color", "width", "List", "Integer", "Real", "Complex", "Quaternion", "Projective", "Boolean", "Bool", "Color", "up"};
+static const char *const completion_internals[] = {
+    ".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick", ".mouse", ".dragStart",
+    ".width", ".height", ".title", ".stuck", ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
+    ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan", ".magenta", ".orange", ".purple",
+    ".pink", ".brown", ".infinity"};
+
 /* the names offered while typing: the language's words and built-ins, and the script's own names (p may be NULL) */
 static void update_completions(Program *p) {
     VEC(char *) names = {0};
-    static const char *words[] = {"critical", "root", "derivative", "seed", "continuing", "from", "erase", "all",
-                                  "on", "press", "release", "click", "hover", "show", "hide", "button", "append",
-                                  "clear", "line", "point", "circle", "disk", "text", "radius", "color", "width",
-                                  "List", "Integer", "Real", "Complex", "Quaternion", "Projective", "Boolean", "Bool",
-                                  "Color", "up"};
-    static const char *internals[] = {".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick",
-                                      ".mouse", ".dragStart", ".width", ".height", ".title", ".stuck",
-                                      ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
-                                      ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan",
-                                      ".magenta", ".orange", ".purple", ".pink", ".brown", ".infinity"};
     StrBuf sb = {0};
 #define ADD_NAME(name, detail) do { sb_clear(&sb); sb_printf(&sb, "%s\t%s", (name), (detail)); vec_push(names, xstrdup(sb_cstr(&sb))); } while (0)
     for (int k = 0; k < ARRAY_COUNT(keywords); k++) ADD_NAME(keywords[k].word, "keyword");
-    for (int k = 0; k < ARRAY_COUNT(words); k++) ADD_NAME(words[k], "keyword");
-    for (int k = 0; k < ARRAY_COUNT(internals); k++) ADD_NAME(internals[k], "internal");
+    for (int k = 0; k < ARRAY_COUNT(completion_words); k++) ADD_NAME(completion_words[k], "keyword");
+    for (int k = 0; k < ARRAY_COUNT(completion_internals); k++) ADD_NAME(completion_internals[k], "internal");
     for (int k = 0; k < ARRAY_COUNT(intrinsics); k++)
         if (intrinsics[k].name[0] != '_') ADD_NAME(intrinsics[k].name, "built-in");
     ADD_NAME("palette", "built-in");

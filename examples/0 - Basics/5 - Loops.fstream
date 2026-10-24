@@ -1,0 +1,43 @@
+# Loops and conditions. Two views (Ctrl+1, Ctrl+2): an
+# orbit trap, and the basin of the Henon attractor.
+
+@config
+.title = "Loops"
+.maxIterations = 200    # the limit of while and do loops
+trap.center = -0.5
+trap.radius = 1.5
+henon.radius = 2
+
+@viewer trap c "Orbit trap"
+# how close the orbit of 0 comes to the axes
+z := 0
+d := 4.0                # the closest so far
+for k in 1..200 do      # k = 1, 2, ..., 200
+    z = z^2 + c
+    if k <= 2 then
+        continue        # on to the next k
+    end
+    d = min(d, min(|re z|, |im z|))
+    if z escapes then
+        break           # out of the loop
+    end
+end
+if z escapes and d > 1 then     # and, or, not
+    color = gray(0.08)          # never near the axes
+else if z escapes then
+    color = palette("fire", d / 2)
+else
+    color = palette("ocean", 4 d)
+end
+
+@viewer henon z "Henon map"
+# the real Henon map (x, y) -> (1 - a x^2 + y, b x)
+a := 1.4
+b := 0.3
+x := re z
+y := im z
+while x^2 + y^2 < 100 do
+    (x, y) = (1 - a x^2 + y, b x)   # both at once
+end
+color = if .stuck then .black ...
+        else palette("ice", .iterations / 25)

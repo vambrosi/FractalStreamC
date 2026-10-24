@@ -1,0 +1,54 @@
+# Drawings that stay, and buttons. "Mark" (M) leaves a
+# mark where you click in the Mandelbrot set, and draws
+# the orbit of 0 in the Julia set view. The buttons
+# in the left bar erase, or draw a grid.
+
+@config
+.title = "Marks and buttons"
+mandel.center = -0.5
+mandel.radius = 1.4
+
+@global
+.c = -0.12 + 0.75i              # (Mark moves it)
+
+@viewer mandel c "Mandelbrot set" "Ctrl + 1"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black ...
+        else gray(0.3 + 0.4 fract(.iterations / 20))
+
+@viewer julia z "Julia set" "Ctrl + 2"
+while z not escapes do
+    z = z^2 + .c
+end
+color = if .stuck then .black ...
+        else palette("ocean", .iterations / 30)
+
+@mandel.tool "Mark" "M" "push_pin"
+.keep = true                    # drawings stay, until erase
+.c = c                          # (the Julia set follows)
+draw disk at c with radius 4 px and color .yellow
+# text: texts in quotes and values, joined with +
+draw text "c = " + c at c with color .white
+w := 0
+for k in 1..50 do               # in the other view:
+    draw point at w with color .yellow in julia
+    w = w^2 + c
+end
+
+# button: runs once, when its button (or key) is pressed
+@tool "Clear marks" "X" "delete" button
+erase "Mark"                    # the drawings of "Mark"
+
+@tool "Clear all" "Shift + X" "delete_sweep" button
+erase all                       # those of every tool
+                                # (erase alone: this tool's)
+
+@tool "Grid" "G" "grid_on" button   # @tool: in every view
+for x in -4..4 by 2 do          # x = -4, -2, 0, 2, 4
+    for y in -4..4 by 2 do
+        draw point at (x + y i) / 4 with color .cyan
+    end
+end

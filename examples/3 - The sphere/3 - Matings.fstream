@@ -1,0 +1,35 @@
+# Matings, animated with .time. For f(z) = a / (z^2 + 2z)
+# infinity -> 0 -> infinity is a superattracting
+# 2-cycle, for every a. Many of these maps are matings
+# of the basilica with a quadratic polynomial: grey is
+# the basilica's side (orbits into the 2-cycle), orange
+# the other side. a goes back and forth from a0 to a1.
+
+@config
+.title = "Matings in Per_2(0)"
+.maxIterations = 200
+a0 : C = 0.8 + 0.5i    "From"
+a1 : C = 1.53 + 0.88i  "To (the rabbit)"
+speed := 0.5 in 0.05..2 "Speed"
+sphere.center = -1
+sphere.radius = 3
+
+@viewer sphere z : P "Mating" projective
+a := a0 + (a1 - a0) * (1 - cos(speed .time)) / 2
+w := z
+n := 0
+landed := false
+while n < .maxIterations and not landed do
+    w = a / (w^2 + 2 w)
+    n = n + 1
+    if chordal(w, 0) < 1e-3 or chordal(w, ∞) < 1e-3 then
+        landed = true
+    end
+end
+if landed then
+    side := if chordal(w, 0) < 1e-3 then 0 else 1
+    k := (n + side) mod 2       # which point of the cycle
+    color = gray(0.25 + 0.4 k + 0.3 fract(n / 12))
+else
+    color = hsv(0.08, 0.8, 0.95)
+end

@@ -1,0 +1,38 @@
+# The config panel (Ctrl+T): every variable declared in
+# @config gets a control. Change one and the picture
+# follows; a dot marks a changed value (click it to go
+# back). The buttons on top undo all, or write them in.
+
+@config
+.title = "The config panel"     # the window's title
+.width = 1100                   # and size, at the start
+.height = 700
+n : Z = 2 in 2..8 "Power"       # a slider, with a label
+c : C = -0.8 + 0.156i           # a field for a number
+spread : R = 40 in 1..1000      # logarithmic: wide range
+smooth : Bool = true            # a check box
+
+@config "Colours"               # a group, with a title
+"A text on its own line is a note, like this one."
+scheme : Z = 1 in ["Rainbow", "Ice", "Fire"] "Palette"
+.maxIterations = 300 in 10..3000 "Iterations"
+# a one-line function here is a formula: edit it in the
+# panel and the picture follows
+define f(z) = z^n + c
+
+@viewer plane z "Julia set"
+while z not escapes do
+    z = f(z)
+end
+if .stuck then
+    color = .black
+    return
+end
+m : R = .iterations
+if smooth then                  # no bands
+    m = m + 1 - log(log(|z|)) / log(n)
+end
+t := m / spread
+color = if scheme == 1 then rainbow(t) ...
+        else if scheme == 2 then palette("ice", t) ...
+        else palette("fire", t)

@@ -1,0 +1,30 @@
+# Two views: the Mandelbrot set and the Julia set of
+# z^2 + .c. Try: Pick point (P) in the parameter plane
+# moves .c; drag a view's number (left bar) onto the
+# pictures to split the window or float the view.
+
+@config                 # settings, run at the start
+.title = "Mandelbrot and Julia sets"
+.maxIterations = 300
+mandel.center = -0.5    # NAME.center and NAME.radius:
+mandel.radius = 1.4     # where each view starts
+julia.radius = 1.6
+
+@global                 # the state shared by everything
+.c = -0.8 + 0.156i      # .c: the point picked in the view
+                        # whose variable is c
+define shade(n : Z) = hsv(n / 64 + 0.6, 0.75, 1)
+
+# @viewer NAME VARIABLE "Display name" "Shortcut"
+@viewer mandel c "Parameter plane" "Ctrl + 1"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black else shade(.iterations)
+
+@viewer julia z "Julia set" "Ctrl + 2"
+while z not escapes do
+    z = z^2 + .c
+end
+color = if .stuck then .black else shade(.iterations)

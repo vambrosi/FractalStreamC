@@ -47,7 +47,8 @@ Interactive pictures of the complex plane: write a short script, explore it on t
 Run it from this folder:
 
     ./fractalstream                            the script editor, with an example to start from
-    ./fractalstream examples/julia.fstream     open a script
+    ./fractalstream "examples/0 - Basics/0 - Mandelbrot set.fstream"
+                                               open a script
     ./fractalstream --help                     the command line (checks, renders to PNG files, ...)
 
 In the app, F1 lists the keys and F2 shows the language reference; Ctrl+O opens a script

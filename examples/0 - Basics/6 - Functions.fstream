@@ -1,0 +1,42 @@
+# Functions, in Newton's method for p(z) = z^3 - 1:
+# each point is coloured by the root it goes to.
+
+@config
+.title = "Functions"
+plane.radius = 1.6
+
+@global
+define p(z) = z^3 - 1           # one expression
+define dp(z) = 3 z^2            # (its derivative)
+
+# several results, computed by a block (where ... end)
+define newton(z) = (w, n) where
+    w = z
+    n = 0
+    do                          # do ... while c end: the
+        step := p(w) / dp(w)    # body runs at least once
+        w -= step               # also +=, *=, /=
+        n += 1
+        if n == 50 then
+            return              # leave: w and n as they are
+        end
+    while step not vanishes end # vanishes: |x| < .epsilon
+end
+
+# parameters can have a type (k : Z)
+define shade(k : Z, n : Z) = hsv(k / 3, 0.6, 1 - n / 40)
+
+@viewer plane z "Newton basins"
+(w, n) := newton(z)             # unpack the two results
+k := 0                          # which root: 1, 2 or 3
+for j in 1..3 do
+    if |w - cis(j tau / 3)| < 1e-3 then
+        k = j
+    end
+end
+color = if k == 0 then .black else shade(k, n)
+
+# A parameter without a type takes its argument's type:
+# p(2) computes with integers, p(z) with complex numbers.
+# Functions see the globals, not the caller's variables.
+# == on R and C means "closer than .epsilon" (1e-6).

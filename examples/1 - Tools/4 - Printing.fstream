@@ -1,0 +1,49 @@
+# Printing: print writes a line in the Info pane
+# (Ctrl+I). Click with "Period" (K) in the Mandelbrot
+# set; "Where" (W) works in every view. The Inspect
+# tool (?) lists what a view computes at the click.
+
+@config
+.title = "Printing"
+mandel.center = -0.5
+mandel.radius = 1.4
+
+@global
+print "Printed by @global, when the script started"
+
+@viewer mandel c "Mandelbrot set"
+z := 0
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black ...
+        else hsv(0.6, 0.5, fract(.iterations / 16))
+
+@mandel.tool "Period" "K" "loop"
+# each click replaces the lines of the one before
+# (.keep = true keeps them, until erase)
+z := 0
+for k in 1..1000 do             # settle on the cycle
+    z = z^2 + c
+end
+p := 0
+w := z
+for k in 1..64 do
+    w = w^2 + c
+    if p == 0 and |w - z| < 1e-4 then
+        p = k
+    end
+end
+if p == 0 then
+    print "c = " + c + ": no cycle found"
+else
+    m := 1 + 0i                 # the multiplier: product
+    for k in 1..p do            # of 2 w along the cycle
+        m *= 2 w
+        w = w^2 + c
+    end
+    print "c = " + c + ": period " + p + ", multiplier " + m
+end
+
+@tool "Where" "W" "location_on"
+print "clicked at " + .lastClick    # .lastClick: any view

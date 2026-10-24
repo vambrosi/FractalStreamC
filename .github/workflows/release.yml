@@ -45,8 +45,8 @@ jobs:
           F=$T/FractalStream-linux-x86_64
           cd "$(mktemp -d)"
           "$F/fractalstream" --version
-          "$F/fractalstream" --check "$F/examples/mandelbrot.fstream"
-          "$F/fractalstream" --render mandelbrot.png --size 256x256 "$F/examples/mandelbrot.fstream"
+          "$F/fractalstream" --check "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
+          "$F/fractalstream" --render mandelbrot.png --size 256x256 "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
           test -s mandelbrot.png
           echo "newest glibc symbol: $(objdump -T "$F/fractalstream" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
       - uses: actions/upload-artifact@v7
@@ -82,7 +82,7 @@ jobs:
           A=$T/FractalStream.app/Contents
           cd /    # (the working directory of an app opened from the Finder)
           "$A/MacOS/fractalstream" --version
-          "$A/MacOS/fractalstream" --check "$A/Resources/examples/mandelbrot.fstream"
+          "$A/MacOS/fractalstream" --check "$A/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
           test -f "$A/Resources/docs/language.md"
       - name: Render with the bundled MoltenVK (for information; CI Macs may have no usable GPU)
         continue-on-error: true
@@ -91,7 +91,7 @@ jobs:
           ditto -x -k build/FractalStream-macos-${{ matrix.arch }}.zip "$T"
           cd "$T"
           FractalStream.app/Contents/MacOS/fractalstream --render mandelbrot.png --size 256x256 \
-            FractalStream.app/Contents/Resources/examples/mandelbrot.fstream
+            "FractalStream.app/Contents/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
       - uses: actions/upload-artifact@v7
         with:
           name: FractalStream-macos-${{ matrix.arch }}

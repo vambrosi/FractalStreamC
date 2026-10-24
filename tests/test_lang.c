@@ -1553,6 +1553,10 @@ TEST(line_continuations) {
         "         7)\n"
         "ok : Bool = a == 3 and\n"
         "            b == 10\n"
+        "k := if ok then 1 ...\n"
+        "    # a comment line, and a blank one, inside the statement\n"
+        "\n"
+        "    else 2\n"
         "@viewer v z\n"
         "draw_me : Z = 0\n"
         "color = if ok then .red else ...\n"
@@ -1562,6 +1566,7 @@ TEST(line_continuations) {
     CHECK_NEAR(gnum(p, "c", 0), 2, 0);
     CHECK_NEAR(gnum(p, "d", 0), 7, 0);
     CHECK_NEAR(gnum(p, "ok", 0), 1, 0);
+    CHECK_NEAR(gnum(p, "k", 0), 1, 0);
     program_free(p);
     /* "abc " + "def" is one text: a long note goes on after a + at the end of a line */
     p = LOAD_OK("@config\n"

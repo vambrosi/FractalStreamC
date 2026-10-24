@@ -1,0 +1,106 @@
+# Attracting cycles on the sphere. @prepare finds the
+# critical points of f, follows each one to the cycle it
+# falls into, and keeps the cycles and their multipliers
+# (Info pane: Ctrl+I). The sphere is coloured by the
+# cycle each point goes to. Pick a (Pick point, P) in
+# the parameter plane.
+
+@config
+.title = "Attracting cycles"
+.maxIterations = 300
+parameter.center = 1.6
+parameter.radius = 2.2
+sphere.radius = 1.6
+
+@global
+.a = 1.51 + 0.92i
+# Per_2(0): 0 -> ∞ -> 0 is a superattracting 2-cycle
+define f(z : P, a : C) = a / (z^2 + 2 z)
+cyc : List of P up to 256 = []     # points of the cycles
+which : List of Z up to 256 = []   # the cycle of each
+mult : List of C = []              # the multipliers
+
+@prepare                        # when the state changes
+clear(cyc)
+clear(which)
+clear(mult)
+seeds : List of P = [0, ∞, 1, -1, i, -i, 2 + 2i, -2 - 2i]
+for s in seeds do
+    # a critical point: a point of P (0 or ∞ too)
+    c := critical t -> f(t, .a) with seed s
+    if .stuck then
+        continue
+    end
+    w := c                      # far along its orbit
+    for k in 1..2000 do
+        w = f(w, .a)
+    end
+    p := 0                      # the period
+    v := w
+    for k in 1..32 do
+        v = f(v, .a)
+        if p == 0 and chordal(v, w) < 1e-5 then
+            p = k
+        end
+    end
+    known := false
+    for x in cyc do
+        if chordal(x, w) < 1e-3 then
+            known = true
+        end
+    end
+    if p > 0 and not known then
+        m := 1 + 0i             # the multiplier: product
+        for k in 1..p do        # of the derivatives along
+            append(cyc, w)      # the cycle (in the natural
+            append(which, |mult| + 1)   # charts of points)
+            m = m * (derivative t -> f(t, .a) at w)
+            w = f(w, .a)
+        end
+        append(mult, m)
+        print "cycle " + |mult| + ": period " + p +
+              ", multiplier " + m
+    end
+end
+
+@viewer sphere z : P "Riemann sphere" projective
+w := z
+j := 0                          # the cycle point reached
+n := 0
+while j == 0 and n < .maxIterations do
+    w = f(w, .a)
+    n += 1
+    for k in 1..|cyc| do
+        if chordal(w, cyc[k]) < 1e-3 then
+            j = k
+        end
+    end
+end
+if j == 0 then
+    color = .black
+else
+    color = hsv(0.6 + 0.37 which[j], 0.6,
+                0.45 + 0.55 / (1 + n / 12))
+end
+
+@viewer parameter a "Parameter plane"
+w : P = -1                      # the free critical point
+n := 0
+while n < .maxIterations and chordal(w, 0) > 1e-3 and
+      chordal(w, ∞) > 1e-3 do
+    w = f(w, a)
+    n += 1
+end
+if n < .maxIterations then      # into the 2-cycle {0, ∞}
+    color = gray(0.35 + 0.6 fract(n / 20))
+else
+    p := 0                      # the period of its cycle
+    v := w
+    for k in 1..24 do
+        v = f(v, a)
+        if p == 0 and chordal(v, w) < 1e-4 then
+            p = k
+        end
+    end
+    color = if p > 0 then hsv(p / 7, 0.7, 1) else .black
+end

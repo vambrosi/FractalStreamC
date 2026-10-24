@@ -1,0 +1,35 @@
+# critical t -> f(t) with seed s: a critical point of
+# f (a zero of f'), by Newton's method. The parameter
+# plane of the cubics z^3 + c z^2 + 1, coloured by what
+# the free critical point does. Orbit (O) draws its orbit.
+
+@config
+.title = "Critical points"
+.maxIterations = 200
+.escapeRadius = 100
+plane.radius = 3
+
+@global
+define f(z, c) = z^3 + c z^2 + 1
+# a function's name works too (Info pane: Ctrl+I)
+define p3(z) = z^3 - 3 z
+print "a critical point: " + (critical p3 with seed 2)
+
+@viewer plane c "Cubic parameter plane"
+w := critical t -> f(t, c) with seed -c   # (0 is the other)
+if .stuck then                  # Newton's method failed
+    color = .gray
+    return
+end
+while w not escapes do
+    w = f(w, c)
+end
+color = if .stuck then .black ...
+        else hsv(.iterations / 25 + 0.55, 0.65, 1)
+
+@plane.tool "Orbit" "O" "timeline"
+w := critical t -> f(t, c) with seed -c
+for k in 1..30 do
+    draw line between w and f(w, c) with color .white
+    w = f(w, c)
+end

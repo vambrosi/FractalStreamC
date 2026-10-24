@@ -288,19 +288,23 @@ TEST(app_write_values_into_script) {
 TEST(app_folder_listing) {
     int n = 0;
     FsDirEntry *e = fs_list_dir("examples", &n);
-    CHECK(e != NULL && n > 10);
-    bool templates = false, mandel = false, sorted = true;
+    CHECK(e != NULL && n >= 6);
+    bool templates = false;   /* the numbered folders in order, then "templates" */
     for (int i = 0; e && i < n; i++) {
-        if (!strcmp(e[i].name, "templates")) templates = e[i].is_dir && i == 0; /* folders first */
-        if (!strcmp(e[i].name, "mandelbrot.fstream")) mandel = !e[i].is_dir;
-        if (i > 1 && strcasecmp(e[i - 1].name, e[i].name) > 0) sorted = false;
+        if (!strcmp(e[i].name, "templates")) templates = e[i].is_dir;
+        else CHECK(e[i].is_dir && atoi(e[i].name) == i);
         CHECK(e[i].name[0] != '.');
     }
-    CHECK(templates && mandel && sorted);
+    CHECK(templates);
     if (e) fs_free_dir(e, n);
+    /* folders first; case aside; numbers by their value */
+    FsDirEntry t[] = {{"b", false}, {"10 - x", false}, {"A", false}, {"9 - y", false}, {"z", true}, {"09 - w", false}};
+    qsort(t, ARRAY_COUNT(t), sizeof *t, fs_dir_entry_cmp);
+    const char *want[] = {"z", "09 - w", "9 - y", "10 - x", "A", "b"};
+    for (int i = 0; i < ARRAY_COUNT(t); i++) CHECK_STR(t[i].name, want[i]);
     e = fs_list_dir("no/such/folder", &n);
     CHECK(e == NULL && n == 0);
-    CHECK(fs_is_dir("examples") && !fs_is_dir("examples/mandelbrot.fstream") && !fs_is_dir("no/such"));
+    CHECK(fs_is_dir("examples") && !fs_is_dir("examples/0 - Basics/0 - Mandelbrot set.fstream") && !fs_is_dir("no/such"));
     CHECK(fs_exe_dir()[0] != 0);
     char dir[256];
     CHECK_STR(split_path("a/b/c.fstream", dir, sizeof dir), "c.fstream");
@@ -320,6 +324,111 @@ TEST(app_folder_listing) {
     CHECK(!inside_app_bundle("examples/julia.fstream"));
 }
 
+/* ---- the examples are the tutorial: they must all work, and between them use every name of the language, so
+   that searching them for a name always finds an example of it ---- */
+
+/* the scripts under dir: their texts appended to all; with `check`, each is loaded (no errors, no warnings) */
+static int examples_check_dir(const char *dir, StrBuf *all, bool check) {
+    int n = 0, count = 0;
+    FsDirEntry *e = fs_list_dir(dir, &n);
+    CHECK(e != NULL);
+    for (int i = 0; e && i < n; i++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s", dir, e[i].name);
+        if (e[i].is_dir) {
+            count += examples_check_dir(path, all, check);
+            continue;
+        }
+        if (!has_ext(e[i].name, ".fstream")) continue;
+        size_t len;
+        char *src = fs_read_file(path, &len);
+        CHECK(src != NULL);
+        if (!src) continue;
+        sb_printf(all, "%s\n", src);
+        count++;
+        if (!check) {
+            free(src);
+            continue;
+        }
+        Program *p = program_load(src, path);
+        if (p->diags.len) {
+            printf("    %s:\n", path);
+            print_diags(p);
+            test_failures_++;
+        }
+        /* every view compiles, and draws more than one colour (a small picture on the CPU; not deep zooms, which
+           need the double precision of the GPU shaders) */
+        bool deep = p->s_double && p->initial_state && p->initial_state[p->s_double->slot];
+        for (int v = 0; v < p->nviewers && !p->nerrors; v++) {
+            Section *sec = p->viewers[v];
+            u32 nw;
+            char err[256];
+            u32 *words = codegen_viewer(p, sec, &nw, err, sizeof err);
+            if (!words) printf("    %s, viewer %s: %s\n", path, sec->name, err);
+            CHECK(words != NULL);
+            free(words);
+            if (deep) continue;
+            enum { EW = 24, EH = 18 };
+            static u8 rgba[EW * EH * 4];
+            if (sec->flood) flood_render_cpu(p, p->initial_state, sec, EW, EH, rgba, NULL);
+            else render_cpu(p, p->initial_state, sec, EW, EH, rgba);
+            bool varied = false;
+            for (int k = 1; k < EW * EH && !varied; k++) varied = memcmp(rgba + 4 * k, rgba, 4) != 0;
+            if (!varied) printf("    %s, viewer %s: the picture is one colour\n", path, sec->name);
+            CHECK(varied);
+        }
+        program_free(p);
+        free(src);
+    }
+    if (e) fs_free_dir(e, n);
+    return count;
+}
+
+TEST(app_examples_load) {
+    StrBuf all = {0};
+    CHECK(examples_check_dir("examples", &all, true) >= 25);
+    sb_free(&all);
+}
+
+/* the word w, not inside a longer name (quoted: "w", as palette names are written) */
+static bool examples_have(const char *text, const char *w, bool quoted) {
+    size_t n = strlen(w);
+    for (const char *s = strstr(text, w); s; s = strstr(s + 1, w)) {
+        char before = s > text ? s[-1] : ' ', after = s[n];
+        if (quoted ? before == '"' && after == '"' : !is_ident_char(before) && !is_ident_char(after)) return true;
+    }
+    return false;
+}
+
+TEST(app_examples_cover_the_language) {
+    StrBuf all = {0}, missing = {0};
+    examples_check_dir("examples", &all, false);
+    const char *text = sb_cstr(&all);
+#define NEED(w, quoted) do { if (!examples_have(text, (w), (quoted))) sb_printf(&missing, " %s%s%s", (quoted) ? "\"" : "", (w), (quoted) ? "\"" : ""); } while (0)
+    for (int k = 0; k < ARRAY_COUNT(keywords); k++) NEED(keywords[k].word, false);
+    for (int k = 0; k < ARRAY_COUNT(completion_words); k++) NEED(completion_words[k], false);
+    for (int k = 0; k < ARRAY_COUNT(completion_internals); k++) NEED(completion_internals[k], false);
+    for (int k = 0; k < ARRAY_COUNT(intrinsics); k++)
+        if (intrinsics[k].name[0] != '_') NEED(intrinsics[k].name, false);
+    static const char *more[] = {"@config", "@global", "@prepare", "@viewer", "@tool", "projective", "button", "palette",
+                                 "conformal", "mobius", "center", "pi", "e", "tau", ".j", ".k", "Z", "R", "C", "H", "P"};
+    for (int k = 0; k < ARRAY_COUNT(more); k++) NEED(more[k], false);
+    if (!strstr(text, ".tool \"")) sb_printf(&missing, " @VIEW.tool");
+    Program *p = program_load("", "test");   /* the built-in functions written in the language, and the palettes */
+    for (int i = 0; i < p->funcs.len; i++) {
+        const Func *f = p->funcs.data[i];
+        if (!f->prelude || f->tmpl) continue;
+        if (!strncmp(f->name, "__palette_", 10)) NEED(f->name + 10, true);
+        else if (f->name[0] != '_') NEED(f->name, false);
+    }
+    program_free(p);
+#undef NEED
+    if (missing.len) printf("    no example uses:%s\n", sb_cstr(&missing));
+    CHECK(missing.len == 0);
+    sb_free(&missing);
+    sb_free(&all);
+}
+
 /* the recent files: latest first, no duplicates, at most 12, kept in the settings folder */
 TEST(app_recent_files) {
 #if FS_OS_WINDOWS
@@ -331,12 +440,12 @@ TEST(app_recent_files) {
     remove("build/test-settings/deeper/recent.txt");
     App saved = A;
     A.nrecent = 0;
-    note_recent("examples/julia.fstream");
-    note_recent("examples/mandelbrot.fstream");
-    note_recent("examples/julia.fstream");
+    note_recent("examples/0 - Basics/3 - Two views.fstream");
+    note_recent("examples/0 - Basics/0 - Mandelbrot set.fstream");
+    note_recent("examples/0 - Basics/3 - Two views.fstream");
     CHECK_INT(A.nrecent, 2);
-    CHECK(strstr(A.recent[0], "examples/julia.fstream") && A.recent[0][0] == '/');
-    CHECK(strstr(A.recent[1], "examples/mandelbrot.fstream"));
+    CHECK(strstr(A.recent[0], "examples/0 - Basics/3 - Two views.fstream") && A.recent[0][0] == '/');
+    CHECK(strstr(A.recent[1], "examples/0 - Basics/0 - Mandelbrot set.fstream"));
     for (int k = 0; k < 20; k++) {
         char name[64];
         snprintf(name, sizeof name, "no-such-%d.fstream", k);
@@ -1151,6 +1260,8 @@ static const TestCase tests_app[] = {
     TESTCASE(app_copy_paste_location),
     TESTCASE(app_write_values_into_script),
     TESTCASE(app_folder_listing),
+    TESTCASE(app_examples_load),
+    TESTCASE(app_examples_cover_the_language),
     TESTCASE(app_recent_files),
     TESTCASE(app_settings_and_prepare),
     TESTCASE(app_reference_parse),
