@@ -3044,10 +3044,10 @@ static void bars(void) {
  * the whole space between the bars: each pane is translucent and flush with its bar, the pictures showing through
  * dimmed, a little more behind the text.  The panes then sit on the PANEL layer (above the tiles,
  * whose input they cover) and their splitters one layer higher. */
-#define PANE_TINT UI_RGBA(12, 14, 18, 158)     /* a frame over the views: ~62% */
+#define PANE_TINT UI_RGBA(12, 14, 18, 179)     /* a frame over the views: ~70% */
 #define PANE_EDGE UI_RGBA(255, 255, 255, 36)   /* its edge toward the views */
 #define PANE_LINE UI_RGBA(255, 255, 255, 22)   /* under its header */
-#define PANE_BODY 0.55f                        /* behind the text, on top of the frame: ~83% in all */
+#define PANE_BODY 0.65f                        /* behind the text, on top of the frame: ~90% in all */
 
 static bool overlay_on(void) { return A.overlay_panes && A.prog; }
 static int pane_layer(void) { return overlay_on() ? UI_LAYER_PANEL : UI_LAYER_BASE; }
@@ -3123,7 +3123,7 @@ static float find_bar(float x0, float ew, float y) {
     if (!A.find_open) return 0;
     float rh = px(38), b = px(28), pad = px(6), gap = px(4);
     float h = rh * (A.replace_open ? 2 : 1);
-    if (overlay_on()) ui_rect(x0, y, ew, h, ui_alpha(UI_COL_PANEL_HI, 0.6f));
+    if (overlay_on()) ui_rect(x0, y, ew, h, ui_alpha(UI_COL_PANEL_HI, 0.7f));
     else ui_panel_ex(x0, y, ew, h, UI_COL_PANEL_HI, 0);
     ui_rect(x0, y + h - px(1), ew, px(1), overlay_on() ? PANE_LINE : UI_COL_BORDER);
     float by = y + (rh - b) / 2;
