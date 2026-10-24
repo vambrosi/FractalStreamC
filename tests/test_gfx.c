@@ -199,6 +199,47 @@ TEST(target_subregion) {
     GT_NO_VALIDATION_ERRORS();
 }
 
+/* Supersampling: renders blended into the target with weight w keep a running average of the samples. */
+TEST(target_blend) {
+    GT_REQUIRE();
+    int v = gt_viewer();
+    if (!v) return;
+    enum { W = 32, H = 24 };
+    int t = gfx_target_create(W, H);
+    CHECK(t > 0);
+    u8 *img = (u8 *)xmalloc(W * H * 4);
+    char err[256] = "";
+    GfxViewerParams p = gt_params(W, H);
+    gt_set_k(0.0f);   /* sample 1: k = 0, offset 0 (blend 0: replace) */
+    CHECK_MSG(gfx_target_render(t, v, &p, err, sizeof err), "%s", err);
+    gt_set_k(1.0f);   /* sample 2: k = 1, offset 1/2 in x (sub-pixel, as supersamples are), weight 1/2 */
+    p.offset_x = 0.5f;
+    p.blend = 0.5f;
+    CHECK_MSG(gfx_target_render(t, v, &p, err, sizeof err), "%s", err);
+    CHECK_MSG(gfx_target_read(t, img, err, sizeof err), "%s", err);
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0.25f, 0, 0.5f), 0);   /* (offsets 0 and 1/2) */
+    gt_set_k(0.25f);  /* sample 3: k = 1/4, offset -1/4 in y, weight 1/3, in a band only */
+    p.offset_x = 0.0f;
+    p.offset_y = -0.25f;
+    p.blend = 1.0f / 3.0f;
+    p.y0 = 8; p.x1 = W; p.y1 = 16;
+    CHECK_MSG(gfx_target_render(t, v, &p, err, sizeof err), "%s", err);
+    CHECK_MSG(gfx_target_read(t, img, err, sizeof err), "%s", err);
+    float k3 = (0.0f + 1.0f + 0.25f) / 3, ox3 = 0.5f / 3, oy3 = -0.25f / 3;
+    CHECK_INT(gt_bad_viewer(img, W, 0, 8, W, 16, W, H, ox3, oy3, k3), 0);
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, 8, W, H, 0.25f, 0, 0.5f), 0);   /* outside the band: two samples */
+    p = gt_params(W, H);  /* weight 1: replaces */
+    p.blend = 1.0f;
+    gt_set_k(0.75f);
+    CHECK_MSG(gfx_target_render(t, v, &p, err, sizeof err), "%s", err);
+    CHECK_MSG(gfx_target_read(t, img, err, sizeof err), "%s", err);
+    CHECK_INT(gt_bad_viewer(img, W, 0, 0, W, H, W, H, 0, 0, 0.75f), 0);
+    free(img);
+    gfx_target_destroy(t);
+    gfx_viewer_destroy(v);
+    GT_NO_VALIDATION_ERRORS();
+}
+
 TEST(target_lifecycle) {
     GT_REQUIRE();
     char err[256] = "";
@@ -914,6 +955,7 @@ static const TestCase tests_gfx[] = {
     TESTCASE(render_to_memory),
     TESTCASE(render_banded),
     TESTCASE(target_subregion),
+    TESTCASE(target_blend),
     TESTCASE(target_lifecycle),
     TESTCASE(draw_list),
     TESTCASE(globals_large),

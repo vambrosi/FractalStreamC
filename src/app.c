@@ -79,7 +79,9 @@ typedef struct ViewerRT {
     bool animated;
     bool rendered;
     int next_row;      /* progressive rendering: next row to render (cycles through the image) */
-    int rows_left;     /* rows still to render with the latest state; 0 when the image is up to date */
+    int rows_left;     /* rows still to render in this pass; 0 when the pass is done */
+    int pass;          /* the sample this pass draws: 0 the first (it replaces the picture), k > 0 averaged in */
+    int samples;       /* samples per pixel in the picture (0 while the first pass isn't done; see antialiasing) */
     bool picked;       /* show the picked-point marker */
     int tool;          /* this viewer's selected tool: TOOL_PAN, TOOL_PICK or a script tool */
     u32 *show_snap;    /* the state when the selected tool last ran `on show` (NULL: run it) */
@@ -1263,7 +1265,8 @@ static const char *const completion_words[] = {
     "color", "width", "List", "Integer", "Real", "Complex", "Quaternion", "Projective", "Boolean", "Bool", "Color", "up"};
 static const char *const completion_internals[] = {
     ".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick", ".mouse", ".dragStart",
-    ".width", ".height", ".title", ".stuck", ".iterations", ".pixel", ".panning", ".hover", ".keep", ".violet", ".red",
+    ".width", ".height", ".title", ".stuck", ".iterations", ".pixel", ".panning", ".hover", ".keep", ".antialiasing",
+    ".violet", ".red",
     ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan", ".magenta", ".orange", ".purple",
     ".pink", ".brown", ".infinity"};
 
@@ -1316,6 +1319,8 @@ static const char *hover_info(void *user, const char *word) {
         {".escapeRadius", ".escapeRadius : R\nz escapes means |z| > .escapeRadius (default 2)"},
         {".doublePrecision", ".doublePrecision : Bool\ndeep zooms: a view switches to double precision (slower) when its pixels get "
                              "too small for single precision (default false)"},
+        {".antialiasing", ".antialiasing : Z\nsamples per pixel of a view at rest: once nothing moves, the picture is drawn "
+                          "again with the samples moved inside the pixels, and averaged (1: off; default 8, at most 16)"},
         {".stuck", ".stuck : Bool\ntrue when the last loop hit .maxIterations, or Newton's method failed"},
         {".iterations", ".iterations : Z\nhow many times the last loop ran"},
         {".lastClick", ".lastClick : C\nthe point of the last click or drag"},
@@ -3808,6 +3813,7 @@ static bool config_auto(Program *p, Sym *s, int group) {
             if (!p->viewers[v]->mobius) return true;
         return false;
     }
+    if (group == 1 && s == p->s_aa) return p->nviewers > 0;
     if (group == 1) {
         if (s->viewer_index < 0 || s->is_internal || s->is_config) return false;
         Section *v = p->viewers[s->viewer_index]; /* (a view of the Riemann sphere moves by its Möbius map) */
@@ -4062,9 +4068,9 @@ static void config_pane(Rect pr) {
         y += px(8);
         ui_text(UI_FONT_SANS, x0, y + px(6), group == 1 ? "Views" : "Iteration", -1, UI_COL_ACCENT);
         y += rh;
-        for (int i = 0; i < p->globals.len + 1; i++) { /* (.doublePrecision after the views) */
-            Sym *s = i < p->globals.len ? p->globals.data[i] : p->s_double;
-            if (!config_auto(p, s, group) || (s == p->s_double && i < p->globals.len)) continue;
+        for (int i = 0; i < p->globals.len + 2; i++) { /* (.doublePrecision and .antialiasing after the views) */
+            Sym *s = i < p->globals.len ? p->globals.data[i] : i == p->globals.len ? p->s_double : p->s_aa;
+            if (!config_auto(p, s, group) || ((s == p->s_double || s == p->s_aa) && i < p->globals.len)) continue;
             config_label(s, label, sizeof label);
             ui_label(x0, y, lw - px(14), rh - px(4), label, UI_ALIGN_LEFT, UI_COL_TEXT);
             config_changed_mark(p, s, x0, y, lw - px(14));
@@ -4823,6 +4829,59 @@ static bool viewer_dirty(int v) {
 
 #define BAND_ALIGN 64 /* rows; A.band_rows is a power of two at least this */
 
+/* ---- antialiasing ----------------------------------------------------------------------------------------------
+ * A view is drawn first with one sample per pixel, at the pixel's center. Once that picture is done and nothing
+ * changes, it is drawn again, whole, with the sample moved inside each pixel, and blended in as a running average
+ * (the k-th sample with weight 1/k), up to .antialiasing samples. Any change starts again from one sample, so moving a
+ * view costs nothing more; the extra passes only run in frames without first passes to do. Animated views, and views
+ * that follow a solution from pixel to pixel (flood), keep one sample. */
+static int aa_samples(const ViewerRT *rt) {
+    if (rt->animated || rt->is_flood) return 1;
+    int n = (i32)A.state[A.prog->s_aa->slot];
+    return FS_CLAMP(n, 1, 16);
+}
+
+/* where the k-th sample of a pixel lies, from its center (k = 0: the center): points of the R2 sequence, which spread
+   evenly over the pixel from the first ones on, in pairs q, -q (samples 1 and 2, 3 and 4...) so that the samples'
+   average stays at the center and the picture doesn't shift as they come in */
+static void aa_offset(int k, float *dx, float *dy) {
+    *dx = *dy = 0;
+    if (k <= 0) return;
+    int j = (k + 1) / 2;
+    double x = 0.5 + j * 0.7548776662466927, y = 0.5 + j * 0.5698402909980532;
+    float s = k % 2 ? 1.0f : -1.0f;
+    *dx = s * (float)(x - floor(x) - 0.5);
+    *dy = s * (float)(y - floor(y) - 0.5);
+}
+
+/* does view rt want another sample (its picture is done, at rest, and has fewer than .antialiasing)? */
+static bool aa_wanted(const ViewerRT *rt) {
+    return rt->target && rt->rows_left <= 0 && rt->samples > 0 && rt->samples < aa_samples(rt);
+}
+
+/* draw the next band of the pass of view rt (pass 0: the first picture; k > 0: the sample k, averaged in) */
+static void render_band(ViewerRT *rt) {
+    if (rt->next_row >= rt->th) rt->next_row = 0;
+    /* bands of whole multiples of BAND_ALIGN rows, from a multiple of it: a band's edges never cut through the GPU's
+       tiles or compression blocks (Apple GPUs, MoltenVK: garbage blocks next to a partly covered tile while zooming) */
+    int rows = FS_MIN(A.band_rows, rt->th - rt->next_row);
+    GfxViewerParams vp = {0};
+    vp.width = (float)rt->tw;
+    vp.height = (float)rt->th;
+    vp.x0 = 0;
+    vp.x1 = rt->tw;
+    vp.y0 = rt->next_row;
+    vp.y1 = rt->next_row + rows;
+    if (rt->pass > 0) {
+        aa_offset(rt->pass, &vp.offset_x, &vp.offset_y);
+        vp.blend = 1.0f / (float)(rt->pass + 1);
+    }
+    gfx_frame_render_viewer(rt->target, vpipeline(rt), &vp);
+    rt->next_row = vp.y1 >= rt->th ? 0 : vp.y1;
+    rt->rows_left -= rows;
+    if (rt->rows_left <= 0) rt->samples = rt->pass + 1;
+}
+
 static bool render_viewers(void) {
     Program *p = A.prog;
     size_t bytes = sizeof(u32) * (size_t)p->state_words;
@@ -4831,7 +4890,7 @@ static bool render_viewers(void) {
         memcpy(A.uploaded, A.state, bytes);
         gfx_set_globals(A.state, (u32)bytes);
     }
-    bool busy = false;
+    bool busy = false, first_work = false; /* (first pictures and fills come before antialiasing) */
     for (int i = 0; i < A.nvis; i++) {
         int v = A.vis[i].viewer;
         ViewerRT *rt = &A.vrt[v];
@@ -4870,6 +4929,7 @@ static bool render_viewers(void) {
             }
             if (!flood_gpu_done(vflood(rt))) {
                 flood_gpu_record(vflood(rt), A.flood_passes, rt->target);
+                first_work = true;
                 if (!flood_gpu_done(vflood(rt))) busy = true;
             }
             continue;
@@ -4879,23 +4939,26 @@ static bool render_viewers(void) {
             rt->rows_left = rt->th; /* keep going round from where we are, so every row gets refreshed
                                        even while the state changes every frame (panning) */
             rt->rendered = true;
+            rt->pass = 0;           /* (a new picture: one sample first) */
+            rt->samples = 0;
         }
-        if (rt->rows_left <= 0) continue;
-        if (rt->next_row >= rt->th) rt->next_row = 0;
-        /* bands of whole multiples of BAND_ALIGN rows, from a multiple of it: a band's edges never cut through the GPU's
-           tiles or compression blocks (Apple GPUs, MoltenVK: garbage blocks next to a partly covered tile while zooming) */
-        int rows = FS_MIN(A.band_rows, rt->th - rt->next_row);
-        GfxViewerParams vp = {0};
-        vp.width = (float)rt->tw;
-        vp.height = (float)rt->th;
-        vp.x0 = 0;
-        vp.x1 = rt->tw;
-        vp.y0 = rt->next_row;
-        vp.y1 = rt->next_row + rows;
-        gfx_frame_render_viewer(rt->target, vpipeline(rt), &vp);
-        rt->next_row = vp.y1 >= rt->th ? 0 : vp.y1;
-        rt->rows_left -= rows;
+        if (rt->rows_left <= 0 || rt->pass > 0) continue;
+        render_band(rt);
+        first_work = true;
         if (rt->rows_left > 0) busy = true;
+    }
+    /* antialiasing: more samples for the views at rest, in frames without first pictures to draw */
+    for (int i = 0; i < A.nvis && !first_work; i++) {
+        ViewerRT *rt = &A.vrt[A.vis[i].viewer];
+        if (!rt->target || rt->is_flood) continue;
+        if (aa_wanted(rt)) { /* the next sample: a whole pass */
+            rt->pass = rt->samples;
+            rt->rows_left = rt->th;
+            rt->next_row = 0;
+        }
+        if (rt->rows_left <= 0 || rt->pass == 0) continue;
+        render_band(rt);
+        if (rt->rows_left > 0 || aa_wanted(rt)) busy = true;
     }
     return busy;
 }
@@ -4903,7 +4966,8 @@ static bool render_viewers(void) {
 static bool viewers_busy(void) {
     for (int i = 0; A.prog && i < A.nvis; i++) {
         ViewerRT *rt = &A.vrt[A.vis[i].viewer];
-        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(vflood(rt)))) return true;
+        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(vflood(rt))) || aa_wanted(rt))
+            return true;
     }
     return false;
 }

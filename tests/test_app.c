@@ -284,6 +284,52 @@ TEST(app_write_values_into_script) {
     app_test_end();
 }
 
+/* antialiasing: the samples' offsets, and which views want more samples */
+TEST(app_antialiasing) {
+    float dx, dy, mx = 0, my = 0;
+    aa_offset(0, &dx, &dy);
+    CHECK(dx == 0 && dy == 0);   /* the first sample: the pixel's center, as without antialiasing */
+    for (int k = 0; k < 16; k++) {
+        aa_offset(k, &dx, &dy);
+        CHECK(fabsf(dx) <= 0.5f && fabsf(dy) <= 0.5f);
+        if (k < 8) {
+            mx += dx / 8;
+            my += dy / 8;
+        }
+        for (int j = 0; j < k; j++) { /* all different */
+            float ex, ey;
+            aa_offset(j, &ex, &ey);
+            CHECK(fabsf(ex - dx) + fabsf(ey - dy) > 0.05f);
+        }
+    }
+    CHECK(fabsf(mx) < 0.05f && fabsf(my) < 0.05f);   /* the first 8 average near the center */
+    Program *p = load_src("@viewer v z\ncolor = .black\n@viewer t w\ncolor = gray(fract(.time))\n");
+    CHECK(!p->nerrors);
+    app_test_begin(p);
+    ViewerRT *rt = &A.vrt[0];
+    rt->target = 1;
+    CHECK(!aa_wanted(rt));            /* the first picture isn't done */
+    rt->samples = 1;
+    CHECK(aa_wanted(rt) && aa_samples(rt) == 8);   /* the default: 8 samples */
+    rt->rows_left = 10;
+    CHECK(!aa_wanted(rt));            /* a pass is under way */
+    rt->rows_left = 0;
+    rt->samples = 8;
+    CHECK(!aa_wanted(rt));            /* done */
+    A.state[p->s_aa->slot] = 1;       /* .antialiasing = 1: off */
+    rt->samples = 1;
+    CHECK(!aa_wanted(rt));
+    A.state[p->s_aa->slot] = 100;     /* at most 16 */
+    CHECK(aa_samples(rt) == 16);
+    A.state[p->s_aa->slot] = 8;
+    rt->animated = true;              /* animated views keep one sample */
+    CHECK(!aa_wanted(rt) && aa_samples(rt) == 1);
+    rt->animated = false;
+    rt->is_flood = true;              /* so do views that follow a solution */
+    CHECK(!aa_wanted(rt));
+    app_test_end();
+}
+
 /* the open / save dialogs: folders listed, paths split */
 TEST(app_folder_listing) {
     int n = 0;
@@ -1260,6 +1306,7 @@ static const TestCase tests_app[] = {
     TESTCASE(app_copy_paste_location),
     TESTCASE(app_write_values_into_script),
     TESTCASE(app_folder_listing),
+    TESTCASE(app_antialiasing),
     TESTCASE(app_examples_load),
     TESTCASE(app_examples_cover_the_language),
     TESTCASE(app_recent_files),

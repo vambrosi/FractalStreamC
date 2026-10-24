@@ -125,7 +125,7 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
     X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) \
     X(vkAllocateDescriptorSets) X(vkFreeDescriptorSets) X(vkUpdateDescriptorSets) \
     X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdBindPipeline) \
-    X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdPushConstants) X(vkCmdBindDescriptorSets) \
+    X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetBlendConstants) X(vkCmdPushConstants) X(vkCmdBindDescriptorSets) \
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) \
     X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
     X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdFillBuffer) X(vkCmdCopyBuffer)
@@ -832,8 +832,9 @@ static bool gfx_render_pass(VkFormat format, VkAttachmentLoadOp load, VkImageLay
     return gfx_vk(vkCreateRenderPass(gx.device, &ci, NULL, out), "vkCreateRenderPass");
 }
 
-/* Viewer pipeline (ui = false: full-screen triangle, no blending) or 2D pipeline
-   (ui = true: GfxVertex input, alpha blending). Viewport and scissor are dynamic. */
+/* Viewer pipeline (ui = false: full-screen triangle; blended by the constant alpha, set per render: 1 replaces the
+   pixels, w < 1 mixes w of the new picture into the old one, see GfxViewerParams.blend) or 2D pipeline (ui = true:
+   GfxVertex input, alpha blending). Viewport and scissor are dynamic (and the blend constants of viewers). */
 static bool gfx_pipeline(VkShaderModule vs, VkShaderModule fs, bool ui, VkRenderPass rp, VkPipeline *out) {
     VkPipelineShaderStageCreateInfo st[2];
     memset(st, 0, sizeof st);
@@ -871,21 +872,28 @@ static bool gfx_pipeline(VkShaderModule vs, VkShaderModule fs, bool ui, VkRender
     VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState cb = { 0 };
-    cb.blendEnable = ui ? VK_TRUE : VK_FALSE;
-    cb.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;           /* src*a + dst*(1-a) */
-    cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cb.blendEnable = VK_TRUE;
+    if (ui) {
+        cb.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;           /* src*a + dst*(1-a) */
+        cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    } else {
+        cb.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;      /* src*w + dst*(1-w), w the constant alpha */
+        cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;                 /* (alpha stays the shader's: 1) */
+        cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    }
     cb.colorBlendOp = VK_BLEND_OP_ADD;
-    cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     cb.alphaBlendOp = VK_BLEND_OP_ADD;
     cb.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo cbs = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
     cbs.attachmentCount = 1;
     cbs.pAttachments = &cb;
-    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkDynamicState dyn[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS };
     VkPipelineDynamicStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-    ds.dynamicStateCount = 2;
+    ds.dynamicStateCount = ui ? 2 : 3;
     ds.pDynamicStates = dyn;
 
     VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
@@ -1898,9 +1906,10 @@ static void gfx_record_viewer(VkCommandBuffer cmd, const GfxTexture *t, const Gf
     VkRect2D area;
     bool full;
     if (!gfx_viewer_region(t, p, &area, &full)) return;
+    float w = p->blend > 0 && p->blend < 1 ? p->blend : 1;   /* (0, the default: replace) */
     VkClearValue clear = gfx_clear_color(0, 0, 0, 1);
     VkRenderPassBeginInfo bi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-    bi.renderPass = full ? gx.rp_clear : gx.rp_load;
+    bi.renderPass = full && w >= 1 ? gx.rp_clear : gx.rp_load;   /* (blending mixes with the old pixels: load them) */
     bi.framebuffer = t->fb;
     bi.renderArea = area;
     bi.clearValueCount = 1;
@@ -1912,6 +1921,8 @@ static void gfx_record_viewer(VkCommandBuffer cmd, const GfxTexture *t, const Gf
     vkCmdSetScissor(cmd, 0, 1, &area);
     float pc[4] = { p->width, p->height, p->offset_x, p->offset_y };
     vkCmdPushConstants(cmd, gx.viewer_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+    float bc[4] = { 0, 0, 0, w };
+    vkCmdSetBlendConstants(cmd, bc);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gx.viewer_layout, 0, 1, &globals, 0, NULL);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);

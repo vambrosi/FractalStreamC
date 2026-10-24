@@ -389,6 +389,11 @@ static void setup_internals(Checker *c) {
     p->s_height = add_internal(c, "height", t_int, SYM_GLOBAL, "initial window height");
     p->s_double = add_internal(c, "doublePrecision", t_bool, SYM_GLOBAL,
                                "deep zooms: views switch to double precision when their pixels get too small for single precision");
+    p->s_aa = add_internal(c, "antialiasing", t_int, SYM_GLOBAL,
+                           "samples per pixel of a view at rest (1: off; at most 16): more samples, smoother fine detail");
+    p->s_aa->has_range = true;   /* (a slider in the config panel) */
+    p->s_aa->range_lo = 1;
+    p->s_aa->range_hi = 16;
     add_internal(c, "title", t_string, SYM_GLOBAL, "window title");
     p->s_stuck = add_internal(c, "stuck", t_bool, SYM_EXEC, "true if the last loop hit .maxIterations");
     p->s_iterations = add_internal(c, "iterations", t_int, SYM_EXEC, "number of iterations of the last loop");

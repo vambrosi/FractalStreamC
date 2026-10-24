@@ -18,6 +18,9 @@ Cmd instead of Ctrl on a Mac. F1 lists every key.
 - **Views.** The point under the mouse shows at the bottom left; Ctrl+Shift+A adds axes and a grid.
   Alt+Left / Alt+Right (Cmd+[ / Cmd+]) step through the zooms and pans. Copy location (Ctrl+Shift+C)
   gives `NAME.center = ...` and `NAME.radius = ...` lines; in `@config` they open the script there.
+- **Antialiasing.** Once a view rests, it is drawn again a few times with the samples moved inside
+  the pixels, and averaged: fine detail gets smooth. `.antialiasing` sets how many samples (default
+  8; 1: off).
 - **Deep zooms** (radius below about 1e-4) get blocky: turn on `.doublePrecision` (in the note on the
   view, or in the config) for double-single precision, sharp to about 1e-12. It is slower.
 - **Config.** Values changed in the config pane, or by tools, get a dot and survive running the script

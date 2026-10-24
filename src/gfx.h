@@ -71,9 +71,11 @@ typedef struct GfxInitDesc {
 
 typedef struct GfxViewerParams {
     float width, height;     /* push constant `size`: logical tile size in pixels */
-    float offset_x, offset_y;/* push constant `offset` */
+    float offset_x, offset_y;/* push constant `offset` (a sub-pixel offset: another sample in each pixel) */
     int x0, y0, x1, y1;      /* region of the target to (re)render, in target pixels;
                                 pixels outside are preserved. x1<=x0 means the whole target. */
+    float blend;             /* the weight w of this render: pixel = w * new + (1 - w) * old. 0 (the default) or 1
+                                replaces the pixels; 1/(k+1) averages a (k+1)-th sample into k (supersampling) */
 } GfxViewerParams;
 
 /* ---- setup ----------------------------------------------------------- */

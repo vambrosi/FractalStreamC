@@ -364,6 +364,7 @@ with their definitions, and `fractalstreamc --builtins` prints them.
 | `.epsilon` | R | tolerance of `==` and `vanishes` (default 1e-6) |
 | `.escapeRadius` | R | `escapes` threshold (default 2) |
 | `.doublePrecision` | Bool | deep zooms in double precision (default false; see *Precision*) |
+| `.antialiasing` | Z | samples per pixel of a view at rest, 1 to 16 (default 8; 1: off): once nothing moves, the picture is drawn again with the samples moved inside the pixels, and averaged |
 | `.stuck`, `.iterations` | Bool, Z | result of the last loop |
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
 | `.dragStart` | C | where the mouse button went down (for tools: `on drag`, `on release`) |
@@ -507,8 +508,8 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 - A one-line function defined in `@config` (`define f(z, c) = z^2 + c`) is a formula you can edit
   in the config panel: the field edits the script itself, which runs again as you type (with Live
   on) or when you press Enter.
-- The views' center and radius, `.doublePrecision`, `.maxIterations`, `.escapeRadius` and `.epsilon`
-  are listed at the end unless the script places them itself.
+- The views' center and radius, `.doublePrecision`, `.antialiasing`, `.maxIterations`,
+  `.escapeRadius` and `.epsilon` are listed at the end unless the script places them itself.
 - A dot marks a value that is no longer the script's (changed in the panel or by a tool); its
   label's tooltip says what the script has, and a click on the dot goes back to it. Values changed this way stay when the script runs
   again, unless the script itself now gives them another value. The two buttons at the top of
