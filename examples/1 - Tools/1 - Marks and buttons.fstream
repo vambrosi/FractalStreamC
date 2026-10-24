@@ -17,14 +17,14 @@ while z not escapes do
     z = z^2 + c
 end
 color = if .stuck then .black ...
-        else gray(0.3 + 0.4 fract(.iterations / 20))
+        else palette("corko", .iterations / 40)
 
 @viewer julia z "Julia set" "Ctrl + 2"
 while z not escapes do
     z = z^2 + .c
 end
 color = if .stuck then .black ...
-        else palette("ocean", .iterations / 30)
+        else palette("viko", .iterations / 30)
 
 @mandel.tool "Mark" "M" "push_pin"
 .keep = true                    # drawings stay, until erase

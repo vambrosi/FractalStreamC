@@ -23,7 +23,7 @@ while chordal(w, ∞) > 1e-3 and n < .maxIterations do
     n += 1
 end
 color = if n == .maxIterations then .black ...
-        else palette("rose", n / 12)
+        else palette("viko", n / 16)
 
 # Also: p[1], p[2] (a and b in [a : b]), complex(p)
 # (a/b, huge near ∞), |p|, p == q, p escapes, and lists

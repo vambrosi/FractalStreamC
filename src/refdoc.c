@@ -173,7 +173,7 @@ static bool rd_load(void) {
         const char *e = strchr(l, '\n');
         int n = e ? (int)(e - l) : (int)strlen(l);
         if (!strncmp(l, "define __palette_", 17)) {
-            if (!skipped) sb_puts(&sb, "# (the palettes of palette(\"name\", t): __wheel with other colours)\n");
+            if (!skipped) sb_puts(&sb, "# (the palettes of palette(\"name\", t): __wheel with other colors)\n");
             skipped = true;
         } else {
             sb_printf(&sb, "%.*s\n", n, l);

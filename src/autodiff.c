@@ -19,7 +19,7 @@
  * Newton's method on E, `critical` on E', `derivative t -> E at p` returns E'.
  * With `continuing from c = P` (viewers only) the solution is carried from
  * pixel to pixel by the flood fill in flood.c: the synthetic function then
- * also walks c from the neighbouring pixel's value to its own in small steps. */
+ * also walks c from the neighboring pixel's value to its own in small steps. */
 
 typedef struct Jet { Expr *v, *d1, *d2; } Jet; /* NULL derivative = zero */
 typedef struct JetVar { Sym *v, *d1, *d2; } JetVar;

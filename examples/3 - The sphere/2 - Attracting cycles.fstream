@@ -1,7 +1,7 @@
 # Attracting cycles on the sphere. @prepare finds the
 # critical points of f, follows each one to the cycle it
 # falls into, and keeps the cycles and their multipliers
-# (Info pane: Ctrl+I). The sphere is coloured by the
+# (Info pane: Ctrl+I). The sphere is colored by the
 # cycle each point goes to. Pick a (Pick point, P) in
 # the parameter plane.
 
@@ -79,8 +79,8 @@ end
 if j == 0 then
     color = .black
 else
-    color = hsv(0.6 + 0.37 which[j], 0.6,
-                0.45 + 0.55 / (1 + n / 12))
+    color = palette("romao", 0.3 which[j]) *
+            (0.45 + 0.55 / (1 + n / 12))   # darker: slower
 end
 
 @viewer parameter a "Parameter plane"
@@ -92,7 +92,7 @@ while n < .maxIterations and chordal(w, 0) > 1e-3 and
     n += 1
 end
 if n < .maxIterations then      # into the 2-cycle {0, ∞}
-    color = gray(0.35 + 0.6 fract(n / 20))
+    color = gray(0.45 + 0.2 cos(n / 4))
 else
     p := 0                      # the period of its cycle
     v := w
@@ -102,5 +102,5 @@ else
             p = k
         end
     end
-    color = if p > 0 then hsv(p / 7, 0.7, 1) else .black
+    color = if p > 0 then hsv(p / 7, 0.45, 0.95) else .black
 end

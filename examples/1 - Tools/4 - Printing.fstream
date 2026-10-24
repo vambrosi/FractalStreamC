@@ -17,7 +17,7 @@ while z not escapes do
     z = z^2 + c
 end
 color = if .stuck then .black ...
-        else hsv(0.6, 0.5, fract(.iterations / 16))
+        else palette("viko", .iterations / 40)
 
 @mandel.tool "Period" "K" "loop"
 # each click replaces the lines of the one before

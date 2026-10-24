@@ -1,5 +1,5 @@
 /* test_app.c - parts of the application that work without a window: the views' history (Back / Forward),
- * Copy / Paste location, and a deep-zoom centre written in the script. */
+ * Copy / Paste location, and a deep-zoom center written in the script. */
 
 static const char *app_test_script =
     "@config\n"
@@ -39,7 +39,7 @@ TEST(app_script_center_keeps_its_digits) {
     CHECK_NEAR(cx, -0.743643887037151, 1e-15);
     CHECK_NEAR(cy, 0.131825904205330, 1e-15);
     program_free(p);
-    /* a centre computed by code (not a constant) or a float keeps no low part */
+    /* a center computed by code (not a constant) or a float keeps no low part */
     p = program_load("@config\nm.center = -0.5 + 0.25i\n@viewer m c\ncolor = .black\n", "t");
     CHECK_INT(p->nerrors, 0);
     if (!p->nerrors) {
@@ -145,7 +145,7 @@ TEST(app_copy_paste_location) {
     CHECK_NEAR(after.cy, before.cy, 1e-14);
     CHECK(after.radius == before.radius);
     CHECK(nav_go(0, false)); /* (pasting is a step of the history) */
-    /* a point alone moves the centre; a radius alone zooms */
+    /* a point alone moves the center; a radius alone zooms */
     platform_set_clipboard("  -0.75+0.1i \n");
     CHECK(paste_location(0));
     after = view_place(0);
@@ -356,7 +356,7 @@ static int examples_check_dir(const char *dir, StrBuf *all, bool check) {
             print_diags(p);
             test_failures_++;
         }
-        /* every view compiles, and draws more than one colour (a small picture on the CPU; not deep zooms, which
+        /* every view compiles, and draws more than one color (a small picture on the CPU; not deep zooms, which
            need the double precision of the GPU shaders) */
         bool deep = p->s_double && p->initial_state && p->initial_state[p->s_double->slot];
         for (int v = 0; v < p->nviewers && !p->nerrors; v++) {
@@ -374,7 +374,7 @@ static int examples_check_dir(const char *dir, StrBuf *all, bool check) {
             else render_cpu(p, p->initial_state, sec, EW, EH, rgba);
             bool varied = false;
             for (int k = 1; k < EW * EH && !varied; k++) varied = memcmp(rgba + 4 * k, rgba, 4) != 0;
-            if (!varied) printf("    %s, viewer %s: the picture is one colour\n", path, sec->name);
+            if (!varied) printf("    %s, viewer %s: the picture is one color\n", path, sec->name);
             CHECK(varied);
         }
         program_free(p);
@@ -568,7 +568,7 @@ TEST(app_hover_info) {
     h = hover_info(NULL, "re");
     CHECK(h && strstr(h, "re(C) : R"));
     h = hover_info(NULL, "mandel.center");
-    CHECK(h && strstr(h, "the centre"));
+    CHECK(h && strstr(h, "the center"));
     h = hover_info(NULL, "mandel");
     CHECK(h && strstr(h, "Parameter plane"));
     h = hover_info(NULL, ".c");
@@ -673,7 +673,7 @@ static void app_test_bars_frame(void) {
     tu_end();
 }
 
-/* the centre of a bar's item (kind, viewer, what), or false if the bar doesn't have it */
+/* the center of a bar's item (kind, viewer, what), or false if the bar doesn't have it */
 static bool app_test_bar_item(bool left, int kind, int viewer, int what, float *x, float *y) {
     BarItem items[BAR_ITEMS];
     float total;
@@ -834,7 +834,7 @@ TEST(app_info_and_inspect) {
     for (int t = 0; t < p->ntools; t++) vec_free(A.draws[t]);
     free(A.draws);
     app_test_end();
-    /* a view of points of the sphere: Inspect looks at the pixel's point, exact at infinity (here the centre of the
+    /* a view of points of the sphere: Inspect looks at the pixel's point, exact at infinity (here the center of the
        view, turned by the Möbius map z = 1/w) */
     p = program_load("@viewer sphere z : P \"sphere\" projective\n"
                      "color = if z == ∞ then .red else .blue\n", "t");
@@ -1085,7 +1085,7 @@ TEST(app_layout_empty_script) {
 }
 
 /* a view dropped beside the view next to it moves there (it used to vanish) */
-TEST(app_split_beside_neighbour) {
+TEST(app_split_beside_neighbor) {
     app_test_start();
     CHECK(app_test_load(APP_TEST_VIEW("va") APP_TEST_VIEW("vb"), LOAD_OPEN));
     CHECK_STR(app_test_layout(), "(va|vb) *va");
@@ -1272,7 +1272,7 @@ static const TestCase tests_app[] = {
     TESTCASE(app_layout_follows_the_script),
     TESTCASE(app_layout_gone_while_errors),
     TESTCASE(app_layout_empty_script),
-    TESTCASE(app_split_beside_neighbour),
+    TESTCASE(app_split_beside_neighbor),
     TESTCASE(app_overlay_panes),
     TESTCASE(app_pane_edges_follow_the_mouse),
     TESTCASE(app_overlay_setting),

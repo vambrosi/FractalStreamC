@@ -1379,7 +1379,7 @@ TEST(editor_widget_big_document) {
 /* ---- the preview picture ----------------------------------------------------------------------------------------- */
 
 static const char *te_sample =
-    "# Julia set of z^2 + c, coloured by escape time.\n"
+    "# Julia set of z^2 + c, colored by escape time.\n"
     "@config\n"
     ".title = \"Julia set\"\n"
     ".maxIterations = 300\n"

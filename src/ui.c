@@ -870,8 +870,8 @@ static const UipIcon *uip_icon_get(u32 cp, int px) {
     return NULL;
 }
 
-/* Stand-in for an icon: text in the sans font (at its normal size), its advance centred horizontally and its cap
- * height centred vertically in the square, so single letters sit on a common baseline across a row of buttons. */
+/* Stand-in for an icon: text in the sans font (at its normal size), its advance centered horizontally and its cap
+ * height centered vertically in the square, so single letters sit on a common baseline across a row of buttons. */
 static void uip_icon_fallback(const char *text, float x, float y, float size, u32 rgba) {
     if (!text || !text[0]) return;
     const UipFont *f = &ui.fonts[UI_FONT_SANS];
@@ -951,7 +951,7 @@ const GfxDrawList *ui_end_frame(void) {
     ui.prev_mx = ui.in.mouse_x;
     ui.prev_my = ui.in.mouse_y;
 
-    /* Concatenate the layers bottom to top, merging neighbouring commands that can share a draw call. */
+    /* Concatenate the layers bottom to top, merging neighboring commands that can share a draw call. */
     ui.out_idx.len = 0;
     ui.out_cmds.len = 0;
     for (int l = 0; l < UI_LAYER_COUNT; l++) {
@@ -1349,7 +1349,7 @@ bool ui_icon_button_ex(const char *id, const char *name, const char *fallback, f
     bool clicked;
     u32 col = uip_button_frame(ui_id(id ? id : ""), x, y, size, size, flags, &clicked);
     /* The icon takes about 60% of the button (24 px in a 40 px button), and has the button's parity (even in even,
-     * odd in odd) so that its em box is centred on whole pixels. */
+     * odd in odd) so that its em box is centered on whole pixels. */
     float ipx = uip_roundf(size * 0.6f);
     if (fmodf(ipx + uip_roundf(size), 2.0f) != 0.0f) ipx += 1.0f;
     ui_icon(name, fallback, x + (size - ipx) * 0.5f, y + (size - ipx) * 0.5f, ipx, col);

@@ -1,6 +1,6 @@
-# Template: iterate z -> f(z) until done(z), colouring
+# Template: iterate z -> f(z) until done(z), coloring
 # by success or failure, with a Trace tool. f, done and
-# the two colours are formulas of the config panel (the
+# the two colors are formulas of the config panel (the
 # old app asked for them, and for the title, in a setup
 # dialog).
 # Ported from FractalStream

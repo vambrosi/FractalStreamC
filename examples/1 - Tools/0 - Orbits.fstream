@@ -12,7 +12,7 @@ while z not escapes do
     z = z^2 + c
 end
 color = if .stuck then gray(0.2) ...
-        else rainbow(.iterations / 30)
+        else palette("broco", .iterations / 30)
 
 # @VIEW.tool "Name" "Key" "icon": a tool of that view,
 # where z is the clicked point. Icons: Material Icons.

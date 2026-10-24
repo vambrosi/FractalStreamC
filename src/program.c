@@ -120,7 +120,7 @@ static bool const_eval_d(Expr *e, double *re, double *im) {
     }
 }
 
-/* Deep zooms: a flat view's centre written in the script with more digits than a float holds
+/* Deep zooms: a flat view's center written in the script with more digits than a float holds
  * (`mandel.center = -0.743643887037151 + 0.131825904205330i`) keeps them in its low part. */
 static void initial_center_lo(Program *p, Section *v) {
     if (!v->center_lo) return;

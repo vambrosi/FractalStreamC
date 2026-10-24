@@ -545,11 +545,11 @@ TEST(projective_mapping) {
     viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 100, 0, &re, &im);
     CHECK_NEAR(re, 1, 1e-4);
     CHECK_NEAR(im, 3, 1e-4);
-    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 50, &re, &im); /* (seen from the centre: not halfway) */
+    viewer_pixel_to_plane(p, p->initial_state, v, 200, 100, 125, 50, &re, &im); /* (seen from the center: not halfway) */
     CHECK(re > 2.1f);
     program_free(p);
     /* conformal (the default): seen from a point of the sphere, the view is the Möbius map of the pixel's position (the
-       same points at the centre and at the edges) */
+       same points at the center and at the edges) */
     p = LOAD_OK("@config\nsphere.radius = 2\nsphere.center = 1 + i\n"
                 "@viewer sphere z \"Riemann sphere\" \"Ctrl + 1\" projective\n"
                 "color = gray(|z|)\n");
@@ -1231,7 +1231,7 @@ TEST(if_expressions) {
     EXPECT_ERROR("@global\nx := if 1 then 1 else 2\n", "condition");
 }
 
-TEST(colour_helpers_and_palettes) {
+TEST(color_helpers_and_palettes) {
     Program *p = LOAD_OK(
         "@global\n"
         "a := rainbow(0.3)\n"
@@ -1599,7 +1599,7 @@ static const TestCase tests_lang[] = {
     TESTCASE(functions_without_results),
     TESTCASE(draw_text),
     TESTCASE(tool_events),
-    TESTCASE(colour_helpers_and_palettes),
+    TESTCASE(color_helpers_and_palettes),
     TESTCASE(if_expressions),
     TESTCASE(friendly_messages),
     TESTCASE(config_groups_notes_labels_choices),

@@ -2,9 +2,9 @@
 # Bool (Boolean): true or false; H, P, vectors and
 # lists come in other examples. Numbers widen by
 # themselves, Z -> R -> C, never back: re, im, |z|,
-# floor, round go down. The picture: f(z) coloured by
-# its argument (hue) and modulus (bands); zeros and
-# poles stand out.
+# floor, round go down. The picture: f(z) colored by
+# its argument (the color) and modulus (bands); zeros
+# and poles stand out.
 
 @config
 .title = "Numbers"
@@ -23,8 +23,8 @@ w = w + 0.1 sin z       # sin z is sin(z); careful, the
 hue : R = arg(w) / tau        # arg: -pi..pi; tau = 2 pi
 band : R = fract(log2(|w|))   # |w|: modulus; fract: 0..1
 ok : Bool = not isnan(band)   # isnan: not a number
-color = if ok then hsv(hue, 0.7, 0.55 + 0.45 band) ...
-        else .white
+shade : R = 0.78 + 0.22 band
+color = if ok then palette("romao", hue) * shade else .white
 
 # More: re im (or Re, Im) conj norm (|z|^2) abs
 # complex(x, y) cis(t) (= exp(i t)) polar(r, t) pi e;

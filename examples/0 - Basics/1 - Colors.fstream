@@ -1,8 +1,8 @@
-# Colours. A colour is three numbers in 0..1: red,
+# Colors. A color is three numbers in 0..1: red,
 # green, blue. Try the styles in the config (Ctrl+T).
 
 @config
-.title = "Colours"
+.title = "Colors"
 plane.center = -0.75
 plane.radius = 1.5
 style : Z = 1 in ["rgb", "hsv", "gray", "mix", "palette",
@@ -13,7 +13,7 @@ z := 0
 while z not escapes do
     z = z^2 + c
 end
-# named colours: .red .green .blue .black .white .gray
+# named colors: .red .green .blue .black .white .gray
 # (.grey) .yellow .cyan .magenta .orange .purple .pink
 # .brown .violet
 if .stuck then
@@ -38,11 +38,11 @@ else if style == 6 then
     # cycle(t, a, b): b, then a at t = 1/2, back to b
     color = cycle(m / 20, .yellow, .purple)
 else
-    # dark, light: darker, lighter; invert: 1 - colour
+    # dark, light: darker, lighter; invert: 1 - color
     color = if s < 0.33 then dark(.cyan) ...
             else if s < 0.66 then light(.cyan) ...
             else invert(.cyan)
 end
 # blend(t, a, b) is mix(b, a, t), as in the first
-# FractalStream. Colours are vectors (R^3): 0.5 color
+# FractalStream. Colors are vectors (R^3): 0.5 color
 # and color + [0, 0, 0.2] work too.

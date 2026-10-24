@@ -1369,7 +1369,7 @@ TEST(ui_icon_lookup) {
         { "picture_in_picture_alt", 0xe911 }, { "fullscreen", 0xe5d0 }, { "refresh", 0xe5d5 }, { "timeline", 0xe922 },
         { "10k", 0xe951 }, { "3d_rotation", 0xe84d },   /* the first names of the table start with digits */
         { "zoom_out_map", 0xe56b },                     /* the last one */
-        { "fluorescent", 0xec31 }, { "flourescent", 0xec31 }, /* upstream lists a misspelt alias too */
+        { "fluorescent", 0xec31 }, { "flourescent", 0xec31 }, /* upstream lists a misspelled alias too */
     };
     for (int i = 0; i < ARRAY_COUNT(known); i++)
         CHECK_MSG(ui_icon_lookup(known[i].name) == known[i].cp, "%s -> %x", known[i].name, ui_icon_lookup(known[i].name));
@@ -1393,7 +1393,7 @@ TEST(ui_icon_table_matches_font) {
     CHECK_INT(unsorted, 0);
     CHECK_INT(lost, 0);
     CHECK_INT(no_glyph, 0);
-    /* the placement code centres the em box: a 512-unit square from the baseline up, one em wide */
+    /* the placement code centers the em box: a 512-unit square from the baseline up, one em wide */
     int asc, desc, gap, adv, lsb;
     stbtt_GetFontVMetrics(&info, &asc, &desc, &gap);
     CHECK_INT(asc, 512);
@@ -1456,7 +1456,7 @@ TEST(ui_icon_bake_on_demand) {
     CHECK_MSG(lit > area * 4 / 10 && lit < area * 8 / 10, "lit %d of %d", lit, area);
     CHECK_INT(border, 0);
 
-    /* on screen it is centred in the square it was given (the glyph is symmetric) */
+    /* on screen it is centered in the square it was given (the glyph is symmetric) */
     RasterImage im = tu_render(dl, BGC);
     int x0, y0, x1, y1;
     CHECK(tu_ink_bbox(&im, 90, 90, 140, 140, BGC, 40, &x0, &y0, &x1, &y1));
@@ -1499,7 +1499,7 @@ TEST(ui_icon_edge_cases) {
     const GfxDrawList *dl = tu_end();
     CHECK_INT(dl->nverts, 0);
     CHECK_INT(ui.icons.len, 0);
-    /* absurd sizes are clamped to the 4..256 px the atlas supports, centred on the square they were given */
+    /* absurd sizes are clamped to the 4..256 px the atlas supports, centered on the square they were given */
     for (int frame = 0; frame < 2; frame++) {
         tu_begin();
         tu_atlas();
@@ -1521,7 +1521,7 @@ TEST(ui_icon_fallback_text) {
     tu_forget_icons();
     tu_settle_atlas();
     int updates = tu_atlas_updates;
-    /* NULL, empty, unknown or wrongly cased names draw the fallback right away (nothing to bake), centred */
+    /* NULL, empty, unknown or wrongly cased names draw the fallback right away (nothing to bake), centered */
     static const char *bad[] = { NULL, "", "no_such_icon", "Menu" };
     for (int i = 0; i < ARRAY_COUNT(bad); i++) {
         tu_begin();
@@ -1777,8 +1777,8 @@ TEST(ui_icon_button_look) {
     tu_reset(1.0f);
     tu_forget_icons();
     tu_settle_atlas();
-    /* five 40 px buttons showing "menu" (its middle bar passes through the centre pixel): normal, hovered, selected,
-     * accent, disabled.  A pixel inside the left edge shows the fill, the centre pixel the icon color (the glyph's
+    /* five 40 px buttons showing "menu" (its middle bar passes through the center pixel): normal, hovered, selected,
+     * accent, disabled.  A pixel inside the left edge shows the fill, the center pixel the icon color (the glyph's
      * outline is not exactly on the pixel grid, so its coverage there is a bit under 100%). */
     static const struct { int flags; u32 fill, ink; } look[5] = {
         { 0, UI_COL_WIDGET, UI_COL_TEXT },

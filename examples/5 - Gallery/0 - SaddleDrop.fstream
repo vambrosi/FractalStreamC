@@ -16,14 +16,14 @@
 #     to pixel of the parameter plane, by continuation
 #     from the parameter c0 (marked with a ring) and its
 #     critical point w0;
-#   - each parameter c is coloured by how fast its
+#   - each parameter c is colored by how fast its
 #     critical point escapes: by nu = -log2 G+, modulo 1
 #     (replacing w by lam w, the next critical point of
 #     its orbit, shifts nu by 1).
 # Black: the critical point does not escape
 # (within .maxIterations): there is no critical point,
 # the set K of bounded orbits is connected. White:
-# Newton's method did not converge. Where the colours
+# Newton's method did not converge. Where the colors
 # jump along a line, the continuation went around the
 # black set on both sides and came back with different
 # critical points (as in the original program). The thin
@@ -53,9 +53,9 @@ a : C = 0.3  # the Jacobian of H (|a| < 1)
 # steps of the parametrization of W^u(p): more is more
 # precise
 depth : Z = 16 in 2..40
-# colour bands per halving of the escape rate
+# color bands per halving of the escape rate
 bands : R = 1 in 0.25..4
-# 0: colours, 1: grays like the original SaddleDrop
+# 0: colors, 1: grays like the original SaddleDrop
 style : Z = 0 in 0..1
 param.center = -0.5
 param.radius = 2
@@ -123,7 +123,7 @@ end
 define shade(nu : R) = col : Color where
     t := fract(bands nu)
     if style == 0 then
-        col = hsv(t, 0.55, 0.95)
+        col = palette("romao", t)
     else
         col = gray(0.42 + 0.45 t)
     end

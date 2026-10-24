@@ -1,7 +1,7 @@
-# Template: Newton's method for f(z) = 0, colouring each
+# Template: Newton's method for f(z) = 0, coloring each
 # point by the root it converges to (basin_color,
 # optionally shaded by the number of steps) or
-# on_failure, with a Trace tool. f and the colours are
+# on_failure, with a Trace tool. f and the colors are
 # formulas of the config panel (the old app asked for
 # them, and for the title, in a setup dialog).
 # Ported from FractalStream

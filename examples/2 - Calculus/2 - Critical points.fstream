@@ -1,6 +1,6 @@
 # critical t -> f(t) with seed s: a critical point of
 # f (a zero of f'), by Newton's method. The parameter
-# plane of the cubics z^3 + c z^2 + 1, coloured by what
+# plane of the cubics z^3 + c z^2 + 1, colored by what
 # the free critical point does. Orbit (O) draws its orbit.
 
 @config
@@ -25,7 +25,7 @@ while w not escapes do
     w = f(w, c)
 end
 color = if .stuck then .black ...
-        else hsv(.iterations / 25 + 0.55, 0.65, 1)
+        else palette("bamo", .iterations / 30)
 
 @plane.tool "Orbit" "O" "timeline"
 w := critical t -> f(t, c) with seed -c

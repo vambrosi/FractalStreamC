@@ -4,11 +4,11 @@
  * BufferBlock in the Uniform storage class (the SPIR-V 1.0 way to declare a
  * storage buffer).  At entry, the globals the viewer uses are copied into
  * Private variables (so viewers may modify their own copy), the pixel is
- * mapped to the plane, `color` starts black, and at every exit the colour is
+ * mapped to the plane, `color` starts black, and at every exit the color is
  * clamped and written to the output.
  *
  * Every function the viewer calls (user or prelude) becomes a SPIR-V
- * function; all locals are Function variables initialised to zero, exactly
+ * function; all locals are Function variables initialized to zero, exactly
  * like the interpreter's zeroed frames.  Loops follow the same iteration
  * limit / .stuck rules as interp.c. */
 #include "ast.h"
@@ -27,7 +27,7 @@ typedef struct Gen {
     bool compute;
     u32 flood_mode_var, flood_seed_var, flood_from_var, flood_out_t_var, flood_out_ok_var;
     u32 field_var, colors_var, pixel_var; /* storage buffers and this invocation's pixel index */
-    u32 flood_nb, flood_W;                /* the neighbour to continue from (pixel index), image width */
+    u32 flood_nb, flood_W;                /* the neighbor to continue from (pixel index), image width */
     u32 flood_pass_var;                   /* the pass's mode (FLOOD_PASS_*), for the output */
     Func *fn;
     struct { u32 merge, cont; } loops[64];
@@ -169,7 +169,7 @@ static u32 one_of(Gen *g, Type *t) {
  * vec4 (re.hi, re.lo, im.hi, im.lo).  The error-free transformations below rely on exact IEEE
  * float operations: their results are decorated NoContraction (no fused or reassociated maths;
  * SPIRV-Cross keeps them exact in Metal's fast math too).  Elementary functions other than sqrt are
- * computed in single precision (they serve colours, not coordinates). */
+ * computed in single precision (they serve colors, not coordinates). */
 enum { SpvDecNoContraction = 42, GLSLInverseSqrt = 32 };
 
 /* How double-single shaders keep their float operations exact: NoContraction on each operation (always right,
@@ -768,7 +768,7 @@ static u32 gen_intrinsic(Gen *g, Expr *e) {
         u32 a1 = e->nargs > 1 ? gen_expr(g, e->args[1]) : 0;
         if (!g->compute) return id == I_FLOOD_SEED ? a0 : id == I_FLOOD_FROM ? a1 : 0; /* direct solve */
         if (id == I_FLOOD_OUT) {
-            /* (the field keeps solutions in single precision: they only seed the neighbours' solves) */
+            /* (the field keeps solutions in single precision: they only seed the neighbors' solves) */
             store(g, g->flood_out_t_var, g->df ? vec2(g, df_hi(g, c_re(g, a0)), df_hi(g, c_im(g, a0))) : a0);
             store(g, g->flood_out_ok_var, spv_op3(&g->s, SpvOpSelect, g->tint, a1, ci(g, 1), ci(g, 0)));
             return 0;
@@ -1086,7 +1086,7 @@ static u32 gen_expr(Gen *g, Expr *e) {
 }
 
 /* ---- statements -------------------------------------------------------------- */
-/* component i of the colour, as a float */
+/* component i of the color, as a float */
 static u32 color_part(Gen *g, u32 col, int i) {
     if (g->df) return df_hi(g, extract(g, g->tvec2, col, (u32)i));
     return extract(g, g->tfloat, col, (u32)i);
@@ -1102,7 +1102,7 @@ static void write_output(Gen *g) {
     store(g, g->out_color, construct(g, g->tvec4, p, 4));
 }
 
-/* compute variant: colour into the colour buffer, solution and status into the field */
+/* compute variant: color into the color buffer, solution and status into the field */
 static void write_output_compute(Gen *g) {
     Section *v = g->viewer;
     u32 col = load(g, ty(g, t_color), v->color->spv_var);
@@ -1536,7 +1536,7 @@ static u32 flat_plane_point(Gen *g, u32 px, u32 py, u32 w, u32 h) {
     u32 dx = op2(g, SpvOpFSub, f, px, op2(g, SpvOpFMul, f, half, w));
     u32 dy = op2(g, SpvOpFSub, f, op2(g, SpvOpFMul, f, half, h), py);
     u32 c = global_value(g, v->center);
-    if (g->df) { /* centre (hi + lo, kept by the app) + the offset, in double-single precision */
+    if (g->df) { /* center (hi + lo, kept by the app) + the offset, in double-single precision */
         u32 lo = v->center_lo ? load(g, g->tvec4, v->center_lo->spv_var) : df_const(g, 0);
         u32 cre = v->center_lo ? df_add(g, c_re(g, c), c_re(g, lo)) : c_re(g, c);
         u32 cim = v->center_lo ? df_add(g, c_im(g, c), c_im(g, lo)) : c_im(g, c);
@@ -1778,7 +1778,7 @@ static u32 mend_source(Gen *g, u32 x, u32 y, u32 W, u32 H, u32 sx, u32 sy) {
 }
 
 /* The flood-fill prologue (see flood.c, which this must match exactly): find this invocation's
- * pixel, skip it unless this pass computes it, pick the neighbour to continue from, set the flood_*
+ * pixel, skip it unless this pass computes it, pick the neighbor to continue from, set the flood_*
  * variables.  A decide pass (mending) only writes the pixel's `pad` and returns.
  * Returns the pixel's (x, y) as ints through *px, *py. */
 static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out_y, u32 *out_w, u32 *out_h) {
@@ -1852,7 +1852,7 @@ static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out
                        band(g, op2(g, SpvOpIEqual, B, src_pad, u0), op2(g, SpvOpIEqual, B, src_st, spv_const_u32(&g->s, U, 1))));
     u32 waiting = op2(g, SpvOpIEqual, B, status, u0 /* FLOOD_PENDING */);
     return_if(g, bnot(g, op2(g, SpvOpLogicalOr, B, band(g, is_mend, mend_ok), band(g, bnot(g, is_mend), waiting))));
-    /* neighbour: rings d-1 and d+1 only, converged, d-1 first, then closest to the ray from the start */
+    /* neighbor: rings d-1 and d+1 only, converged, d-1 first, then closest to the ray from the start */
     static const int dxs[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
     static const int dys[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     u32 d = imax_(g, iabs_(g, op2(g, SpvOpISub, I, x, sx)), iabs_(g, op2(g, SpvOpISub, I, y, sy)));
@@ -1879,7 +1879,7 @@ static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out
     }
     u32 has_nb = op2(g, SpvOpSGreaterThanEqual, B, best, z0);
     u32 at_start = op2(g, SpvOpLogicalAnd, B, op2(g, SpvOpIEqual, B, x, sx), op2(g, SpvOpIEqual, B, y, sy));
-    /* a ring pixel without a converged neighbour waits (unless it is the start) */
+    /* a ring pixel without a converged neighbor waits (unless it is the start) */
     return_if(g, op2(g, SpvOpLogicalAnd, B, is_ring,
                      op2(g, SpvOpLogicalAnd, B, op1(g, SpvOpLogicalNot, B, has_nb), op1(g, SpvOpLogicalNot, B, at_start))));
     u32 fmode = isel(g, is_mend, ci(g, FLOOD_CONTINUE),
@@ -1892,7 +1892,7 @@ static void flood_prologue(Gen *g, u32 pc_var, u32 gid_var, u32 *out_x, u32 *out
     *out_y = y;
     *out_w = extract(g, F, size, 0);
     *out_h = extract(g, F, size, 1);
-    /* the neighbour's point is computed after the globals are loaded (flood_from is set by the caller) */
+    /* the neighbor's point is computed after the globals are loaded (flood_from is set by the caller) */
     g->flood_nb = nb;
     g->flood_W = W;
 }
@@ -1966,7 +1966,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         u32 uvec3 = spv_type_vec(s, g->tuint, 3);
         gid_var = spv_global_var(s, ptr(g, SpvSCInput, uvec3), SpvSCInput, 0);
         spv_decorate1(s, gid_var, SpvDecBuiltIn, SpvBuiltInGlobalInvocationId);
-        /* binding 1: field entries {vec2 t; uint status; uint pad}; binding 2: packed RGBA8 colours */
+        /* binding 1: field entries {vec2 t; uint status; uint pad}; binding 2: packed RGBA8 colors */
         u32 em[3] = {g->tvec2, g->tuint, g->tuint};
         u32 entry = spv_type_struct(s, em, 3);
         spv_member_decorate(s, entry, 0, SpvDecOffset, 0, true);
@@ -2034,7 +2034,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         store(g, gs->spv_var, from_buffer(g, gs->type, load(g, bty(g, gs->type), bp)));
     }
     if (compute) {
-        /* this pixel's point and the neighbour's point */
+        /* this pixel's point and the neighbor's point */
         u32 f = g->tfloat, half = cf(g, 0.5f);
         u32 px = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, fx), half);
         u32 py = op2(g, SpvOpFAdd, f, op1(g, SpvOpConvertSToF, f, fy), half);
@@ -2110,7 +2110,7 @@ u32 *codegen_viewer(Program *p, Section *v, u32 *nwords, char *err, int errcap) 
 
 /* Generate the flood-fill compute shader of viewer `v` (it must have a `continuing` solve): one
  * invocation per pixel of a ring (or of the image for the other passes), see flood.c.
- * Bindings: 0 state, 1 field (FloodEntry[]), 2 colours (packed RGBA8 per pixel);
+ * Bindings: 0 state, 1 field (FloodEntry[]), 2 colors (packed RGBA8 per pixel);
  * push constants: vec2 size, ivec2 start, int ring, int mode (FLOOD_PASS_*). */
 u32 *codegen_viewer_flood_ex(Program *p, Section *v, bool df, u32 *nwords, char *err, int errcap) {
     if (!v->flood) {

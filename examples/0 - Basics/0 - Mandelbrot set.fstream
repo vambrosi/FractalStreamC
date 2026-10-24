@@ -12,5 +12,6 @@ end
 if .stuck then
     color = .black      # color: what the pixel shows
 else
-    color = hsv(.iterations / 50, 0.8, 1)
+    # a palette: a map of colors (see "2 - Palettes")
+    color = palette("viko", .iterations / 40)
 end

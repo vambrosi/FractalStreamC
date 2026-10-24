@@ -84,7 +84,7 @@ typedef struct UiInput {
     int nkeys;
     u32 text[64];                             /* typed codepoints this frame (also present in `keys`) */
     int ntext;
-    bool key_down[UI_KEY_COUNT];              /* keys currently held (for "hold space to pan" style behaviour) */
+    bool key_down[UI_KEY_COUNT];              /* keys currently held (for "hold space to pan" style behavior) */
     int mods;                                 /* current modifiers */
     double time;                              /* seconds, monotonic */
     float dt;                                 /* seconds since the previous platform_poll */

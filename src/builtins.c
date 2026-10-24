@@ -1,6 +1,6 @@
 /* builtins.c - intrinsics (implemented natively by interp.c and codegen.c)
  * and the prelude: the public builtin functions, written in the language
- * itself on top of the intrinsics.  Keeping complex/colour functions in the
+ * itself on top of the intrinsics.  Keeping complex/color functions in the
  * prelude means the CPU interpreter and the GPU code share one definition. */
 
 typedef enum Intrinsic {
@@ -210,7 +210,7 @@ static const char *prelude_source =
     "# ---- quaternions\n"
     "define conj(q : H) = quat(q[1], -q[2], -q[3], -q[4])\n"
     "\n"
-    "# ---- colours (components between 0 and 1; the hue in turns)\n"
+    "# ---- colors (components between 0 and 1; the hue in turns)\n"
     "define rgb(r : R, g : R, b : R) = [r, g, b]\n"
     "define gray(v : R) = [v, v, v]\n"
     "define grey(v : R) = [v, v, v]\n"
@@ -222,7 +222,7 @@ static const char *prelude_source =
     "    c = [v * (1 - s + s * r), v * (1 - s + s * g), v * (1 - s + s * b)]\n"
     "end\n"
     "\n"
-    "# ---- colour helpers and palettes of the first FractalStream (a script\n"
+    "# ---- color helpers and palettes of the first FractalStream (a script\n"
     "# may define its own blend, cycle, dark, light, invert and rainbow)\n"
     "define blend(t : R, a : R^3, b : R^3) = a * t + b * (1 - t)\n"
     "define cycle(t : R, a : R^3, b : R^3) = c : R^3 where\n"

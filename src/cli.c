@@ -85,7 +85,7 @@ static bool cli_set_global(Program *p, u32 *state, const char *assign) {
     case T_QUAT: dst[0] = fw(re); dst[1] = fw(im); dst[2] = dst[3] = 0; break;
     default: fprintf(stderr, "error: '%s' can't be set from the command line\n", name); return false;
     }
-    for (int v = 0; v < p->nviewers; v++) { /* a view's centre keeps its digits (deep zooms) */
+    for (int v = 0; v < p->nviewers; v++) { /* a view's center keeps its digits (deep zooms) */
         Section *vs = p->viewers[v];
         if (vs->center != s || !vs->center_lo) continue;
         double dre, dim;

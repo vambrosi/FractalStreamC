@@ -27,7 +27,7 @@ for n, line in enumerate(open(src, encoding="ascii"), 1):
     name, cp = parts[0], int(parts[1], 16)
     if cp > 0x10FFFF:
         sys.exit("%s:%d: codepoint out of range" % (src, n))
-    if name in entries:  # upstream lists the misspelt "flourescent" twice; the first one (= "fluorescent") wins
+    if name in entries:  # upstream lists the misspelled "flourescent" twice; the first one (= "fluorescent") wins
         print("note: %s:%d: duplicate name %r ignored (keeping 0x%04x)" % (src, n, name, entries[name]), file=sys.stderr)
         continue
     entries[name] = cp

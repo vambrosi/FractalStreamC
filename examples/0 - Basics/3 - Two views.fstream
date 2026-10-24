@@ -13,7 +13,7 @@ julia.radius = 1.6
 @global                 # the state shared by everything
 .c = -0.8 + 0.156i      # .c: the point picked in the view
                         # whose variable is c
-define shade(n : Z) = hsv(n / 64 + 0.6, 0.75, 1)
+define shade(n : Z) = palette("romao", n / 50)
 
 # @viewer NAME VARIABLE "Display name" "Shortcut"
 @viewer mandel c "Parameter plane" "Ctrl + 1"

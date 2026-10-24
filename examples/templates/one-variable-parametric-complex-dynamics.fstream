@@ -2,7 +2,7 @@
 # the C-plane of a complex parameter C. Write it once,
 # as the function `picture` below: it gets the starting
 # z, the parameter C and `dynamic`
-# (true in the z-plane), and returns the colour. In the
+# (true in the z-plane), and returns the color. In the
 # C-plane z starts at z0. (The old app asked for this
 # code, the title, z0 and the initial C in a setup
 # dialog.)

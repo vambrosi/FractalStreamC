@@ -1260,7 +1260,7 @@ static bool gfx_create_device(void) {
     /* Implementations that are not fully conformant (MoltenVK) expose this and require
        it to be enabled; we use nothing it restricts. */
     if (gfx_has_ext(exts, next, "VK_KHR_portability_subset")) enable[ne++] = "VK_KHR_portability_subset";
-    /* IEEE float behaviour that a shader can ask for (exact double-single arithmetic, see codegen.c) */
+    /* IEEE float behavior that a shader can ask for (exact double-single arithmetic, see codegen.c) */
     gx.float_controls = false;
     if (gx.props2 && gfx_has_ext(exts, next, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
         PFN_vkGetPhysicalDeviceProperties2KHR props2 =

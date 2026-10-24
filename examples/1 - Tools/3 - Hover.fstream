@@ -12,7 +12,7 @@ while z not escapes do
     z = z^2 + c
 end
 color = if .stuck then gray(0.15) ...
-        else palette("wheat", .iterations / 40)
+        else palette("bamo", .iterations / 40)
 
 @julia.tool "Orbit" "O" "timeline"
 .hover = true                   # runs as the mouse moves

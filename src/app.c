@@ -50,7 +50,7 @@ typedef struct VisTile { int viewer; Rect r; int node; int fl; Rect vr; } VisTil
 
 /* where a view looks: Back / Forward go through the places a view has been */
 typedef struct ViewPlace {
-    double cx, cy;     /* the centre, with its low part */
+    double cx, cy;     /* the center, with its low part */
     float radius;
     float mob[8];      /* projective views: the Möbius map */
 } ViewPlace;
@@ -72,7 +72,7 @@ typedef struct ViewerRT {
     bool df_failed;    /* the GPU rejected that version: stay in single precision */
     int pipeline_df;
     FloodGpu flood_df;
-    u32 center_bits[2]; /* the centre when its low part was set (a centre set elsewhere drops the low part) */
+    u32 center_bits[2]; /* the center when its low part was set (a center set elsewhere drops the low part) */
     int target, tw, th;
     u32 *snap;         /* state the image was rendered from */
     bool *used;        /* per global: does the viewer read it? */
@@ -376,7 +376,7 @@ static void mob_set(Sym *s, Mob x) {
 #define APP_PROJ_T 1.19175359f
 #define APP_PROJ_EDGE 0.46630766f
 /* the point w (before the view's Möbius map) seen at screen position (x, y) of a projective view in r, and back:
-   from the sphere's centre, or (conformal) from a point of the sphere, see proj_screen_w in interp.c */
+   from the sphere's center, or (conformal) from a point of the sphere, see proj_screen_w in interp.c */
 static Cx screen_to_w(Rect r, bool conformal, float x, float y) {
     float m = 0.5f * FS_MIN(r.w, r.h);
     float sx = (x - r.x - 0.5f * r.w) / m * APP_PROJ_T, sy = (0.5f * r.h - (y - r.y)) / m * APP_PROJ_T;
@@ -428,7 +428,7 @@ static void set_c(Sym *s, float re, float im) {
     A.state[s->slot + 1] = fw(im);
 }
 
-/* Deep zooms: the centre of a flat view, to about twice the precision of a float, is
+/* Deep zooms: the center of a flat view, to about twice the precision of a float, is
  * NAME.center + NAME.center lo (the low part is kept by the app's panning and zooming). */
 static void view_center_d(int v, double *cx, double *cy) {
     Section *s = A.prog->viewers[v];
@@ -450,7 +450,7 @@ static void set_view_center_d(int v, double cx, double cy) {
     A.vrt[v].center_bits[1] = A.state[s->center->slot + 1];
 }
 
-/* a centre set by something else (the config panel, a tool, @prepare) has no low part */
+/* a center set by something else (the config panel, a tool, @prepare) has no low part */
 static void check_center_lo(int v) {
     Section *s = A.prog->viewers[v];
     if (!s->center_lo) return;
@@ -572,7 +572,7 @@ static void float_text(char *out, int cap, float f) {
     }
 }
 
-/* a coordinate of a view's centre, with the digits that matter at this radius */
+/* a coordinate of a view's center, with the digits that matter at this radius */
 static void coord_text(char *out, int cap, double x, double radius, bool deep) {
     if (!deep || !(radius > 0)) {
         float_text(out, cap, (float)x);
@@ -582,7 +582,7 @@ static void coord_text(char *out, int cap, double x, double radius, bool deep) {
     snprintf(out, (size_t)cap, "%.*g", FS_CLAMP(digits, 8, 15), x); /* (about the precision of the deep views) */
 }
 
-/* the centre and radius of a flat view, as written in a script:
+/* the center and radius of a flat view, as written in a script:
    "mandel.center = -0.74364388703 + 0.13182590421i\nmandel.radius = 1e-08\n" */
 static void location_text(int v, char *out, int cap) {
     Section *s = A.prog->viewers[v];
@@ -612,7 +612,7 @@ static bool location_value(const char *text, const char *key, char *out, int cap
     return false;
 }
 
-/* Paste location: the centre and the radius in the clipboard (as Copy location writes them, or just a point) */
+/* Paste location: the center and the radius in the clipboard (as Copy location writes them, or just a point) */
 static bool paste_location(int v) {
     Section *s = A.prog->viewers[v];
     const char *clip = platform_get_clipboard();
@@ -727,7 +727,7 @@ static int node_alloc(void) {
 }
 
 /* The tree of tiles has its root at A.root, -1 when nothing is shown (a script without views).  A leaf whose
-   viewer is gone (see ViewerRT.gone) stays in the tree but takes no room: its neighbour has it until the
+   viewer is gone (see ViewerRT.gone) stays in the tree but takes no room: its neighbor has it until the
    script runs again. */
 static bool leaf_gone(int n) {
     int v = A.nodes[n].viewer;
@@ -793,7 +793,7 @@ static bool viewer_visible(int v) {
     return find_leaf(A.root, v) >= 0 || find_float(v) >= 0;
 }
 
-/* take leaf n out of the tree: its neighbour takes its room (the root: nothing is left) */
+/* take leaf n out of the tree: its neighbor takes its room (the root: nothing is left) */
 static void remove_leaf_any(int n) {
     int p = find_parent(A.root, n);
     if (p < 0) {
@@ -879,7 +879,7 @@ static void layout_default(int nviewers) {
 
 /* The script ran again (the same script, edited): the layout follows the views to their new numbers, remap[v] for
  * each old view v (-1: its section is gone).  A view that is gone leaves its tile to a view new in this run (its
- * section renamed, or another one written in its place), else its tile closes and the neighbour takes the room (a
+ * section renamed, or another one written in its place), else its tile closes and the neighbor takes the room (a
  * floating view goes away); the other views keep their places.  If nothing is left on screen, the first views show
  * as for a script just opened.  True if a view on screen was closed. */
 static bool layout_follow(const int *remap, int old_n, int new_n) {
@@ -1106,7 +1106,7 @@ static bool tool_handles(int tool, int ev) {
 
 static void run_tool(int tool, int viewer, int ev, float re, float im);
 
-/* run an event of a tool where no point was clicked: at the centre of the view */
+/* run an event of a tool where no point was clicked: at the center of the view */
 static void run_tool_at_center(int tool, int v, int ev) {
     Section *s = A.prog->viewers[v];
     run_tool(tool, v, ev, wf(A.state[s->center->slot]), wf(A.state[s->center->slot + 1]));
@@ -1338,7 +1338,7 @@ static const char *hover_info(void *user, const char *word) {
         {"root", "root t -> f(t) with seed s\na zero of f, by Newton's method from s; .stuck if it fails"},
         {"derivative", "derivative t -> f(t) at x\nf'(x), by automatic differentiation"},
         {"continuing", "... continuing from c = P\nthe solution is found at the pixel of P, then followed to the other pixels "
-                       "(each one starts from a neighbour's)"},
+                       "(each one starts from a neighbor's)"},
         {"seed", "with seed s\nwhere Newton's method starts"},
         {"while", "while COND do ... end\nruns at most .maxIterations times; .stuck tells whether it hit the limit and "
                   ".iterations how many times it ran"},
@@ -1367,8 +1367,8 @@ static const char *hover_info(void *user, const char *word) {
             Section *vs = p->viewers[v];
             size_t n = (size_t)(dot - word);
             if (strlen(vs->name) != n || strncmp(vs->name, word, n)) continue;
-            if (!strcmp(dot + 1, "center")) sb_printf(&sb, "%s : C\nthe centre of the view %s", word, vs->name);
-            else if (!strcmp(dot + 1, "radius")) sb_printf(&sb, "%s : R\nthe radius of the largest disk around the centre that fits in the view", word);
+            if (!strcmp(dot + 1, "center")) sb_printf(&sb, "%s : C\nthe center of the view %s", word, vs->name);
+            else if (!strcmp(dot + 1, "radius")) sb_printf(&sb, "%s : R\nthe radius of the largest disk around the center that fits in the view", word);
         }
     } else if (word[0] == '.') { /* the script's internals: picked points */
         for (int i = 0; i < p->globals.len && !sb.len; i++) {
@@ -1447,7 +1447,7 @@ static bool app_managed(Program *p, Sym *s) {
            s == p->s_height;
 }
 
-/* a view's centre and radius (and their hidden parts): the views have their own reset and history */
+/* a view's center and radius (and their hidden parts): the views have their own reset and history */
 static bool view_geometry(Program *p, Sym *s) {
     if (s->viewer_index < 0 || s->viewer_index >= p->nviewers) return false;
     Section *v = p->viewers[s->viewer_index];
@@ -1529,7 +1529,7 @@ static void adopt_program(Program *p, ViewerRT *vrt, int mode) {
         for (int i = 0; i < p->globals.len; i++)
             if (vrt[v].used[i] && p->globals.data[i] == p->s_time) vrt[v].animated = true;
         vrt[v].tool = TOOL_PAN;
-        vrt[v].center_bits[0] = p->initial_state[s->center->slot]; /* (the script's centre has its low part: see
+        vrt[v].center_bits[0] = p->initial_state[s->center->slot]; /* (the script's center has its low part: see
                                                                       check_center_lo) */
         vrt[v].center_bits[1] = p->initial_state[s->center->slot + 1];
     }
@@ -2420,7 +2420,7 @@ static void viewer_interaction(void) {
     ui_set_mouse_captured(true);
 }
 
-/* is a word of the state part of a view (the centre, radius or view map of a viewer)? */
+/* is a word of the state part of a view (the center, radius or view map of a viewer)? */
 static bool view_word(Program *p, int w) {
     for (int v = 0; v < p->nviewers; v++) {
         Sym *syms[3] = {p->viewers[v]->center, p->viewers[v]->radius, p->viewers[v]->mobius};
@@ -2907,9 +2907,9 @@ static void bar_action(int v, int k, float x, float y, float b) {
         "Back: where the view was before the last zoom, pan or reset (" BACK_KEY ", the mouse's back button)",
         "Forward: undo Back (" FORWARD_KEY ")",
         "Reset: the view the script starts with (Home)",
-        "Copy location: the centre and the radius as script lines (\"mandel.center = ...\"), with all their digits (" MODKEY
+        "Copy location: the center and the radius as script lines (\"mandel.center = ...\"), with all their digits (" MODKEY
         "+Shift+C)",
-        "Paste location: go to the centre and radius in the clipboard (copied with Copy location, or a point like "
+        "Paste location: go to the center and radius in the clipboard (copied with Copy location, or a point like "
         "-0.75+0.1i) (" MODKEY "+Shift+V)",
         "Axes and grid lines with their values (" MODKEY "+Shift+A)",
         "Save picture: this view at its size on the screen (PNG, without the tools' drawings)",
@@ -3816,7 +3816,7 @@ static bool config_auto(Program *p, Sym *s, int group) {
     return s == p->s_max_iter || s == p->s_escape || s == p->s_epsilon;
 }
 
-/* A dot before the label of a value that isn't the script's any more (a view's centre: with its low part); the
+/* A dot before the label of a value that isn't the script's any more (a view's center: with its low part); the
    label's tooltip says what the script has. */
 static void config_changed_mark(Program *p, Sym *s, float x0, float y, float w) {
     float h = config_row_h() - px(4);
@@ -3856,7 +3856,7 @@ static void config_changed_mark(Program *p, Sym *s, float x0, float y, float w) 
     }
 }
 
-/* The centre of a flat view, with its low part, showing as many digits as the radius asks for and dragged by a
+/* The center of a flat view, with its low part, showing as many digits as the radius asks for and dragged by a
    fraction of the radius.  The two parts go side by side in the value column (x1, width w) when they fit there, else
    on two rows of their own below the label, from x0.  Returns the height used. */
 static float config_center(int v, float x0, float x1, float y, float w) {
@@ -4242,7 +4242,7 @@ static void help_overlay(float W, float H) {
         {"H, P, ?, tool keys", "choose a tool of the view under the mouse (? is Inspect)"},
         {"Home", "reset the view under the mouse"},
         {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
-        {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (centre and radius)"},
+        {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (center and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
 #if FS_OS_MACOS
         {"F11, Cmd+Ctrl+F", "full screen"},
@@ -4422,7 +4422,7 @@ static void modal_dialog(float W, float H) {
         A.browse = NULL;
         A.nbrowse = 0;
         A.browse_dir[0] = 0;
-        if (A.pending && A.pending != PENDING_NONE) A.pending = PENDING_NONE; /* (a save asked for was cancelled) */
+        if (A.pending && A.pending != PENDING_NONE) A.pending = PENDING_NONE; /* (a save asked for was canceled) */
         return;
     }
     int prev = ui_layer(UI_LAYER_POPUP);
@@ -4838,7 +4838,7 @@ static bool render_viewers(void) {
         if (!rt->target) continue;
         check_center_lo(v);
         update_precision(v);
-        if (!A.uploaded || memcmp(A.uploaded, A.state, bytes) != 0) { /* (the centre's low part may have changed) */
+        if (!A.uploaded || memcmp(A.uploaded, A.state, bytes) != 0) { /* (the center's low part may have changed) */
             memcpy(A.uploaded, A.state, bytes);
             gfx_set_globals(A.state, (u32)bytes);
         }

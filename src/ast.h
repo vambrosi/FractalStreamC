@@ -14,7 +14,7 @@ typedef struct Diag {
     int line, col, end_col; /* 1-based; end_col exclusive (0 = unknown) */
     char *msg;
     bool noted;             /* (check.c: already says which instance of a generic function it is about, or is about a
-                               function with types: not labelled again) */
+                               function with types: not labeled again) */
 } Diag;
 typedef VEC(Diag) DiagVec;
 
@@ -286,9 +286,9 @@ struct Section {
     Sym *color;         /* viewer output */
     Sym *picked;        /* viewer: .var (picked point) */
     Sym *center, *radius; /* viewer properties */
-    Sym *center_lo;     /* flat viewers: the low part of the centre, for deep zooms (centre + center_lo) */
+    Sym *center_lo;     /* flat viewers: the low part of the center, for deep zooms (center + center_lo) */
     Sym *mobius;        /* projective viewers: view map, C^4 (a, b, c, d) */
-    Sym *conformal;     /* projective viewers: Bool, the eye on the sphere (stereographic) instead of at its centre */
+    Sym *conformal;     /* projective viewers: Bool, the eye on the sphere (stereographic) instead of at its center */
     bool panning, hover, keep; /* tool settings */
     bool button;        /* tool: `button` in the header, an action run once (not selected) */
     Block *on[TOOL_EV_COUNT]; /* tool: the handler of each event (NULL: none) */

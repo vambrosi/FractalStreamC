@@ -102,7 +102,7 @@ static void raster_draw(RasterImage *im, const GfxDrawList *dl, const RasterText
     }
 }
 
-/* Save (a zoomed crop of) the image as PNG; zoom is an integer nearest-neighbour factor. */
+/* Save (a zoomed crop of) the image as PNG; zoom is an integer nearest-neighbor factor. */
 static bool raster_save(const RasterImage *im, int cx, int cy, int cw, int ch, int zoom, const char *path) {
     cx = FS_CLAMP(cx, 0, im->w - 1);
     cy = FS_CLAMP(cy, 0, im->h - 1);

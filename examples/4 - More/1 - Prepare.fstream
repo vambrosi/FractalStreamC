@@ -27,7 +27,7 @@ while z not escapes and |z - fp| > 1e-3 do
     n += 1
 end
 if z escapes then
-    color = rainbow(n / 30)
+    color = palette("viko", n / 40)
 else if .stuck then
     color = .black
 else
@@ -39,4 +39,5 @@ z := 0
 while z not escapes do
     z = z^2 + c
 end
-color = if .stuck then .black else rainbow(.iterations / 30)
+color = if .stuck then .black ...
+        else palette("viko", .iterations / 40)

@@ -468,7 +468,7 @@ TEST(flood_gpu_matches_cpu) {
             (fa[k].status == FLOOD_DONE && (fabsf(fa[k].t[0] - fb[k].t[0]) >= 1e-3f || fabsf(fa[k].t[1] - fb[k].t[1]) >= 1e-3f)))
             bad_df++;
     CHECK_MSG(bad_df <= 2, "double precision: %d of %d pixels differ", bad_df, W * H);
-    /* continuity: neighbours (where both converged) found nearby roots */
+    /* continuity: neighbors (where both converged) found nearby roots */
     int jumps = 0;
     for (int y = 0; y < H; y++)
         for (int x = 0; x + 1 < W; x++) {
@@ -476,7 +476,7 @@ TEST(flood_gpu_matches_cpu) {
             if (e0->status == FLOOD_DONE && e1->status == FLOOD_DONE &&
                 fabsf(e0->t[0] - e1->t[0]) + fabsf(e0->t[1] - e1->t[1]) > 0.3f) jumps++;
         }
-    CHECK_MSG(jumps < W, "%d jumps between neighbours", jumps);
+    CHECK_MSG(jumps < W, "%d jumps between neighbors", jumps);
     free(a); free(b); free(fa); free(fb);
     program_free(p);
     gfx_shutdown();

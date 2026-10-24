@@ -2,8 +2,8 @@
  *
  * Such a viewer follows a solution (say a critical point found by Newton's
  * method) from pixel to pixel: each pixel starts Newton from the solution of
- * a neighbouring pixel that has already converged, walking the viewer's
- * variable from the neighbour's point to its own in small steps.  Pixels
+ * a neighboring pixel that has already converged, walking the viewer's
+ * variable from the neighbor's point to its own in small steps.  Pixels
  * where Newton fails do not pass anything on, so the fill goes around them
  * (as SaddleDrop did).
  *
@@ -11,7 +11,7 @@
  * codegen_viewer_flood) compute exactly the same thing:
  *   1. rings around the start pixel (the pixel of the point P after
  *      `continuing from c = P`), ring d = pixels at Chebyshev distance d,
- *      outwards; a pixel of ring d continues from a converged neighbour in
+ *      outwards; a pixel of ring d continues from a converged neighbor in
  *      ring d-1 or d+1 (never d, so a ring can be computed in parallel);
  *   2. FLOOD_SWEEPS - 1 more sweeps over the rings, alternately inwards and
  *      outwards, for the pixels still waiting (behind failed regions);
@@ -97,13 +97,13 @@ bool flood_ring_pixel(const FloodPlan *fp, int ring, int i, int *x, int *y) {
 
 int flood_ring_of(const FloodPlan *fp, int x, int y) { return flood_imax(flood_iabs(x - fp->sx), flood_iabs(y - fp->sy)); }
 
-/* The converged neighbour (x, y) continues from: in ring d-1 or d+1, preferring d-1, then the one
+/* The converged neighbor (x, y) continues from: in ring d-1 or d+1, preferring d-1, then the one
  * closest to the line from the start pixel through (x, y).  Returns its index or -1.  codegen.c
  * emits the same computation for the GPU (keep them in sync). */
 static const int flood_dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
 static const int flood_dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
 
-int flood_pick_neighbour(const FloodPlan *fp, const FloodEntry *field, int x, int y) {
+int flood_pick_neighbor(const FloodPlan *fp, const FloodEntry *field, int x, int y) {
     int d = flood_ring_of(fp, x, y), best = -1, best_score = 0x7fffffff;
     for (int k = 0; k < 8; k++) {
         int nx = x + flood_dx[k], ny = y + flood_dy[k];
@@ -257,7 +257,7 @@ bool flood_start_pixel(Program *p, const u32 *state, Section *v, int w, int h, i
     return ok;
 }
 
-/* run one pixel on the CPU; returns false when the pixel is not ready (no converged neighbour) */
+/* run one pixel on the CPU; returns false when the pixel is not ready (no converged neighbor) */
 static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section *v, const FloodPlan *fp,
                             FloodEntry *field, u8 *rgba, int x, int y, int kind) {
     FloodEntry *e = &field[y * fp->w + x];
@@ -274,7 +274,7 @@ static bool flood_cpu_pixel(Program *p, const u32 *state, u32 *scratch, Section 
     } else if (kind == FLOOD_PASS_COLD) {
         mode = FLOOD_DIRECT;
     } else {
-        nb = flood_pick_neighbour(fp, field, x, y);
+        nb = flood_pick_neighbor(fp, field, x, y);
         if (nb >= 0) mode = FLOOD_CONTINUE;
         else if (x == fp->sx && y == fp->sy) mode = FLOOD_START;
         else return false;
@@ -340,7 +340,7 @@ void flood_render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8
 
 /* ---- GPU ------------------------------------------------------------------------- */
 /* One flood viewer on the GPU: the compute pipeline (codegen_viewer_flood), the field buffer
- * (FloodEntry per pixel) and the colour buffer (packed RGBA8 per pixel), and how far the fill got. */
+ * (FloodEntry per pixel) and the color buffer (packed RGBA8 per pixel), and how far the fill got. */
 typedef struct FloodGpu {
     int pipe;
     int field, colors;
@@ -405,7 +405,7 @@ void flood_gpu_free_buffers(FloodGpu *fg) {
     fg->w = fg->h = 0;
 }
 
-/* Record up to `max_passes` passes (and the copy of the colours into `target`, whose picture is kept
+/* Record up to `max_passes` passes (and the copy of the colors into `target`, whose picture is kept
  * where the fill hasn't arrived yet).  Call between gfx_frame_begin and gfx_frame_draw, or in a batch. */
 void flood_gpu_record(FloodGpu *fg, int max_passes, int target) {
     if (!fg->field || flood_gpu_done(fg)) return;

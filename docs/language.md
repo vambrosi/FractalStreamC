@@ -1,7 +1,7 @@
 # The FractalStream language
 
 A FractalStream script describes interactive pictures of the complex plane. It has
-**viewers** (code that runs for every pixel and produces a colour), **tools** (code that runs
+**viewers** (code that runs for every pixel and produces a color), **tools** (code that runs
 when you click in a viewer; it can change variables and draw shapes), **globals** (state shared
 by everything) and **config** (settings and variables you can tweak in the GUI).
 The examples (Ctrl+O, then Examples) show each feature in a short script, in order.
@@ -46,7 +46,7 @@ end
   (it starts black). `return` ends the viewer early.
 - Every viewer `NAME` with variable `VAR` adds three state variables: `.VAR` (the last point picked
   in it, see *Pick point* below), `NAME.center` and `NAME.radius` (the view: `NAME.radius` is the
-  radius of the largest disk around the centre that fits in the view; defaults 0 and 2).
+  radius of the largest disk around the center that fits in the view; defaults 0 and 2).
 - Adding `projective` at the end of a viewer header shows the whole **Riemann sphere**:
   `@viewer sphere z "Riemann sphere" "Ctrl + 3" projective`. The variable is a complex
   number (it can be huge near infinity), or, written `z : P`, a point of the sphere exact at
@@ -56,7 +56,7 @@ end
   `NAME.radius` set the initial view; the current view is the Möbius map `NAME.mobius`.
   The view is **conformal**: the sphere is seen from a point of it (stereographic projection), so
   the picture is the plane through a Möbius map, angles are kept and circles stay circles.
-  `NAME.conformal = false` (also a check box in the config panel) looks from the sphere's centre
+  `NAME.conformal = false` (also a check box in the config panel) looks from the sphere's center
   instead, like a camera inside it (straight lines are great circles; shapes stretch toward the
   edges).
 - Shortcuts are written like `"Ctrl + 1"`, `"Shift + P"`, `"O"`. On macOS, Ctrl means Cmd.
@@ -92,8 +92,8 @@ is then computed again in double-single precision (pairs of floats, about 14 dig
 sharp down to a radius of about `1e-12` times the size of the numbers. While it's off, such a view
 shows a note that turns it on with a click. The coordinates at the bottom of the view say
 "(double precision)" while it's used. Square roots and the four operations get the extra digits; other
-functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what colours need. Tools,
-`@prepare` and `@global` run on the CPU in single precision. A view's centre written as numbers in
+functions (`exp`, `log`, `sin`, ...) stay in single precision, which is what colors need. Tools,
+`@prepare` and `@global` run on the CPU in single precision. A view's center written as numbers in
 `@config` (`mandel.center = -0.743643887037151 + 0.131825904205330i`, as Copy location writes it)
 keeps all its digits, so a script can open at a deep place.
 
@@ -116,7 +116,7 @@ L : List of P = [0, ∞, 1 + i]
 ```
 
 A formula of a point `z` (sums, products, quotients and integer powers of `z` and of numbers) is
-computed with the coordinates of `z`, the common powers of `z` (and of its coordinates) cancelled, so
+computed with the coordinates of `z`, the common powers of `z` (and of its coordinates) canceled, so
 a rational map written as a formula is right everywhere, also where `z` or its value is `∞`. Two
 things lose that:
 
@@ -145,7 +145,7 @@ v[2] = 0             # vectors, lists, and the parts of C (z[1] = re, z[2] = im)
 
 - **Declare, then assign.** `x := ...` (or `x : T = ...`) declares a variable; `x = ...` assigns
   one that is already declared. Assigning a name that isn't declared is an error (with a "did you
-  mean ...?" when it looks like a typo), so a misspelt name can't quietly become a new variable.
+  mean ...?" when it looks like a typo), so a misspelled name can't quietly become a new variable.
 - **A variable declared without a type takes the widest type it is given:** first the type of its
   value, then wider if the script assigns it wider values. With `w := 0` and then
   `w = w^2 + c` (`c` complex), `w` is complex; with `t := 0` and `t = t + 0.1`, `t` is real;
@@ -316,7 +316,7 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 
 - The pixel of the point `P` (a value that is the same for every pixel: globals and constants)
   starts Newton's method from the seed. Every other pixel starts from the solution of a
-  neighbour that is already done, moving `c` from the neighbour's point to its own in small
+  neighbor that is already done, moving `c` from the neighbor's point to its own in small
   steps. The fill grows outward from `P` and goes around pixels where Newton's method fails
   (they pass nothing on); pixels it can't reach at all start from the seed.
 - A solution with several branches (like the critical points in SaddleDrop) is followed
@@ -340,7 +340,7 @@ w := critical t -> log(escape(t, c)) with seed w0 continuing from c = c0
 | complex | `re im arg conj norm abs complex(x, y) cis(t) polar(r, t)` |
 | quaternions | `quat(a, b, c, d)`, `conj`, `abs`, `q[1]` ... `q[4]` |
 | vectors / lists | `dot(u, v)`, `length(v)`, `append(L, x)`, `clear(L)` |
-| colours | `rgb(r, g, b)`, `hsv(h, s, v)` (hue in turns: 0 red, 1/3 green, 2/3 blue), `gray(v)`, `mix(a, b, t)` |
+| colors | `rgb(r, g, b)`, `hsv(h, s, v)` (hue in turns: 0 red, 1/3 green, 2/3 blue), `gray(v)`, `mix(a, b, t)` |
 | palettes | `rainbow(t)`, `palette("name", t)` with the maps `rainbow arenberg romao bamo broco corko viko` (cyclic) and `ice fire wheat rose forest ocean winter spring summer fall` (there and back); all repeat with period 1 in `t` |
 | from the first FractalStream | `cycle(t, a, b)` (b, then a at t = 1/2, back to b), `blend(t, a, b)` (= `mix(b, a, t)`), `dark(c)`, `light(c)`, `invert(c)` |
 | points of the sphere | `complex(p)`, `conj(p)`, `chordal(p, q)`, `p[1]`, `p[2]` |
@@ -349,7 +349,7 @@ A script may define its own version of any of these (a function with the same na
 parameter types or none): its own is used instead. Only `re`, `im`, `complex(x, y)`, `quat`,
 `isnan`, `isinf`, `dot`, `length`, `append` and `clear` can't be replaced.
 
-Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colours `.red .green .blue
+Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colors `.red .green .blue
 .black .white .gray .yellow .cyan .magenta .orange .purple .pink .brown .violet`, quaternion units
 `.j .k`.
 
@@ -411,7 +411,7 @@ draw circle at z with radius 4 px and color .red
   runs on clicks; `.hover = true` also runs the tool when the mouse moves without a button;
   `.keep = true` as above.
 - `button` at the end of the header (`@tool "Clear" "X" "delete" button`) makes an action: clicking
-  its button (or its key) runs it once, at the centre of the view, and it is never selected.
+  its button (or its key) runs it once, at the center of the view, and it is never selected.
 
 ### Events
 
@@ -507,7 +507,7 @@ speed : R = 1 in 0.1..10 "Color speed"                      # a label instead of
 - A one-line function defined in `@config` (`define f(z, c) = z^2 + c`) is a formula you can edit
   in the config panel: the field edits the script itself, which runs again as you type (with Live
   on) or when you press Enter.
-- The views' centre and radius, `.doublePrecision`, `.maxIterations`, `.escapeRadius` and `.epsilon`
+- The views' center and radius, `.doublePrecision`, `.maxIterations`, `.escapeRadius` and `.epsilon`
   are listed at the end unless the script places them itself.
 - A dot marks a value that is no longer the script's (changed in the panel or by a tool); its
   label's tooltip says what the script has, and a click on the dot goes back to it. Values changed this way stay when the script runs

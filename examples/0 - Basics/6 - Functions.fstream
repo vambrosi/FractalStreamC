@@ -1,5 +1,5 @@
 # Functions, in Newton's method for p(z) = z^3 - 1:
-# each point is coloured by the root it goes to.
+# each point is colored by the root it goes to.
 
 @config
 .title = "Functions"

@@ -1,7 +1,7 @@
 # Template: the parameter plane and the dynamical plane
-# of z -> f(z, C), iterated until done(z, C), colouring
+# of z -> f(z, C), iterated until done(z, C), coloring
 # by success or failure, with a Trace tool. f, done, the
-# initial z of the parameter plane and the two colours
+# initial z of the parameter plane and the two colors
 # are formulas of the config panel (the old app asked
 # for them, and for the title, in a setup dialog).
 # Ported from FractalStream

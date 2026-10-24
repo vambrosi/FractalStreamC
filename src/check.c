@@ -281,7 +281,7 @@ static Type *join_numbers(Type *a, Type *b) {
     return type_number_of_rank(FS_MAX(type_number_rank(a), type_number_rank(b)));
 }
 
-/* Type for an untyped declaration initialised with a value of type t: the type of the value (2 is Z, 2.5 is R);
+/* Type for an untyped declaration initialized with a value of type t: the type of the value (2 is Z, 2.5 is R);
    vectors are at least real.  (It may get wider, see TypeHint.) */
 static Type *infer_decl_type(Type *t, Expr *value) {
     (void)value;
@@ -356,7 +356,7 @@ static Sym *add_internal(Checker *c, const char *name, Type *t, SymKind kind, co
 }
 
 static void add_color(Checker *c, const char *name, float r, float g, float b) {
-    Sym *s = add_internal(c, name, t_color, SYM_CONST, "colour constant");
+    Sym *s = add_internal(c, name, t_color, SYM_CONST, "color constant");
     s->readonly = true;
     s->cval[0] = r;
     s->cval[1] = g;
@@ -439,17 +439,17 @@ static void setup_internals(Checker *c) {
         s->picked = picked;
         s->center = new_sym(c, arena_printf(&p->arena, "%s.center", s->name), t_complex, SYM_GLOBAL, s->line, 1);
         s->center->viewer_index = v;
-        s->center->doc = "centre of the view";
+        s->center->doc = "center of the view";
         s->radius = new_sym(c, arena_printf(&p->arena, "%s.radius", s->name), t_real, SYM_GLOBAL, s->line, 1);
         s->radius->viewer_index = v;
-        s->radius->doc = "radius of the largest disk around the centre that fits in the view";
+        s->radius->doc = "radius of the largest disk around the center that fits in the view";
         vec_push(p->globals, s->center);
         vec_push(p->globals, s->radius);
-        if (!s->projective) { /* deep zooms: the centre to twice the precision of a float (the app keeps it) */
+        if (!s->projective) { /* deep zooms: the center to twice the precision of a float (the app keeps it) */
             s->center_lo = new_sym(c, arena_printf(&p->arena, "%s.center lo", s->name), t_complex, SYM_GLOBAL, s->line, 1);
             s->center_lo->viewer_index = v;
             s->center_lo->is_internal = true;
-            s->center_lo->doc = "low part of the centre (deep zooms)";
+            s->center_lo->doc = "low part of the center (deep zooms)";
             vec_push(p->globals, s->center_lo);
         }
         if (s->projective) { /* view of the Riemann sphere: Mobius map (a w + b) / (c w + d) */
@@ -461,7 +461,7 @@ static void setup_internals(Checker *c) {
             s->conformal = new_sym(c, arena_printf(&p->arena, "%s.conformal", s->name), t_bool, SYM_GLOBAL, s->line, 1);
             s->conformal->viewer_index = v;
             s->conformal->doc = "a conformal view (the default): the sphere seen from a point of it (stereographic "
-                                "projection); false: seen from its centre";
+                                "projection); false: seen from its center";
             vec_push(p->globals, s->conformal);
         }
     }
@@ -952,7 +952,7 @@ static void instance_name(Func *f, StrBuf *sb) {
 static Type *chk_call(Checker *c, Expr *e) {
     const char *name = e->name;
     if (name && !strcmp(name, "palette") && e->nargs == 2 && e->args[0]->kind == E_STRING) {
-        /* palette("fire", t): the colour map of that name */
+        /* palette("fire", t): the color map of that name */
         static const char *maps[] = {"rainbow", "arenberg", "romao", "bamo", "broco", "corko", "viko", "ice", "fire",
                                      "wheat", "rose", "forest", "ocean", "winter", "spring", "summer", "fall"};
         const char *m = e->args[0]->name;
@@ -1168,7 +1168,7 @@ static Type *chk(Checker *c, Expr *e) {
             ERR(c, e, "'%s' is not a viewer name", e->base_name);
             break;
         }
-        if (strcmp(e->name, "center") == 0 || strcmp(e->name, "centre") == 0) e->sym = v->center;
+        if (strcmp(e->name, "center") == 0 || strcmp(e->name, "center") == 0) e->sym = v->center;
         else if (strcmp(e->name, "radius") == 0) e->sym = v->radius;
         else if (strcmp(e->name, "conformal") == 0 && v->conformal) e->sym = v->conformal;
         else {

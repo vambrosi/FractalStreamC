@@ -1,6 +1,6 @@
 # ... continuing from c = c0: Newton's method starts
 # from the seed only at the pixel of c0; every other
-# pixel starts from a neighbour's solution, so the
+# pixel starts from a neighbor's solution, so the
 # solution is followed across the picture (it grows
 # from c0). Here the root of t^3 - 3t + c that is 0 at
 # c = 0. The jumps are where the fill came around a
@@ -13,5 +13,6 @@ plane.radius = 4
 @viewer plane c "A root, followed"
 w := root t -> t^3 - 3 t + c with seed 0 ...
      continuing from c = 0
-color = hsv(arg(w) / tau, 0.5, 0.8 + 0.2 cos(12 |w|))
+rings := 0.85 + 0.15 cos(12 |w|)    # level lines of |w|
+color = palette("romao", arg(w) / tau) * rings
 # one continuing solve per view, in flat views

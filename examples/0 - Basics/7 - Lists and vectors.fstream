@@ -1,5 +1,5 @@
 # Lists and vectors. Each c in the Mandelbrot set is
-# coloured by the period of the cycle its orbit settles
+# colored by the period of the cycle its orbit settles
 # on, read from a list of the orbit's last points.
 
 @config
@@ -28,13 +28,13 @@ for q in 1..|L| - 1 do          # item) seen q steps before
         p = q                   # (|L|: the number of items)
     end
 end
-m := 0                          # the cycle's centre:
+m := 0                          # the cycle's center:
 for w in L do                   # for each item of L
     m += w / |L|
 end
 # a vector of 3 reals (the type Color is R^3)
-v : R^3 = [0.5 + 0.5 cos(p), 0.5 + 0.5 cos(p + 2),
-           0.5 + 0.5 cos(p + 4)]
+v : R^3 = [0.55 + 0.3 cos(p), 0.55 + 0.3 cos(p + 2),
+           0.55 + 0.3 cos(p + 4)]
 v[3] = v[3] * (0.6 + 0.4 fract(|m|))   # entries: v[1]...
 # length(v): 3 entries; |v|: Euclidean length; dot(u, v)
 light := dot(v, [0.3, 0.6, 0.1])

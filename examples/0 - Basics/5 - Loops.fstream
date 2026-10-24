@@ -22,12 +22,12 @@ for k in 1..200 do      # k = 1, 2, ..., 200
         break           # out of the loop
     end
 end
-if z escapes and d > 1 then     # and, or, not
-    color = gray(0.08)          # never near the axes
-else if z escapes then
-    color = palette("fire", d / 2)
+if z escapes and d > 2 then     # and, or, not
+    color = gray(0.15)          # never near the axes
+else if z escapes then          # glows near the axes:
+    color = mix(gray(0.15), palette("romao", d), exp(-d))
 else
-    color = palette("ocean", 4 d)
+    color = palette("corko", 3 d)
 end
 
 @viewer henon z "Henon map"
@@ -40,4 +40,4 @@ while x^2 + y^2 < 100 do
     (x, y) = (1 - a x^2 + y, b x)   # both at once
 end
 color = if .stuck then .black ...
-        else palette("ice", .iterations / 25)
+        else palette("broco", .iterations / 30)

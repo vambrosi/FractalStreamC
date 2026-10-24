@@ -284,7 +284,7 @@ static void spv_entry_point(Spv *s, u32 fn, const u32 *iface, int n) {
     wv_inst(&s->exec, SpvOpExecutionMode, em, 2);
 }
 
-/* SPV_KHR_float_controls' SignedZeroInfNanPreserve (32-bit floats) for the entry point fn: IEEE float behaviour,
+/* SPV_KHR_float_controls' SignedZeroInfNanPreserve (32-bit floats) for the entry point fn: IEEE float behavior,
    which drivers that otherwise compile with fast math (MoltenVK "on demand") respect */
 static void spv_float_controls_ieee(Spv *s, u32 fn) {
     u32 cap = 4466; /* Capability SignedZeroInfNanPreserve */

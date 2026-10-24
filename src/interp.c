@@ -44,7 +44,7 @@ typedef struct Interp {
     int quiet; /* > 0 inside prelude functions: their loops don't touch .stuck/.iterations */
     /* continuation (flood.c): how this pixel's `continuing` solve starts, and what it found */
     int flood_mode;                   /* FLOOD_DIRECT, FLOOD_START or FLOOD_CONTINUE */
-    float flood_seed[2], flood_from[2]; /* FLOOD_CONTINUE: the neighbour's solution and its point */
+    float flood_seed[2], flood_from[2]; /* FLOOD_CONTINUE: the neighbor's solution and its point */
     float flood_out[2];
     int flood_out_ok;                 /* -1: the solve did not run, 0 failed, 1 converged */
     char error[256];
@@ -1080,7 +1080,7 @@ void state_set_defaults(Program *p, u32 *state) {
     }
 }
 
-/* Projective viewers (with NAME.conformal = false) look at the unit sphere from its centre: the ray through a pixel hits the sphere at
+/* Projective viewers (with NAME.conformal = false) look at the unit sphere from its center: the ray through a pixel hits the sphere at
  * P = (X, Y, Z) (the view direction is -Z, the field of view is 100 degrees across the smaller side),
  * stereographic projection from the north pole gives w = (X + iY) / (1 - Z), and the view map
  * z = (a w + b) / (c w + d) is kept in NAME.mobius.  Computed in homogeneous coordinates

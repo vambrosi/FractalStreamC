@@ -129,7 +129,7 @@ static Expr *parse_unary(Parser *p);
 
 /* can the current token start a juxtaposed factor (implicit multiplication)? */
 static bool is_draw_modifier(const char *w) {
-    return !strcmp(w, "radius") || !strcmp(w, "color") || !strcmp(w, "colour") || !strcmp(w, "width") ||
+    return !strcmp(w, "radius") || !strcmp(w, "color") || !strcmp(w, "color") || !strcmp(w, "width") ||
            !strcmp(w, "thickness");
 }
 
@@ -741,7 +741,7 @@ static Stmt *parse_draw_body(Parser *p, Token *t) {
             p->no_px = false;
             if (!s->radius) return NULL;
             s->radius_px = accept(p, TK_PX);
-        } else if (strcmp(mn, "color") == 0 || strcmp(mn, "colour") == 0) {
+        } else if (strcmp(mn, "color") == 0 || strcmp(mn, "color") == 0) {
             advance(p);
             s->color = parse_arith(p);
             if (!s->color) return NULL;
