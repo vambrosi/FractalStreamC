@@ -216,7 +216,7 @@ static const char *welcome_script =
     "\n"
     "@global\n"
     ".c = -0.8 + 0.156i\n"
-    "define shade(n : Z) = hsv(n / 40 + 0.6, 0.7, 1)\n"
+    "define shade(n : Z) = palette(\"viko\", n / 40)\n"
     "\n"
     "@viewer mandel c \"Parameter plane\" \"Ctrl + 1\"\n"
     "z := 0\n"
