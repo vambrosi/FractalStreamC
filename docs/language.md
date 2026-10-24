@@ -1,6 +1,6 @@
-# The FractalStream language
+# The FractalStreamC language
 
-A FractalStream script describes interactive pictures of the complex plane. It has
+A FractalStreamC script describes interactive pictures of the complex plane. It has
 **viewers** (code that runs for every pixel and produces a color), **tools** (code that runs
 when you click in a viewer; it can change variables and draw shapes), **globals** (state shared
 by everything) and **config** (settings and variables you can tweak in the GUI).
@@ -354,7 +354,7 @@ Constants: `pi`, `e`, `tau` (can be shadowed by your own variables), colors `.re
 `.j .k`.
 
 Most of these functions are written in the language itself: the reference in the app (F2) ends
-with their definitions, and `fractalstream --builtins` prints them.
+with their definitions, and `fractalstreamc --builtins` prints them.
 
 ## Internals (names starting with a dot)
 

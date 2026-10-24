@@ -1109,9 +1109,9 @@ static bool gfx_create_instance(bool want_validation) {
     free(exts);
 
     VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
-    app.pApplicationName = "FractalStream";
+    app.pApplicationName = "FractalStreamC";
     app.applicationVersion = 1;
-    app.pEngineName = "FractalStream";
+    app.pEngineName = "FractalStreamC";
     app.engineVersion = 1;
     app.apiVersion = VK_API_VERSION_1_0;
     VkDebugUtilsMessengerCreateInfoEXT dci = gfx_debug_messenger_info();

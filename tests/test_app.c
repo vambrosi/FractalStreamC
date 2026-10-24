@@ -320,7 +320,7 @@ TEST(app_folder_listing) {
     char abs[1024];
     CHECK(fs_absolute("examples/../examples", abs, sizeof abs) && abs[0] != 0 && !strstr(abs, ".."));
     /* the examples inside the macOS app are saved elsewhere */
-    CHECK(inside_app_bundle("/Applications/FractalStream.app/Contents/Resources/examples/julia.fstream"));
+    CHECK(inside_app_bundle("/Applications/FractalStreamC.app/Contents/Resources/examples/julia.fstream"));
     CHECK(!inside_app_bundle("examples/julia.fstream"));
 }
 
@@ -528,7 +528,7 @@ TEST(app_reference_parse) {
     }
     CHECK_INT(code, fences / 2);
     CHECK(tables >= 3 && h1 == 1 && h2 >= 8 && bullets >= 20);
-    CHECK(blocks.data[0].kind == RD_H1 && !strcmp(blocks.data[0].text, "The FractalStream language"));
+    CHECK(blocks.data[0].kind == RD_H1 && !strcmp(blocks.data[0].text, "The FractalStreamC language"));
     rd_free_blocks(&blocks);
     free(md);
     /* the bits of Markdown: a paragraph joined over lines, nested bullets, a table, an unclosed code block */

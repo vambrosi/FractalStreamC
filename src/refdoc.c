@@ -167,7 +167,7 @@ static bool rd_load(void) {
     StrBuf sb = {0};
     sb_puts(&sb, "## Definitions of the built-in functions\n\n"
                  "Most built-in functions are written in the language itself, and this is their source "
-                 "(also printed by `fractalstream --builtins`).\n\n```\n");
+                 "(also printed by `fractalstreamc --builtins`).\n\n```\n");
     bool skipped = false;
     for (const char *l = prelude_source; *l;) {
         const char *e = strchr(l, '\n');
@@ -344,7 +344,7 @@ static void refdoc_ui(float W, float H, bool *open) {
     RdRect pr = {(W - pw) / 2, ui_px(20), pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), ui_px(10));
     float pad = ui_px(18), bar = ui_px(48);
-    ui_text(UI_FONT_SANS, pr.x + pad, pr.y + ui_px(14), "The FractalStream language", -1, UI_COL_TEXT);
+    ui_text(UI_FONT_SANS, pr.x + pad, pr.y + ui_px(14), "The FractalStreamC language", -1, UI_COL_TEXT);
     float fw = FS_MIN(ui_px(260), pr.w * 0.4f);
     int r = ui_text_field_ex("##ref_find", pr.x + pr.w - fw - ui_px(52), pr.y + ui_px(9), fw, ui_px(30), rd.query, (int)sizeof rd.query,
                              UI_TF_KEEP_FOCUS, "find in the reference");

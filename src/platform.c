@@ -299,10 +299,10 @@ bool platform_init(int w, int h, const char *title, char *err, int errcap) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE); /* Windows/X11: a "1280 wide" window is 1280 logical pixels */
-    glfwWindowHintString(GLFW_X11_CLASS_NAME, "fractalstream");
-    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "fractalstream");
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "fractalstreamc");
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "fractalstreamc");
     plat.last_error[0] = 0;
-    plat.win = glfwCreateWindow(w, h, title ? title : "FractalStream", NULL, NULL);
+    plat.win = glfwCreateWindow(w, h, title ? title : "FractalStreamC", NULL, NULL);
     if (!plat.win) {
         plat_set_err(err, errcap, "cannot create the window");
         glfwTerminate();

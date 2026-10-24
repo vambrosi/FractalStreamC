@@ -77,7 +77,7 @@ static int gfx_demo_run(int frames, double seconds, bool validation, char *err, 
     gfx_preinit_loader();
     if (!glfwInit()) { snprintf(err, (size_t)errcap, "glfwInit failed (no display?)"); return -2; }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *win = glfwCreateWindow(640, 400, "FractalStream gfx demo", NULL, NULL);
+    GLFWwindow *win = glfwCreateWindow(640, 400, "FractalStreamC gfx demo", NULL, NULL);
     if (!win) { glfwTerminate(); snprintf(err, (size_t)errcap, "glfwCreateWindow failed"); return -2; }
 
     GfxInitDesc desc;

@@ -191,7 +191,7 @@ typedef struct App {
 static App A;
 
 static const char *welcome_script =
-    "# Welcome to FractalStream!\n"
+    "# Welcome to FractalStreamC!\n"
     "#\n"
     "# This is a script: edit it and the pictures follow as\n"
     "# soon as there are no errors. Ctrl+Enter runs it,\n"
@@ -1237,7 +1237,7 @@ static void diags_to_editor(Program *p) {
 static void update_title(void) {
     char t[1200];
     const char *name = A.path[0] ? fs_basename(A.path) : "untitled";
-    snprintf(t, sizeof t, "%s - %s%s", A.prog ? A.prog->title : "FractalStream", name,
+    snprintf(t, sizeof t, "%s - %s%s", A.prog ? A.prog->title : "FractalStreamC", name,
              editor_is_modified(A.ed) ? " *" : "");
     platform_set_title(t);
 }
@@ -1669,15 +1669,15 @@ static const char *config_dir(void) {
 #if FS_OS_WINDOWS
     const char *base = getenv("APPDATA");
     if (!base || !base[0]) return NULL;
-    snprintf(dir, sizeof dir, "%.1000s\\FractalStream", base);
+    snprintf(dir, sizeof dir, "%.1000s\\FractalStreamC", base);
 #elif FS_OS_MACOS
     const char *home = getenv("HOME");
     if (!home || !home[0]) return NULL;
-    snprintf(dir, sizeof dir, "%.1000s/Library/Application Support/FractalStream", home);
+    snprintf(dir, sizeof dir, "%.1000s/Library/Application Support/FractalStreamC", home);
 #else
     const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
-    if (xdg && xdg[0]) snprintf(dir, sizeof dir, "%.1000s/fractalstream", xdg);
-    else if (home && home[0]) snprintf(dir, sizeof dir, "%.1000s/.config/fractalstream", home);
+    if (xdg && xdg[0]) snprintf(dir, sizeof dir, "%.1000s/fractalstreamc", xdg);
+    else if (home && home[0]) snprintf(dir, sizeof dir, "%.1000s/.config/fractalstreamc", home);
     else return NULL;
 #endif
     return dir;
@@ -1894,7 +1894,7 @@ static void default_save_path_named(char *out, int cap, const char *name) {
 
 static void default_save_path(char *out, int cap) { default_save_path_named(out, cap, "untitled.fstream"); }
 
-/* a script inside the app (the examples in FractalStream.app): saved elsewhere, the app must stay as it is */
+/* a script inside the app (the examples in FractalStreamC.app): saved elsewhere, the app must stay as it is */
 static bool inside_app_bundle(const char *path) {
     char abs[1024];
     fs_absolute(path, abs, sizeof abs);
@@ -4383,7 +4383,7 @@ static void unsaved_dialog(float W, float H) {
     char q[400];
     snprintf(q, sizeof q, "Save the changes to %.200s?", A.path[0] ? fs_basename(A.path) : "the new script");
     ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(18), q, -1, UI_COL_TEXT);
-    const char *what = A.pending == PENDING_QUIT ? "Otherwise they are lost when FractalStream closes."
+    const char *what = A.pending == PENDING_QUIT ? "Otherwise they are lost when FractalStreamC closes."
                        : A.pending == PENDING_NEW ? "Otherwise they are lost with the new script."
                                                   : "Otherwise they are lost when the other script opens.";
     ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(48), what, -1, UI_COL_TEXT_DIM);
@@ -5125,7 +5125,7 @@ static void startup_error(const char *fmt, ...) {
         text[k++] = *p == '\n' ? 'n' : *p;
     }
     text[k] = 0;
-    snprintf(script, sizeof script, "display alert \"FractalStream could not start\" message \"%s\" as critical", text);
+    snprintf(script, sizeof script, "display alert \"FractalStreamC could not start\" message \"%s\" as critical", text);
     char *args[] = {"/usr/bin/osascript", "-e", script, NULL};
     pid_t pid;
     if (posix_spawn(&pid, args[0], NULL, NULL, args, environ) == 0) waitpid(pid, NULL, 0);
@@ -5176,7 +5176,7 @@ int app_run(const char *script_path) {
         free(src);
         return 1;
     }
-    if (!platform_init(FS_CLAMP(ww, 320, 8192), FS_CLAMP(wh, 240, 8192), "FractalStream", err, sizeof err)) {
+    if (!platform_init(FS_CLAMP(ww, 320, 8192), FS_CLAMP(wh, 240, 8192), "FractalStreamC", err, sizeof err)) {
         startup_error("%s", err);
         free(src);
         return 1;

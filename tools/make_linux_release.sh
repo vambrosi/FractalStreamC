@@ -1,10 +1,10 @@
 #!/bin/sh
-# make_linux_release.sh - build FractalStream and pack build/FractalStream-linux-<arch>.tar.gz (a release download).
+# make_linux_release.sh - build FractalStreamC and pack build/FractalStreamC-linux-<arch>.tar.gz (a release download).
 #
 #   tools/make_linux_release.sh
 #
-# The archive holds one folder, FractalStream-linux-<arch>/ (arch: x86_64, aarch64):
-#   fractalstream     the program
+# The archive holds one folder, FractalStreamC-linux-<arch>/ (arch: x86_64, aarch64):
+#   fractalstreamc    the program
 #   examples/         the example scripts (the Open dialog's "Examples"; the templates of New)
 #   docs/             the language reference (F2 in the app)
 #   LICENSE           the program's license
@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 [ "$(uname -s)" = Linux ] || { echo "make_linux_release.sh: this packs the Linux build; run it on Linux" >&2; exit 1; }
 
 ARCH=$(uname -m)
-NAME=FractalStream-linux-$ARCH
+NAME=FractalStreamC-linux-$ARCH
 VERSION=$(sed -n 's/^#define FS_VERSION "\(.*\)"/\1/p' src/base.h)
 STAGE=build/release
 
@@ -28,7 +28,7 @@ STAGE=build/release
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$NAME/docs" "$STAGE/$NAME/licenses"
 DIR=$STAGE/$NAME
-cp build/fractalstream "$DIR/fractalstream"
+cp build/fractalstreamc "$DIR/fractalstreamc"
 cp -R examples "$DIR/examples"
 cp docs/*.md "$DIR/docs/"
 cp LICENSE "$DIR/LICENSE"
@@ -40,21 +40,21 @@ find "$DIR" -name '.*' -type f -exec rm -f {} +   # (editor and desktop leftover
 chmod -R u=rwX,go=rX "$DIR"   # (755 for the program and folders, 644 for the rest, whatever the umask)
 
 cat > "$DIR/README.txt" <<EOF
-FractalStream $VERSION for Linux ($ARCH)
+FractalStreamC $VERSION for Linux ($ARCH)
 
 Interactive pictures of the complex plane: write a short script, explore it on the GPU.
 
 Run it from this folder:
 
-    ./fractalstream                            the script editor, with an example to start from
-    ./fractalstream "examples/0 - Basics/0 - Mandelbrot set.fstream"
+    ./fractalstreamc                           the script editor, with an example to start from
+    ./fractalstreamc "examples/0 - Basics/0 - Mandelbrot set.fstream"
                                                open a script
-    ./fractalstream --help                     the command line (checks, renders to PNG files, ...)
+    ./fractalstreamc --help                    the command line (checks, renders to PNG files, ...)
 
 In the app, F1 lists the keys and F2 shows the language reference; Ctrl+O opens a script
 (the examples are a click away), Ctrl+N starts a new one from a template.
 
-FractalStream draws with Vulkan, which needs a Vulkan driver. Most desktops have one. If the
+FractalStreamC draws with Vulkan, which needs a Vulkan driver. Most desktops have one. If the
 program says "no Vulkan library found", install it:
 
     Ubuntu, Debian, Mint:   sudo apt install libvulkan1 mesa-vulkan-drivers
@@ -64,9 +64,9 @@ program says "no Vulkan library found", install it:
 desktops it runs through XWayland, which they include.
 
 The folder can live anywhere; keep examples/ and docs/ next to the program. To start it by
-name from any terminal: ln -s "\$PWD/fractalstream" ~/.local/bin/fractalstream
+name from any terminal: ln -s "\$PWD/fractalstreamc" ~/.local/bin/fractalstreamc
 
-FractalStream is free software (BSD 3-Clause, see LICENSE). Third-party code compiled into the
+FractalStreamC is free software (BSD 3-Clause, see LICENSE). Third-party code compiled into the
 program, and its licenses: licenses/.
 EOF
 if [ -n "$GITHUB_REPOSITORY" ]; then   # (set when GitHub Actions builds the release)

@@ -1,5 +1,5 @@
 /* astdump.c - print checked AST in (roughly) the script syntax, for debugging generated code
- * (FS_DUMP_FUNCS=1 fractalstream --check script prints every generated function). */
+ * (FS_DUMP_FUNCS=1 fractalstreamc --check script prints every generated function). */
 
 static void dump_expr(Expr *e, StrBuf *o);
 

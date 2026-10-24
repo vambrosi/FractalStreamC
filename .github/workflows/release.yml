@@ -1,9 +1,9 @@
 # Release: builds the downloads and publishes them as a GitHub release.
 #
 # Pushing a tag v<version> (the FS_VERSION of src/base.h, e.g. v0.2.0) builds
-#   FractalStream-macos-arm64.zip       Macs with Apple silicon
-#   FractalStream-macos-x86_64.zip      Macs with an Intel processor
-#   FractalStream-linux-x86_64.tar.gz   Linux on 64-bit PCs
+#   FractalStreamC-macos-arm64.zip       Macs with Apple silicon
+#   FractalStreamC-macos-x86_64.zip      Macs with an Intel processor
+#   FractalStreamC-linux-x86_64.tar.gz   Linux on 64-bit PCs
 # and attaches them to the release of that tag (created if needed). Run by hand (Actions > Release > Run workflow),
 # it only builds them: they are under the run's "Artifacts". Steps: docs/building.md, "Making a release".
 name: Release
@@ -35,24 +35,24 @@ jobs:
       - uses: actions/checkout@v6
       - name: Test suite (no Vulkan driver here, so the GPU tests are skipped)
         run: ./build.sh test
-      - name: Pack FractalStream-linux-x86_64.tar.gz
+      - name: Pack FractalStreamC-linux-x86_64.tar.gz
         run: tools/make_linux_release.sh
       - name: Try the download as a user would (Vulkan by lavapipe, Mesa's software driver)
         run: |
           apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
           T=$(mktemp -d)
-          tar -xzf build/FractalStream-linux-x86_64.tar.gz -C "$T"
-          F=$T/FractalStream-linux-x86_64
+          tar -xzf build/FractalStreamC-linux-x86_64.tar.gz -C "$T"
+          F=$T/FractalStreamC-linux-x86_64
           cd "$(mktemp -d)"
-          "$F/fractalstream" --version
-          "$F/fractalstream" --check "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
-          "$F/fractalstream" --render mandelbrot.png --size 256x256 "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
+          "$F/fractalstreamc" --version
+          "$F/fractalstreamc" --check "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
+          "$F/fractalstreamc" --render mandelbrot.png --size 256x256 "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
           test -s mandelbrot.png
-          echo "newest glibc symbol: $(objdump -T "$F/fractalstream" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
+          echo "newest glibc symbol: $(objdump -T "$F/fractalstreamc" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
       - uses: actions/upload-artifact@v7
         with:
-          name: FractalStream-linux-x86_64
-          path: build/FractalStream-linux-x86_64.tar.gz
+          name: FractalStreamC-linux-x86_64
+          path: build/FractalStreamC-linux-x86_64.tar.gz
           if-no-files-found: error
 
   macos:
@@ -69,33 +69,36 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: Build FractalStream.app and FractalStream-macos-${{ matrix.arch }}.zip
+      - name: Build FractalStreamC.app and FractalStreamC-macos-${{ matrix.arch }}.zip
         # MOLTENVK=download: the official MoltenVK release (version and checksum in tools/make_macos_app.sh)
         run: MOLTENVK=download ./build.sh app
       - name: Check the app, unzipped as a user would
         run: |
-          lipo build/FractalStream.app/Contents/MacOS/fractalstream -verify_arch ${{ matrix.arch }}
-          plutil -p build/FractalStream.app/Contents/Info.plist
+          lipo build/FractalStreamC.app/Contents/MacOS/fractalstreamc -verify_arch ${{ matrix.arch }}
+          plutil -p build/FractalStreamC.app/Contents/Info.plist
           T=$(mktemp -d)
-          ditto -x -k build/FractalStream-macos-${{ matrix.arch }}.zip "$T"
-          codesign --verify --deep --strict --verbose=2 "$T/FractalStream.app"
-          A=$T/FractalStream.app/Contents
+          ditto -x -k build/FractalStreamC-macos-${{ matrix.arch }}.zip "$T"
+          codesign --verify --deep --strict --verbose=2 "$T/FractalStreamC.app"
+          A=$T/FractalStreamC.app/Contents
           cd /    # (the working directory of an app opened from the Finder)
-          "$A/MacOS/fractalstream" --version
-          "$A/MacOS/fractalstream" --check "$A/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
+          "$A/MacOS/fractalstreamc" --version
+          "$A/MacOS/fractalstreamc" --check "$A/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
           test -f "$A/Resources/docs/language.md"
       - name: Render with the bundled MoltenVK (for information; CI Macs may have no usable GPU)
         continue-on-error: true
+        env:
+          FS_DEBUG: 1               # the GPUs found and the one used
+          MVK_CONFIG_LOG_LEVEL: 3   # what MoltenVK says about them
         run: |
           T=$(mktemp -d)
-          ditto -x -k build/FractalStream-macos-${{ matrix.arch }}.zip "$T"
+          ditto -x -k build/FractalStreamC-macos-${{ matrix.arch }}.zip "$T"
           cd "$T"
-          FractalStream.app/Contents/MacOS/fractalstream --render mandelbrot.png --size 256x256 \
-            "FractalStream.app/Contents/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
+          FractalStreamC.app/Contents/MacOS/fractalstreamc --render mandelbrot.png --size 256x256 \
+            "FractalStreamC.app/Contents/Resources/examples/0 - Basics/0 - Mandelbrot set.fstream"
       - uses: actions/upload-artifact@v7
         with:
-          name: FractalStream-macos-${{ matrix.arch }}
-          path: build/FractalStream-macos-${{ matrix.arch }}.zip
+          name: FractalStreamC-macos-${{ matrix.arch }}
+          path: build/FractalStreamC-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   release:
@@ -131,20 +134,20 @@ jobs:
 
           | Your computer | File |
           |---|---|
-          | Mac with Apple silicon (M1, M2, M3, ...) | **FractalStream-macos-arm64.zip** |
-          | Mac with an Intel processor | **FractalStream-macos-x86_64.zip** |
-          | Linux (64-bit PC) | **FractalStream-linux-x86_64.tar.gz** |
+          | Mac with Apple silicon (M1, M2, M3, ...) | **FractalStreamC-macos-arm64.zip** |
+          | Mac with an Intel processor | **FractalStreamC-macos-x86_64.zip** |
+          | Linux (64-bit PC) | **FractalStreamC-linux-x86_64.tar.gz** |
 
           Which chip a Mac has: Apple menu > About This Mac.
 
-          **Mac** (macOS 12 or newer): unzip, move FractalStream to Applications, and open it. The first time, macOS
+          **Mac** (macOS 12 or newer): unzip, move FractalStreamC to Applications, and open it. The first time, macOS
           says it could not verify the app (it is not notarized by Apple): on macOS 15 and newer click Done, then
           System Settings > Privacy & Security > Open Anyway; on older versions right-click the app > Open > Open.
           Or install it with one command in Terminal, which avoids the question (it picks the right file for the Mac):
 
-              curl -fL -o /tmp/FractalStream.zip "https://github.com/@REPO@/releases/download/@TAG@/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+              curl -fL -o /tmp/FractalStreamC.zip "https://github.com/@REPO@/releases/download/@TAG@/FractalStreamC-macos-$(uname -m).zip" && rm -rf /Applications/FractalStreamC.app && ditto -x -k /tmp/FractalStreamC.zip /Applications && open /Applications/FractalStreamC.app
 
-          **Linux**: `tar -xzf FractalStream-linux-x86_64.tar.gz`, then run `FractalStream-linux-x86_64/fractalstream`.
+          **Linux**: `tar -xzf FractalStreamC-linux-x86_64.tar.gz`, then run `FractalStreamC-linux-x86_64/fractalstreamc`.
           It needs a Vulkan driver (Ubuntu, Debian: `sudo apt install libvulkan1 mesa-vulkan-drivers`).
 
           More: [Download and run](https://github.com/@REPO@#download-and-run).
@@ -154,5 +157,5 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --title "FractalStream $TAG" --notes-file notes.md $PRERELEASE
+            gh release create "$TAG" dist/* --title "FractalStreamC $TAG" --notes-file notes.md $PRERELEASE
           fi

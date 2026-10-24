@@ -1,4 +1,4 @@
-/* ast.h - data structures of the FractalStream language front-end:
+/* ast.h - data structures of the FractalStreamC language front-end:
  * tokens, types, AST, symbols, functions, sections, programs, diagnostics.
  *
  * Pipeline: lex.c (text -> tokens), parse.c (tokens -> AST), check.c (name

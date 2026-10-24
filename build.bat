@@ -1,9 +1,9 @@
 @echo off
-rem build.bat - FractalStream build for Windows with MSVC (cl.exe).
+rem build.bat - FractalStreamC build for Windows with MSVC (cl.exe).
 rem Run it from a "x64 Native Tools Command Prompt for VS" (Visual Studio 2019 16.8 or newer).
 rem
-rem   build.bat              optimized build          -> build\fractalstream.exe
-rem   build.bat debug        debug build              -> build\fractalstream_debug.exe
+rem   build.bat              optimized build          -> build\fractalstreamc.exe
+rem   build.bat debug        debug build              -> build\fractalstreamc_debug.exe
 rem   build.bat test [filt]  build and run the tests  -> build\tests.exe
 rem
 rem GLFW is compiled once into build\glfw\*.obj; delete that folder to recompile it.
@@ -35,8 +35,8 @@ set CFLAGS=/nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS
 set LIBS=gdi32.lib user32.lib shell32.lib
 set MAIN=src\main.c
 set EXE=
-if /i "%MODE%"=="release" set FLAGS=/O2& set EXE=fractalstream.exe
-if /i "%MODE%"=="debug" set FLAGS=/Od /Zi /RTC1& set EXE=fractalstream_debug.exe
+if /i "%MODE%"=="release" set FLAGS=/O2& set EXE=fractalstreamc.exe
+if /i "%MODE%"=="debug" set FLAGS=/Od /Zi /RTC1& set EXE=fractalstreamc_debug.exe
 if /i "%MODE%"=="test" set FLAGS=/O1 /Zi& set EXE=tests.exe& set MAIN=tests\test_main.c
 if "%EXE%"=="" (
   echo build.bat: unknown mode "%MODE%" ^(use release, debug or test^)

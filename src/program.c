@@ -150,7 +150,7 @@ static Program *program_load_round(const char *source, const char *path, const T
     Program *p = (Program *)xcalloc(1, sizeof(Program));
     p->path = path ? arena_strndup(&p->arena, path, strlen(path)) : "script";
     p->source = arena_strndup(&p->arena, source, strlen(source));
-    p->title = "FractalStream";
+    p->title = "FractalStreamC";
     p->final_round = final;
     if (nhints) {
         p->hints = (TypeHint *)xmalloc(sizeof(TypeHint) * (size_t)nhints);

@@ -1,6 +1,6 @@
-# Building FractalStream
+# Building FractalStreamC
 
-FractalStream is a single C11 program (a "unity build": `src/main.c` includes every
+FractalStreamC is a single C11 program (a "unity build": `src/main.c` includes every
 module through `src/all.c`). Its only dependencies are vendored in `third_party/`
 (GLFW, the Vulkan headers, stb, fonts). Vulkan itself is loaded at run time, so
 nothing links against a Vulkan library: the program needs a Vulkan *driver* to run,
@@ -8,35 +8,35 @@ but no Vulkan SDK to build.
 
 | platform | compiler | command | output |
 |---|---|---|---|
-| Linux | gcc or clang | `./build.sh` | `build/fractalstream` |
-| Linux (download) | gcc or clang | `tools/make_linux_release.sh` | `build/FractalStream-linux-x86_64.tar.gz` |
-| macOS | Xcode command line tools | `./build.sh app` | `build/FractalStream.app`, `build/FractalStream-macos-arm64.zip` |
-| Windows | Visual Studio (MSVC) | `build.bat` | `build\fractalstream.exe` |
-| Windows | MSYS2 (MinGW gcc) | `./build.sh` | `build/fractalstream.exe` |
-| Linux -> Windows | MinGW cross compiler | `./build.sh windows` | `build/win/fractalstream.exe` |
+| Linux | gcc or clang | `./build.sh` | `build/fractalstreamc` |
+| Linux (download) | gcc or clang | `tools/make_linux_release.sh` | `build/FractalStreamC-linux-x86_64.tar.gz` |
+| macOS | Xcode command line tools | `./build.sh app` | `build/FractalStreamC.app`, `build/FractalStreamC-macos-arm64.zip` |
+| Windows | Visual Studio (MSVC) | `build.bat` | `build\fractalstreamc.exe` |
+| Windows | MSYS2 (MinGW gcc) | `./build.sh` | `build/fractalstreamc.exe` |
+| Linux -> Windows | MinGW cross compiler | `./build.sh windows` | `build/win/fractalstreamc.exe` |
 
-Other `build.sh` modes: `debug` (sanitizers, `build/fractalstream_debug`) and
+Other `build.sh` modes: `debug` (sanitizers, `build/fractalstreamc_debug`) and
 `test [filter]` (builds and runs the test suite, `build/tests`).
 `build.bat` has `debug` and `test [filter]` too.
 
 ## Downloads (nothing to build)
 
 The [releases](https://github.com/vambrosi/FractalStreamC/releases/latest) have ready-made downloads (made as described
-in "Making a release" below); the README's "Download and run" has the details.
+in "Making a release" below); the README's "Download" has the details.
 
-- **Mac** (macOS 12 or newer): `FractalStream-macos-arm64.zip` for Apple silicon (M1, M2, ...),
-  `FractalStream-macos-x86_64.zip` for Intel processors (Apple menu > About This Mac says which).
-  Unzip it, move FractalStream to Applications and open it. The app is signed, but not notarized by
+- **Mac** (macOS 12 or newer): `FractalStreamC-macos-arm64.zip` for Apple silicon (M1, M2, ...),
+  `FractalStreamC-macos-x86_64.zip` for Intel processors (Apple menu > About This Mac says which).
+  Unzip it, move FractalStreamC to Applications and open it. The app is signed, but not notarized by
   Apple, so the first time macOS says it could not verify it: on macOS 15 and newer click Done, then
   System Settings > Privacy & Security > Open Anyway (and once more Open Anyway, and your password); on
   older versions right-click the app > Open > Open. Or install it from Terminal, which avoids the
   question, as files downloaded by `curl` are not marked as coming from the internet (`uname -m` picks
   the file for the Mac; no developer tools needed):
 
-      curl -fL -o /tmp/FractalStream.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStream-macos-$(uname -m).zip" && rm -rf /Applications/FractalStream.app && ditto -x -k /tmp/FractalStream.zip /Applications && open /Applications/FractalStream.app
+      curl -fL -o /tmp/FractalStreamC.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStreamC-macos-$(uname -m).zip" && rm -rf /Applications/FractalStreamC.app && ditto -x -k /tmp/FractalStreamC.zip /Applications && open /Applications/FractalStreamC.app
 
 - **Linux** (x86_64, glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later):
-  `tar -xzf FractalStream-linux-x86_64.tar.gz`, then run `FractalStream-linux-x86_64/fractalstream`.
+  `tar -xzf FractalStreamC-linux-x86_64.tar.gz`, then run `FractalStreamC-linux-x86_64/fractalstreamc`.
   It needs a Vulkan driver (see Linux below: `sudo apt install libvulkan1 mesa-vulkan-drivers`).
 
 ## Linux
@@ -54,14 +54,14 @@ GLFW is built for X11 only; on Wayland desktops the program runs through XWaylan
 
 Then:
 
-    ./build.sh            # build/fractalstream
+    ./build.sh            # build/fractalstreamc
     ./build.sh test       # run all tests
 
 The download, a folder that runs wherever it is unpacked:
 
-    tools/make_linux_release.sh   # build/FractalStream-linux-x86_64.tar.gz
+    tools/make_linux_release.sh   # build/FractalStreamC-linux-x86_64.tar.gz
 
-It builds the program and packs `FractalStream-linux-<arch>/` with `fractalstream`, `examples/`,
+It builds the program and packs `FractalStreamC-linux-<arch>/` with `fractalstreamc`, `examples/`,
 `docs/`, `licenses/` and a `README.txt`. The program finds `examples/` and `docs/` next to itself (its
 own location, not the working directory). It runs on systems with the glibc it was built with or a
 newer one, so releases are built on an old distribution (Ubuntu 22.04, glibc 2.35, in the release
@@ -72,17 +72,17 @@ workflow). Vulkan and the X11 libraries are loaded when it starts, so it links a
 Requirements: the Xcode command line tools (`xcode-select --install`). That is all `./build.sh app`
 needs: it takes MoltenVK, the Vulkan implementation on top of Metal, from the Vulkan SDK or Homebrew if
 either is installed, and otherwise downloads the official MoltenVK release. The plain program
-(`./build.sh`, `build/fractalstream`) loads an installed MoltenVK at run time: `brew install molten-vk`,
+(`./build.sh`, `build/fractalstreamc`) loads an installed MoltenVK at run time: `brew install molten-vk`,
 or the LunarG Vulkan SDK.
 
-    ./build.sh app        # build/FractalStream.app and build/FractalStream-macos-<arch>.zip
-    open build/FractalStream.app
-    ./build.sh            # build/fractalstream (MoltenVK from Homebrew or the SDK at run time)
+    ./build.sh app        # build/FractalStreamC.app and build/FractalStreamC-macos-<arch>.zip
+    open build/FractalStreamC.app
+    ./build.sh            # build/fractalstreamc (MoltenVK from Homebrew or the SDK at run time)
     ./build.sh test       # the tests (the GPU ones use MoltenVK too)
 
 `./build.sh app` runs `tools/make_macos_app.sh`, which makes a self-contained app:
 
-- `Contents/MacOS/fractalstream`, `Contents/Frameworks/libMoltenVK.dylib`, and in
+- `Contents/MacOS/fractalstreamc`, `Contents/Frameworks/libMoltenVK.dylib`, and in
   `Contents/Resources/` the `examples/`, `docs/` and `licenses/` folders. The program finds them from
   its own location: opened from the Finder, its working directory is `/`.
 - MoltenVK comes from `$MOLTENVK` (the dylib, or a folder containing it), else the LunarG Vulkan SDK
@@ -90,14 +90,16 @@ or the LunarG Vulkan SDK.
   else the official release pinned in the script (version and SHA-256), downloaded into `build/`.
   `MOLTENVK=download` takes that release directly (the release workflow does). The dylib must contain
   the program's processor architecture and use nothing but macOS's own libraries; both are checked.
-- `Info.plist`: bundle id `org.fractalstream.FractalStream`, Retina (`NSHighResolutionCapable`), and
+- `Info.plist`: bundle id `io.github.vambrosi.FractalStreamC`, Retina (`NSHighResolutionCapable`), and
   `LSMinimumSystemVersion` the newest of the minimums of the program (`MACOSX_DEPLOYMENT_TARGET`,
-  11.0 unless set; `build.sh` sets it on macOS) and of MoltenVK (12.0 for MoltenVK 1.4).
+  11.0 unless set; `build.sh` sets it on macOS) and of MoltenVK (12.0 for MoltenVK 1.4). The names
+  differ from the Haskell FractalStream's (`FractalStream.app`, `org.haskell.FractalStream`), so both
+  can be installed.
 - The app is signed ad hoc (`codesign --force --deep --sign -`), which Apple silicon requires, but not
   notarized (that needs a paid Apple developer account). It opens without questions on the Mac that
   built it; on others see "Downloads" above.
 - The zip is made with `ditto -c -k --keepParent`, which keeps the bundle (and its signature) intact.
-  Its name says the processor: `FractalStream-macos-arm64.zip` or `FractalStream-macos-x86_64.zip`.
+  Its name says the processor: `FractalStreamC-macos-arm64.zip` or `FractalStreamC-macos-x86_64.zip`.
 
 Where the program looks for Vulkan on macOS, in order: `libMoltenVK.dylib` next to the
 executable, `../Frameworks/libMoltenVK.dylib` and `../Frameworks/libvulkan.1.dylib`
@@ -114,7 +116,7 @@ drivers are all that is needed to run.
 **Visual Studio** (2019 16.8 or newer, for C11): open a "x64 Native Tools Command Prompt
 for VS", then
 
-    build.bat             :: build\fractalstream.exe
+    build.bat             :: build\fractalstreamc.exe
     build.bat test        :: run the tests
 
 **MSYS2**: in the "UCRT64" shell, `pacman -S mingw-w64-ucrt-x86_64-gcc`, then `./build.sh`.
@@ -166,7 +168,7 @@ a shader, regenerate the arrays with
 
     tools/gen_shaders.sh     # needs glslangValidator and spirv-val (apt: glslang-tools spirv-tools)
 
-The shaders written by users are compiled to SPIR-V by FractalStream itself.
+The shaders written by users are compiled to SPIR-V by FractalStreamC itself.
 
 ## Making a release
 
@@ -187,7 +189,7 @@ A release is the set of downloads above, published on GitHub by the workflow
 
 To build the downloads without publishing anything: Actions > Release > Run workflow; the files are
 then under that run's Artifacts. The file names don't change between releases, so links ending in
-`releases/latest/download/<file>` (README, "Download and run") always give the newest.
+`releases/latest/download/<file>` (as in the README) always give the newest.
 
 Notes for later:
 

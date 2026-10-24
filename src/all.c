@@ -1,4 +1,4 @@
-/* all.c - the unity build: every module of FractalStream, in dependency order.
+/* all.c - the unity build: every module of FractalStreamC, in dependency order.
  * src/main.c and tests/test_main.c include this file. */
 #include "base.c"
 

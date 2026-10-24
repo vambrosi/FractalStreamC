@@ -1142,7 +1142,7 @@ TEST(platform_clipboard_headless) {
 TEST(platform_window) {
     static char err[256]; /* SKIP keeps a pointer to the reason */
     err[0] = 0;
-    if (!platform_init(640, 400, "FractalStream test", err, sizeof err)) {
+    if (!platform_init(640, 400, "FractalStreamC test", err, sizeof err)) {
         platform_shutdown();
         SKIP(err[0] ? err : "no display");
     }
@@ -1177,7 +1177,7 @@ TEST(platform_window_click) {
 #ifdef FS_OS_LINUX
     static char err[256];
     err[0] = 0;
-    if (!platform_init(300, 200, "FractalStream click test", err, sizeof err)) {
+    if (!platform_init(300, 200, "FractalStreamC click test", err, sizeof err)) {
         platform_shutdown();
         SKIP(err[0] ? err : "no display");
     }

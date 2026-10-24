@@ -1,26 +1,26 @@
 /* cli.c - command line interface. */
 
 static const char *cli_usage =
-    "FractalStream " FS_VERSION " - interactive plots of the complex plane\n"
+    "FractalStreamC " FS_VERSION " - interactive plots of the complex plane\n"
     "\n"
     "usage:\n"
-    "  fractalstream                       open the editor with an example script\n"
-    "  fractalstream SCRIPT                open SCRIPT\n"
-    "  fractalstream --check SCRIPT        check SCRIPT for errors (exit code 1 if any)\n"
-    "  fractalstream --spirv DIR SCRIPT    write the SPIR-V of every viewer to DIR/<viewer>.spv\n"
-    "  fractalstream --state SCRIPT        print the initial value of every global\n"
-    "  fractalstream --render OUT.png [options] SCRIPT\n"
+    "  fractalstreamc                      open the editor with an example script\n"
+    "  fractalstreamc SCRIPT               open SCRIPT\n"
+    "  fractalstreamc --check SCRIPT       check SCRIPT for errors (exit code 1 if any)\n"
+    "  fractalstreamc --spirv DIR SCRIPT   write the SPIR-V of every viewer to DIR/<viewer>.spv\n"
+    "  fractalstreamc --state SCRIPT       print the initial value of every global\n"
+    "  fractalstreamc --render OUT.png [options] SCRIPT\n"
     "                                      render a viewer to a PNG without opening a window\n"
     "      --viewer NAME    viewer to render (default: the first one)\n"
     "      --size WxH       image size in pixels (default 512x512)\n"
     "      --cpu            use the CPU interpreter instead of the GPU (slow, for testing)\n"
     "      --set NAME=VALUE set a global first, e.g. --set c=-0.8+0.156i or --set plane.radius=0.5\n"
     "                       (--set .doublePrecision=true: deep zooms in double precision)\n"
-    "  fractalstream --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
+    "  fractalstreamc --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
     "                                      run a tool once at a point (a click, or one event of a tool with\n"
     "                                      'on' blocks); print what it prints, its draw calls and the globals\n"
-    "  fractalstream --builtins            print how the built-in functions are defined\n"
-    "  fractalstream --version | --help\n";
+    "  fractalstreamc --builtins           print how the built-in functions are defined\n"
+    "  fractalstreamc --version | --help\n";
 
 static int cli_load(const char *path, Program **out) {
     size_t len;
@@ -246,7 +246,7 @@ int cli_main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { printf("%s", cli_usage); return 0; }
-        if (!strcmp(a, "--version")) { printf("FractalStream %s\n", FS_VERSION); return 0; }
+        if (!strcmp(a, "--version")) { printf("FractalStreamC %s\n", FS_VERSION); return 0; }
         if (!strcmp(a, "--builtins")) { printf("%s", prelude_source); return 0; }
         if (!strcmp(a, "--check") || !strcmp(a, "--state")) { mode = a; continue; }
         if ((!strcmp(a, "--spirv") || !strcmp(a, "--render")) && i + 1 < argc) { mode = a; arg = argv[++i]; continue; }

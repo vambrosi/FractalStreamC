@@ -1,17 +1,17 @@
 #!/bin/sh
-# make_macos_app.sh - build/FractalStream.app and its download, build/FractalStream-macos-<arch>.zip
+# make_macos_app.sh - build/FractalStreamC.app and its download, build/FractalStreamC-macos-<arch>.zip
 # (run by `./build.sh app` on a Mac, after it builds the program).
 #
-#   tools/make_macos_app.sh <path to the fractalstream binary>
+#   tools/make_macos_app.sh <path to the fractalstreamc binary>
 #
 # Bundle layout:
-#   FractalStream.app/Contents/Info.plist
-#   FractalStream.app/Contents/MacOS/fractalstream            the program
-#   FractalStream.app/Contents/Frameworks/libMoltenVK.dylib   Vulkan on Metal; src/gfx.c loads it from ../Frameworks
-#                                                            (next to the program) before any other Vulkan library
-#   FractalStream.app/Contents/Resources/examples/            the examples (the Open dialog's "Examples")
-#   FractalStream.app/Contents/Resources/docs/                the language reference (F2)
-#   FractalStream.app/Contents/Resources/licenses/            the program's license, MoltenVK's and the code compiled in
+#   FractalStreamC.app/Contents/Info.plist
+#   FractalStreamC.app/Contents/MacOS/fractalstreamc           the program
+#   FractalStreamC.app/Contents/Frameworks/libMoltenVK.dylib   Vulkan on Metal; src/gfx.c loads it from ../Frameworks
+#                                                              (next to the program) before any other Vulkan library
+#   FractalStreamC.app/Contents/Resources/examples/            the examples (the Open dialog's "Examples")
+#   FractalStreamC.app/Contents/Resources/docs/                the language reference (F2)
+#   FractalStreamC.app/Contents/Resources/licenses/            the program's license, MoltenVK's and the code compiled in
 # The program finds all of it relative to its own file (fs_exe_dir), never to the working directory, which is /
 # when the app is opened from the Finder.
 #
@@ -32,7 +32,7 @@ MOLTENVK_SHA256=f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
 
 die() { echo "make_macos_app.sh: $*" >&2; exit 1; }
 
-BIN=${1:?usage: tools/make_macos_app.sh <fractalstream binary>}
+BIN=${1:?usage: tools/make_macos_app.sh <fractalstreamc binary>}
 [ -f "$BIN" ] || die "$BIN not found"
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")   # (absolute, before the cd)
 cd "$(dirname "$0")/.."
@@ -129,7 +129,7 @@ MINOS=$(printf '%s\n%s\n' "${MIN_BIN:-${MACOSX_DEPLOYMENT_TARGET:-11.0}}" "$MIN_
 
 VERSION=$(sed -n 's/^#define FS_VERSION "\(.*\)"/\1/p' src/base.h)
 EXE=$(basename "$BIN")
-APP=build/FractalStream.app
+APP=build/FractalStreamC.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/docs" \
          "$APP/Contents/Resources/licenses"
@@ -138,7 +138,7 @@ cp -L "$DYLIB" "$APP/Contents/Frameworks/libMoltenVK.dylib"
 cp -R examples "$APP/Contents/Resources/examples"
 cp docs/*.md "$APP/Contents/Resources/docs/"
 R=$APP/Contents/Resources/licenses
-cp LICENSE "$R/FractalStream.txt"
+cp LICENSE "$R/FractalStreamC.txt"
 cp third_party/moltenvk/LICENSE "$R/MoltenVK.txt"
 cp third_party/glfw/LICENSE.md "$R/GLFW.md"
 cp third_party/vulkan/LICENSE.md "$R/Vulkan-Headers.md"
@@ -154,11 +154,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>FractalStream</string>
+  <key>CFBundleDisplayName</key><string>FractalStreamC</string>
   <key>CFBundleExecutable</key><string>$EXE</string>
-  <key>CFBundleIdentifier</key><string>org.fractalstream.FractalStream</string>
+  <key>CFBundleIdentifier</key><string>io.github.vambrosi.FractalStreamC</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>FractalStream</string>
+  <key>CFBundleName</key><string>FractalStreamC</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
@@ -166,15 +166,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>$MINOS</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-  <key>NSDesktopFolderUsageDescription</key><string>FractalStream opens and saves scripts and pictures where you ask it to.</string>
-  <key>NSDocumentsFolderUsageDescription</key><string>FractalStream opens and saves scripts and pictures where you ask it to.</string>
-  <key>NSDownloadsFolderUsageDescription</key><string>FractalStream opens and saves scripts and pictures where you ask it to.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>FractalStreamC opens and saves scripts and pictures where you ask it to.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>FractalStreamC opens and saves scripts and pictures where you ask it to.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>FractalStreamC opens and saves scripts and pictures where you ask it to.</string>
 </dict>
 </plist>
 PLIST
 if command -v plutil >/dev/null 2>&1; then plutil -lint "$APP/Contents/Info.plist"; fi
 
-# Sign last: any change to the bundle afterwards breaks the signature ("FractalStream is damaged").
+# Sign last: any change to the bundle afterwards breaks the signature ("FractalStreamC is damaged").
 xattr -cr "$APP" 2>/dev/null || true   # (extended attributes of copied files, e.g. quarantine, upset codesign)
 codesign --force --sign - "$APP/Contents/Frameworks/libMoltenVK.dylib"
 codesign --force --deep --sign - "$APP"
@@ -185,8 +185,8 @@ case "$BIN_ARCHS" in
   *" "*) ARCH=universal ;;
   *)     ARCH=$BIN_ARCHS ;;
 esac
-ZIP=build/FractalStream-macos-$ARCH.zip
+ZIP=build/FractalStreamC-macos-$ARCH.zip
 rm -f "$ZIP"
 ditto -c -k --norsrc --keepParent "$APP" "$ZIP"   # (ditto keeps the bundle as it is; signature included)
-echo "built $APP: FractalStream $VERSION for $ARCH, macOS $MINOS or newer"
+echo "built $APP: FractalStreamC $VERSION for $ARCH, macOS $MINOS or newer"
 echo "zipped $ZIP"
