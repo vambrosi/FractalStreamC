@@ -3,7 +3,9 @@
 #
 # This is the algorithm of the program SaddleDrop (K.
 # Papadantonakis, with J. H. Hubbard, J. Smillie and E.
-# Bedford, Cornell 2000):
+# Bedford, Cornell 2000), as Sarah C. Koch explains it in
+# "SaddleDrop: a tool for studying dynamics in C^2"
+# (Ramanujan Math. Society Lecture Notes Series 10, 2010):
 #   - p is a saddle fixed point of H and lam its
 #     expanding eigenvalue;
 #   - gamma(w) = lim H^n(p + (w / lam^n) (lam, 1))

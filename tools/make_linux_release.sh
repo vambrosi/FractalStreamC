@@ -7,6 +7,7 @@
 #   fractalstream     the program
 #   examples/         the example scripts (the Open dialog's "Examples"; the templates of New)
 #   docs/             the language reference (F2 in the app)
+#   LICENSE           the program's license
 #   licenses/         licenses of the third-party code compiled into the program
 #   README.txt        how to run it
 # The program finds examples/ and docs/ next to itself, wherever the folder is moved.
@@ -30,6 +31,7 @@ DIR=$STAGE/$NAME
 cp build/fractalstream "$DIR/fractalstream"
 cp -R examples "$DIR/examples"
 cp docs/*.md "$DIR/docs/"
+cp LICENSE "$DIR/LICENSE"
 cp third_party/glfw/LICENSE.md "$DIR/licenses/GLFW.md"
 cp third_party/vulkan/LICENSE.md "$DIR/licenses/Vulkan-Headers.md"
 cp third_party/fonts/LICENSE-DejaVu.txt "$DIR/licenses/DejaVu-fonts.txt"
@@ -63,7 +65,8 @@ desktops it runs through XWayland, which they include.
 The folder can live anywhere; keep examples/ and docs/ next to the program. To start it by
 name from any terminal: ln -s "\$PWD/fractalstream" ~/.local/bin/fractalstream
 
-Third-party code compiled into the program, and its licenses: licenses/.
+FractalStream is free software (BSD 3-Clause, see LICENSE). Third-party code compiled into the
+program, and its licenses: licenses/.
 EOF
 if [ -n "$GITHUB_REPOSITORY" ]; then   # (set when GitHub Actions builds the release)
   printf '\nNewer versions, the source code and the documentation: %s/%s\n' \

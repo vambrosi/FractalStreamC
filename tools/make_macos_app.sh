@@ -11,7 +11,7 @@
 #                                                            (next to the program) before any other Vulkan library
 #   FractalStream.app/Contents/Resources/examples/            the examples (the Open dialog's "Examples")
 #   FractalStream.app/Contents/Resources/docs/                the language reference (F2)
-#   FractalStream.app/Contents/Resources/licenses/            licenses of MoltenVK and of the code compiled in
+#   FractalStream.app/Contents/Resources/licenses/            the program's license, MoltenVK's and the code compiled in
 # The program finds all of it relative to its own file (fs_exe_dir), never to the working directory, which is /
 # when the app is opened from the Finder.
 #
@@ -138,6 +138,7 @@ cp -L "$DYLIB" "$APP/Contents/Frameworks/libMoltenVK.dylib"
 cp -R examples "$APP/Contents/Resources/examples"
 cp docs/*.md "$APP/Contents/Resources/docs/"
 R=$APP/Contents/Resources/licenses
+cp LICENSE "$R/FractalStream.txt"
 cp third_party/moltenvk/LICENSE "$R/MoltenVK.txt"
 cp third_party/glfw/LICENSE.md "$R/GLFW.md"
 cp third_party/vulkan/LICENSE.md "$R/Vulkan-Headers.md"
