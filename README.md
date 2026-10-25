@@ -1,11 +1,19 @@
 # FractalStreamC
 
-Interactive pictures of the complex plane, for mathematicians: a new version of Matthew Noonan's
-[FractalStream](https://github.com/matt-noonan/FractalStream). Write a short script and explore it
-on the GPU: zoom, pan, pick points, and use tools that draw orbits or change parameters as you go.
+This is just a version of [FractalStream](https://github.com/matt-noonan/FractalStream) as a
+compiler to SPIR-V (GPU intermediate representation). It is heavily based on Matthew Noonan's
+original design and code, with a few UI and language differences (tools are part of the script,
+there is projective space and animations support, among others).
+
+Check "getting started" for how to explore the app and all its features.
+
+The workflow is essentially: you write a short script, like the one below, and you explore it
+by zooming, panning, picking points, and using tools that draw orbits or change parameters as
+you go.
 
 ```
-# the whole file is one view; z is the pixel's point
+# By default, the whole file describes what to plot on a z-plane
+# The instructions below will be repeated for every pixel in the screen
 w := 0
 while w not escapes do
     w = w^2 + z
@@ -48,7 +56,7 @@ details and how releases are made: [docs/building.md](docs/building.md).
 
 ## Credits and license
 
-FractalStream, the program and its name, is Matthew Noonan's: FractalStreamC is heavily based on his
-[FractalStream](https://github.com/matt-noonan/FractalStream), and its templates are ports of his
-scripts. BSD 3-Clause, copyright Matthew Noonan and Vinicius Ambrosi ([LICENSE](LICENSE)); the code
-in `third_party/` keeps its own licenses.
+As I mentioned above, FractalStream, the program, its name, and its design are all Matthew Noonan's
+[FractalStream](https://github.com/matt-noonan/FractalStream). The templates in the examples folder
+are ports of his scripts. The code here is under BSD 3-Clause, copyright Matthew Noonan and Vinicius
+Ambrosi ([LICENSE](LICENSE)); the code in `third_party/` keeps its own licenses.
