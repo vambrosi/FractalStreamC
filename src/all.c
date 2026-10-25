@@ -31,6 +31,7 @@
 /* graphics, platform, UI */
 #include "gfx.c"
 #include "flood.c"
+#include "video.c"
 #include "platform.c"
 #include "ui.c"
 #include "editor.c"

@@ -1173,7 +1173,7 @@ static Type *chk(Checker *c, Expr *e) {
             ERR(c, e, "'%s' is not a viewer name", e->base_name);
             break;
         }
-        if (strcmp(e->name, "center") == 0 || strcmp(e->name, "center") == 0) e->sym = v->center;
+        if (strcmp(e->name, "center") == 0) e->sym = v->center;
         else if (strcmp(e->name, "radius") == 0) e->sym = v->radius;
         else if (strcmp(e->name, "conformal") == 0 && v->conformal) e->sym = v->conformal;
         else {

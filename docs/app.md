@@ -10,7 +10,8 @@ Cmd instead of Ctrl on a Mac. F1 lists every key.
   view, with its tools below. Click a number to show that view; drag it onto the pictures to place
   it: the middle replaces a view, the sides split it, the corners float it.
 - **Right bar.** The config (Ctrl+T), the Info pane, and what you can do with the view you clicked
-  last: back and forward, reset, copy and paste its location, axes and grid, save its picture, hide it.
+  last: back and forward, reset, copy and paste its location, axes and grid, save its picture or a
+  video of it, hide it.
 - **Panes** float over the views. The layers button at the bottom of the right bar puts them beside
   the views instead. Drag a pane's edge to resize it.
 - **Editor.** Ctrl+F finds, Ctrl+Alt+F replaces, Tab completes a name. Resting the mouse on a name
@@ -21,6 +22,12 @@ Cmd instead of Ctrl on a Mac. F1 lists every key.
 - **Antialiasing.** Once a view rests, it is drawn again a few times with the samples moved inside
   the pixels, and averaged: fine detail gets smooth. `.antialiasing` sets how many samples (default
   8; 1: off).
+- **Changing views** (dragged, zoomed, animated) are drawn whole in every frame, with fewer pixels
+  when the GPU can't keep up, and sharp again once they rest.
+- **Videos.** The film button saves a video of the view (MP4): from time 0, as long as the dialog
+  says, each frame antialiased. Views that use `.time`, or that `@prepare` moves with it, change from
+  frame to frame. Without a window: `fractalstreamc --video zoom.mp4 --seconds 20 SCRIPT` (also
+  `--from`, `--fps`, `--size`, `--viewer`, `--samples`, `--set`; see `--help`).
 - **Deep zooms** (radius below about 1e-4) get blocky: turn on `.doublePrecision` (in the note on the
   view, or in the config) for double-single precision, sharp to about 1e-12. It is slower.
 - **Config.** Values changed in the config pane, or by tools, get a dot and survive running the script

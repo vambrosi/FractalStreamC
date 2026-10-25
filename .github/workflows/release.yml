@@ -48,6 +48,9 @@ jobs:
           "$F/fractalstreamc" --check "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
           "$F/fractalstreamc" --render mandelbrot.png --size 256x256 "$F/examples/0 - Basics/0 - Mandelbrot set.fstream"
           test -s mandelbrot.png
+          "$F/fractalstreamc" --video zoom.mp4 --seconds 1 --fps 10 --size 160x90 --samples 1 \
+            "$F/examples/4 - More/4 - Moving views.fstream"
+          test -s zoom.mp4
           echo "newest glibc symbol: $(objdump -T "$F/fractalstreamc" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
       - uses: actions/upload-artifact@v7
         with:
@@ -72,6 +75,8 @@ jobs:
       - name: Build FractalStreamC.app and FractalStreamC-macos-${{ matrix.arch }}.zip
         # MOLTENVK=download: the official MoltenVK release (version and checksum in tools/make_macos_app.sh)
         run: MOLTENVK=download ./build.sh app
+      - name: The video encoder (its ARM NEON code on Apple silicon; no GPU needed)
+        run: ./build.sh test video.file_boxes && build/tests video.colors
       - name: Check the app, unzipped as a user would
         run: |
           lipo build/FractalStreamC.app/Contents/MacOS/fractalstreamc -verify_arch ${{ matrix.arch }}

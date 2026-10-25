@@ -323,6 +323,7 @@ typedef struct Program {
     Section **viewers; int nviewers;
     Section **tools; int ntools;
     Section **prepares; int nprepares; /* @prepare sections, in order */
+    bool prepare_reads_time; /* an @prepare reads .time (directly or through functions): it runs at every frame */
     FuncVec funcs;       /* all user + prelude functions (overloads chained) */
     SymVec globals;      /* state variables in layout order */
     SymVec consts;

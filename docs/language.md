@@ -38,10 +38,12 @@ end
 - `@global` and `@config` run once, in file order, when the script is loaded. The variables they
   declare are the program **state**. Config variables also get a control in the config panel.
 - `@prepare` runs (on the CPU) after them, and again whenever the state changes (a config value, a
-  tool, a picked point, the view; not the mouse or the time), before the pictures are drawn. Use it
+  tool, a picked point, the view; not the mouse), before the pictures are drawn. Use it
   for values the viewers need that are computed once from the state instead of at every pixel,
   such as a fixed point that depends on a parameter. It can change globals; keep it quick, or
-  guard it with an `if` that checks whether its inputs changed.
+  guard it with an `if` that checks whether its inputs changed. If it reads `.time`, it runs at
+  every frame: setting `NAME.center` and `NAME.radius` from `.time` moves a view by itself, in the
+  app and in videos (a zoom: `examples/4 - More/4 - Moving views.fstream`).
 - In a viewer, `VAR` is the point of the current pixel (complex). The viewer sets `color`
   (it starts black). `return` ends the viewer early.
 - Every viewer `NAME` with variable `VAR` adds three state variables: `.VAR` (the last point picked
@@ -53,7 +55,8 @@ end
   infinity: `@viewer sphere z : P "Riemann sphere" projective` (see *Points of the Riemann sphere*).
   Dragging rotates the sphere, the wheel zooms around
   the point under the mouse (a hyperbolic Möbius map fixing it and its antipode). `NAME.center` and
-  `NAME.radius` set the initial view; the current view is the Möbius map `NAME.mobius`.
+  `NAME.radius` set the view (the disk of that radius around the center, as in a flat view): at the
+  start, and whenever `@prepare` or a tool changes them. The current view is the Möbius map `NAME.mobius`.
   The view is **conformal**: the sphere is seen from a point of it (stereographic projection), so
   the picture is the plane through a Möbius map, angles are kept and circles stay circles.
   `NAME.conformal = false` (also a check box in the config panel) looks from the sphere's center
@@ -369,7 +372,7 @@ with their definitions, and `fractalstreamc --builtins` prints them.
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
 | `.dragStart` | C | where the mouse button went down (for tools: `on drag`, `on release`) |
 | `.mouse` | C | point under the mouse |
-| `.time` | R | seconds since the script started (viewers using it are animated) |
+| `.time` | R | seconds since the script started (viewers using it are animated, an `@prepare` using it runs at every frame); in a video, the time of the frame |
 | `.pixel` | R | size of a pixel of the viewer, in the plane (in a tool: of the viewer clicked) |
 | `.width`, `.height`, `.title` | Z, Z, text | initial window size and title (set them in `@config`) |
 | `.VAR`, `NAME.center`, `NAME.radius` | | per viewer, see Sections |

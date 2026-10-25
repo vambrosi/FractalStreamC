@@ -6,8 +6,8 @@ rem   build.bat              optimized build          -> build\fractalstreamc.ex
 rem   build.bat debug        debug build              -> build\fractalstreamc_debug.exe
 rem   build.bat test [filt]  build and run the tests  -> build\tests.exe
 rem
-rem GLFW is compiled once into build\glfw\*.obj; delete that folder to recompile it.
-rem Mirrors build.sh: keep the GLFW file lists in sync with it.
+rem GLFW is compiled once into build\glfw\*.obj, and the video encoder and MP4 writer into build\video\*.obj;
+rem delete those folders to recompile them. Mirrors build.sh: keep the GLFW file lists in sync with it.
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 set MODE=%~1
@@ -30,7 +30,17 @@ for %%f in (%GLFW_SRC%) do (
   set OBJS=!OBJS! build\glfw\%%f.obj
 )
 
-set INC=/Ithird_party\vulkan /Ithird_party\glfw\include /Ithird_party\stb
+rem the video encoder and MP4 writer (third_party\minih264, third_party\minimp4: public domain)
+if not exist build\video mkdir build\video
+for %%f in (minih264\minih264e minimp4\minimp4) do (
+  if not exist build\video\%%~nf.obj (
+    cl /nologo /c /O2 /D_CRT_SECURE_NO_WARNINGS third_party\%%f.c /Fobuild\video\%%~nf.obj
+    if errorlevel 1 exit /b 1
+  )
+  set OBJS=!OBJS! build\video\%%~nf.obj
+)
+
+set INC=/Ithird_party\vulkan /Ithird_party\glfw\include /Ithird_party\stb /Ithird_party\minih264 /Ithird_party\minimp4
 set CFLAGS=/nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS
 set LIBS=gdi32.lib user32.lib shell32.lib
 set MAIN=src\main.c

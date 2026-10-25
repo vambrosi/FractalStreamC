@@ -1479,8 +1479,63 @@ TEST(prepare_sections) {
     CHECK(program_prepare(p, state, err, sizeof err));
     CHECK_NEAR(wf(state[b->slot]), 10, 1e-6);
     free(state);
+    CHECK(!p->prepare_reads_time);
     program_free(p);
     EXPECT_ERROR("@prepare\ndraw point at 0\n@viewer v z\ncolor = .red\n", "only be used in tools");
+    /* reading .time (here through a function): @prepare runs at every frame (the app, videos) */
+    p = LOAD_OK("@global\ndefine wobble(r) = r + 0.1 sin(.time)\n@prepare\nv.radius = wobble(2)\n@viewer v z\ncolor = .red\n");
+    CHECK(p->prepare_reads_time);
+    program_free(p);
+}
+
+/* when @prepare (or a tool, or --set) changes a view's center or radius: a view of the sphere shows them (its Möbius
+   map starts again from there); a flat view's center drops its low part (deep zooms) */
+TEST(views_follow_their_center_and_radius) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        "flat.center = 0.1 + 0.2i\n"
+        "@prepare\n"
+        "flat.radius = 1 + .time\n"
+        "round.radius = 1 + .time\n"
+        "round.center = .time\n"
+        "@viewer flat z\n"
+        "color = .red\n"
+        "@viewer round z : P projective\n"
+        "color = .red\n");
+    Section *flat = p->viewers[0], *round = p->viewers[1];
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    float m8[8];
+    for (int k = 0; k < 8; k++) m8[k] = wf(state[round->mobius->slot + k]);
+    CHECK_NEAR(m8[0], 1 / PROJ_EDGE, 1e-5); /* (radius 1 at time 0) */
+    CHECK_NEAR(m8[2], 0, 0);
+    state[flat->center_lo->slot] = fw(1e-9f); /* a low part, as the app keeps it */
+    char err[128];
+    state[p->s_time->slot] = fw(2);
+    CHECK(program_prepare(p, state, err, sizeof err));
+    for (int k = 0; k < 8; k++) m8[k] = wf(state[round->mobius->slot + k]);
+    CHECK_NEAR(m8[0], 3 / PROJ_EDGE, 1e-4);
+    CHECK_NEAR(m8[2], 2, 1e-6);
+    CHECK_NEAR(m8[6], 1, 0);
+    CHECK_NEAR(wf(state[flat->radius->slot]), 3, 1e-6);
+    CHECK(wf(state[flat->center_lo->slot]) != 0); /* (its center didn't change) */
+    /* the user turned the sphere: @prepare running again without changing center and radius keeps the turn */
+    state[round->mobius->slot + 4] = fw(0.5f);
+    CHECK(program_prepare(p, state, err, sizeof err));
+    CHECK_NEAR(wf(state[round->mobius->slot + 4]), 0.5, 0);
+    free(state);
+    program_free(p);
+    /* a flat view's center set by @prepare: the low part goes */
+    p = LOAD_OK("@prepare\nflat.center = 0.5 + .time\n@viewer flat z\ncolor = .red\n");
+    state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    state[p->viewers[0]->center_lo->slot] = fw(1e-9f);
+    state[p->s_time->slot] = fw(1);
+    CHECK(program_prepare(p, state, err, sizeof err));
+    CHECK_NEAR(wf(state[p->viewers[0]->center->slot]), 1.5, 1e-6);
+    CHECK(state[p->viewers[0]->center_lo->slot] == 0);
+    free(state);
+    program_free(p);
 }
 
 /* print: in @global / @config (Program.load_output), @prepare (program_prepare_ex), tools (Interp.out); a viewer's
@@ -1592,6 +1647,7 @@ TEST(line_continuations) {
 }
 
 static const TestCase tests_lang[] = {
+    TESTCASE(views_follow_their_center_and_radius),
     TESTCASE(line_continuations),
     TESTCASE(print_statement),
     TESTCASE(prepare_sections),

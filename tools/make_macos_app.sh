@@ -144,6 +144,8 @@ cp third_party/glfw/LICENSE.md "$R/GLFW.md"
 cp third_party/vulkan/LICENSE.md "$R/Vulkan-Headers.md"
 cp third_party/fonts/LICENSE-DejaVu.txt "$R/DejaVu-fonts.txt"
 cp third_party/fonts/LICENSE-MaterialIcons.txt "$R/Material-Icons.txt"
+cp third_party/minih264/LICENSE "$R/minih264.txt"
+cp third_party/minimp4/LICENSE "$R/minimp4.txt"
 find "$APP" -name '.*' -type f -exec rm -f {} +   # (.DS_Store and the like)
 chmod 755 "$APP/Contents/MacOS/$EXE" "$APP/Contents/Frameworks/libMoltenVK.dylib"   # (Homebrew's dylib is read-only)
 chmod -R u=rwX,go=rX "$APP"   # (755 for code and folders, 644 for the rest, whatever the umask)

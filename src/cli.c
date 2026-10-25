@@ -15,7 +15,14 @@ static const char *cli_usage =
     "      --size WxH       image size in pixels (default 512x512)\n"
     "      --cpu            use the CPU interpreter instead of the GPU (slow, for testing)\n"
     "      --set NAME=VALUE set a global first, e.g. --set c=-0.8+0.156i or --set plane.radius=0.5\n"
-    "                       (--set .doublePrecision=true: deep zooms in double precision)\n"
+    "                       (--set .doublePrecision=true: deep zooms in double precision;\n"
+    "                       --set .time=T: the picture at time T)\n"
+    "  fractalstreamc --video OUT.mp4 [options] SCRIPT\n"
+    "                                      a video of a viewer (H.264, MP4) over time: frame k shows .time = FROM + k / FPS\n"
+    "      --seconds S      length (default 10)        --from T   time of the first frame (default 0)\n"
+    "      --fps N          frames per second (default 30)\n"
+    "      --samples N      samples per pixel, 1 to 16 (default: the script's .antialiasing)\n"
+    "      --viewer, --size (default 1280x720, even numbers), --set: as for --render\n"
     "  fractalstreamc --tool NAME --at X+Yi [--event EVENT] [--viewer NAME] SCRIPT\n"
     "                                      run a tool once at a point (a click, or one event of a tool with\n"
     "                                      'on' blocks); print what it prints, its draw calls and the globals\n"
@@ -182,21 +189,25 @@ void render_cpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba
 
 #define FS_HAVE_GFX 1
 
-static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, char *err, int errcap) {
-#ifdef FS_HAVE_GFX
-    u32 nwords;
-    u32 *spv = codegen_viewer(p, v, &nwords, err, errcap);
-    if (!spv) return false;
+/* the GPU, without a window */
+static bool cli_gfx_init(char *err, int errcap) {
     GfxInitDesc d = {0};
     d.validation = getenv("FS_VALIDATION") != NULL;
     if (!gfx_preinit_loader()) {
         const char *why = gfx_library_error();
         snprintf(err, (size_t)errcap, "could not load the Vulkan library (is a Vulkan driver installed?)%s%.400s",
                  why[0] ? ": " : "", why);
-        free(spv);
         return false;
     }
-    if (!gfx_init(&d, err, errcap)) {
+    return gfx_init(&d, err, errcap);
+}
+
+static bool render_gpu(Program *p, const u32 *state, Section *v, int w, int h, u8 *rgba, char *err, int errcap) {
+#ifdef FS_HAVE_GFX
+    u32 nwords;
+    u32 *spv = codegen_viewer(p, v, &nwords, err, errcap);
+    if (!spv) return false;
+    if (!cli_gfx_init(err, errcap)) {
         free(spv);
         return false;
     }
@@ -239,8 +250,9 @@ int cli_main(int argc, char **argv) {
     setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
 #endif
     const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL, *event = NULL;
-    int w = 512, h = 512;
-    bool cpu = false;
+    int w = 512, h = 512, fps = 30, samples = 0;
+    bool cpu = false, sized = false;
+    double seconds = 10, from = 0;
     const char *sets[32];
     int nsets = 0;
     for (int i = 1; i < argc; i++) {
@@ -249,7 +261,33 @@ int cli_main(int argc, char **argv) {
         if (!strcmp(a, "--version")) { printf("FractalStreamC %s\n", FS_VERSION); return 0; }
         if (!strcmp(a, "--builtins")) { printf("%s", prelude_source); return 0; }
         if (!strcmp(a, "--check") || !strcmp(a, "--state")) { mode = a; continue; }
-        if ((!strcmp(a, "--spirv") || !strcmp(a, "--render")) && i + 1 < argc) { mode = a; arg = argv[++i]; continue; }
+        if ((!strcmp(a, "--spirv") || !strcmp(a, "--render") || !strcmp(a, "--video")) && i + 1 < argc) {
+            mode = a;
+            arg = argv[++i];
+            continue;
+        }
+        if ((!strcmp(a, "--seconds") || !strcmp(a, "--from")) && i + 1 < argc) {
+            char *end;
+            double x = strtod(argv[++i], &end);
+            if (*end || !(x == x) || (!strcmp(a, "--seconds") && !(x > 0 && x <= 36000))) {
+                fprintf(stderr, "error: %s expects a number of seconds\n", a);
+                return 2;
+            }
+            if (!strcmp(a, "--seconds")) seconds = x;
+            else from = x;
+            continue;
+        }
+        if ((!strcmp(a, "--fps") || !strcmp(a, "--samples")) && i + 1 < argc) {
+            int n = atoi(argv[++i]);
+            bool isfps = !strcmp(a, "--fps");
+            if (isfps ? n < 1 || n > 240 : n < 1 || n > 16) {
+                fprintf(stderr, "error: %s expects %s\n", a, isfps ? "1 to 240 frames per second" : "1 to 16 samples");
+                return 2;
+            }
+            if (isfps) fps = n;
+            else samples = n;
+            continue;
+        }
         if (!strcmp(a, "--viewer") && i + 1 < argc) { viewer = argv[++i]; continue; }
         if (!strcmp(a, "--tool") && i + 1 < argc) { mode = a; tool = argv[++i]; continue; }
         if (!strcmp(a, "--at") && i + 1 < argc) { at = argv[++i]; continue; }
@@ -259,6 +297,7 @@ int cli_main(int argc, char **argv) {
                 fprintf(stderr, "error: --size expects WxH, like 800x600\n");
                 return 2;
             }
+            sized = true;
             continue;
         }
         if (!strcmp(a, "--cpu")) { cpu = true; continue; }
@@ -283,8 +322,11 @@ int cli_main(int argc, char **argv) {
     }
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    ViewsSaved sv; /* (a view of the sphere whose center or radius is set goes there) */
+    views_save(p, state, &sv);
     for (int i = 0; i < nsets; i++)
         if (!cli_set_global(p, state, sets[i])) { rc = 2; goto done; }
+    views_follow(p, &sv, state, true);
     if (nsets) { /* the state changed: @prepare runs again */
         char perr_[256];
         if (!program_prepare(p, state, perr_, sizeof perr_)) { fprintf(stderr, "error: in @prepare: %s\n", perr_); rc = 1; goto done; }
@@ -343,6 +385,54 @@ int cli_main(int argc, char **argv) {
             printf("wrote %s (%dx%d, %s, %.2fs)\n", arg, w, h, cpu ? "cpu" : "gpu", fs_time_seconds() - t0);
         }
         free(rgba);
+    } else if (!strcmp(mode, "--video")) {
+        Section *v = cli_find_viewer(p, viewer);
+        if (!v) {
+            if (viewer) fprintf(stderr, "error: no viewer named '%s'\n", viewer);
+            else fprintf(stderr, "error: the script has no viewer\n");
+            rc = 2;
+            goto done;
+        }
+        if (!sized) {
+            w = 1280;
+            h = 720;
+        }
+        if ((w | h) & 1 || w > VIDEO_MAX_SIDE || h > VIDEO_MAX_SIDE) {
+            fprintf(stderr, "error: a video is at most %dx%d, and its sides are even numbers\n", VIDEO_MAX_SIDE, VIDEO_MAX_SIDE);
+            rc = 2;
+            goto done;
+        }
+        if (!samples) samples = FS_CLAMP((i32)state[p->s_aa->slot], 1, 16);
+        char err[512] = "";
+        double t0 = fs_time_seconds(), shown = t0;
+        VideoJob *j = cli_gfx_init(err, sizeof err)
+                          ? video_begin(p, state, v, arg, w, h, fps, seconds, from, samples, err, sizeof err)
+                          : NULL;
+        int r = j ? 1 : -1;
+        while (r == 1) {
+            r = video_step(j);
+            double now = fs_time_seconds();
+            if (r == 1 && now - shown > 2) { /* (progress, every 2 seconds) */
+                fprintf(stderr, "frame %d of %d\n", j->done, j->frames);
+                shown = now;
+            }
+        }
+        if (r < 0) {
+            fprintf(stderr, "error: %s\n", j ? j->err : err);
+            rc = 1;
+        } else {
+            long long bytes = 0;
+            FILE *f = fopen(arg, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                bytes = ftell(f);
+                fclose(f);
+            }
+            printf("wrote %s (%dx%d, %d frames at %d per second, %d sample%s per pixel, %.1f MB, %.1fs)\n", arg, w, h,
+                   j->frames, fps, j->samples, j->samples == 1 ? "" : "s", bytes / 1e6, fs_time_seconds() - t0);
+        }
+        video_end(j);
+        gfx_shutdown();
     } else if (!strcmp(mode, "--tool")) {
         Section *t = NULL;
         for (int k = 0; k < p->ntools; k++)
@@ -366,6 +456,7 @@ int cli_main(int argc, char **argv) {
         if (tv) I.pixel = viewer_pixel_size(p, state, tv, (float)w, (float)h, 0.5f * w, 0.5f * h);
         state[p->s_drag_start->slot] = fw(re);
         state[p->s_drag_start->slot + 1] = fw(im);
+        views_save(p, state, &sv);
         if (!t->has_events) {
             if (event) fprintf(stderr, "warning: the tool has no 'on' blocks; --event is ignored\n");
             if (!interp_run_tool(&I, t, re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
@@ -384,6 +475,7 @@ int cli_main(int argc, char **argv) {
                 if (!interp_run_tool_event(&I, t, evs[k], re, im)) { fprintf(stderr, "error: %s\n", I.error); rc = 1; }
             }
         }
+        views_follow(p, &sv, state, false);
         static const char *shapes[] = {"point", "circle", "disk", "line", "text"};
         for (int k = 0; k < draws.len; k++) {
             DrawItem *d = &draws.data[k];

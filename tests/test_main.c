@@ -29,6 +29,7 @@ static const char *test_skip_reason_ = NULL;
 #include "test_lang.c"
 #include "test_codegen.c"
 #include "test_gfx.c"
+#include "test_video.c"
 #include "test_ui.c"
 #include "test_editor.c"
 #include "test_app.c"
@@ -42,6 +43,7 @@ int main(int argc, char **argv) {
         SUITE(tests_lang),
         SUITE(tests_codegen),
         SUITE(tests_gfx),
+        SUITE(tests_video),
         SUITE(tests_ui),
         SUITE(tests_editor),
         SUITE(tests_app),

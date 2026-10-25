@@ -1556,6 +1556,16 @@ void codegen_viewer_deps(Program *p, Section *v, bool *used) {
     vec_free(G.visited);
 }
 
+/* Does section s (directly or through the functions it calls) read global g? */
+bool codegen_section_reads(Program *p, Section *s, Sym *g) {
+    Gen G = {0};
+    G.prog = p;
+    for (int i = 0; i < p->globals.len; i++) p->globals.data[i]->used = false;
+    mark_block(&G, &s->body);
+    vec_free(G.visited);
+    return g->used;
+}
+
 /* Generate the fragment shader of viewer `v`.  Returns malloc'd words or NULL. */
 /* if `bad` then return (structured: the return block sits inside a selection) */
 static void return_if(Gen *g, u32 bad) {

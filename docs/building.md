@@ -2,7 +2,7 @@
 
 FractalStreamC is a single C11 program (a "unity build": `src/main.c` includes every
 module through `src/all.c`). Its only dependencies are vendored in `third_party/`
-(GLFW, the Vulkan headers, stb, fonts). Vulkan itself is loaded at run time, so
+(GLFW, the Vulkan headers, stb, fonts, and for videos minih264 and minimp4). Vulkan itself is loaded at run time, so
 nothing links against a Vulkan library: the program needs a Vulkan *driver* to run,
 but no Vulkan SDK to build.
 
@@ -131,7 +131,7 @@ for VS", then
 | `FS_GPU=<text>` | use the GPU whose name or driver contains `<text>` (case-insensitive), e.g. `FS_GPU=intel`, `FS_GPU=kosmic` |
 | `FS_VULKAN_LIBRARY=<path>` | load this Vulkan library (or MoltenVK dylib) before the default ones |
 | `FS_VULKAN_VALIDATION=1` | enable the Vulkan validation layer and print its messages |
-| `FS_DEBUG=1` | print what the app decides at startup (the GPUs and their drivers, the one used; how deep zooms keep their arithmetic exact) |
+| `FS_DEBUG=1` | print what the app decides at startup (the GPUs and their drivers, the one used; how deep zooms keep their arithmetic exact), and the resolution of changing views when it changes |
 | `MVK_CONFIG_FAST_MATH_ENABLED` | (macOS) set to `2` by the program unless already set: MoltenVK's fast maths, except in the shaders of deep zooms, which declare IEEE floats (SPIR-V float controls) and then need no per-operation workaround, the slow part of double precision before |
 | `MVK_CONFIG_LOG_LEVEL` | (macOS) set to `1` by the program unless already set: MoltenVK prints only its errors; `3` adds its informational messages |
 

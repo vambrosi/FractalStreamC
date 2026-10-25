@@ -147,6 +147,9 @@ typedef struct App {
     char req_open[1024];
     char req_export[1024];  /* save a picture there */
     int export_viewer, export_scale, export_wait;
+    VideoJob *video;        /* a video being saved (Save a video: video_work, video_dialog) */
+    double video_seconds;   /* the choices in its dialog */
+    int video_fps, video_scale;
     /* overlays */
     bool ref_open;          /* the language reference (refdoc.c) */
     float ui_zoom;          /* the size of everything (Cmd+= / Cmd+- / Cmd+0; kept in the settings folder) */
@@ -198,6 +201,8 @@ typedef struct App {
 } App;
 
 static App A;
+
+static void video_cancel(const char *why);
 
 static const char *welcome_script =
     "# Welcome to FractalStreamC!\n"
@@ -1334,7 +1339,8 @@ static const char *hover_info(void *user, const char *word) {
         {".lastClick", ".lastClick : C\nthe point of the last click or drag"},
         {".dragStart", ".dragStart : C\nwhere the mouse button went down (tools: on drag, on release)"},
         {".mouse", ".mouse : C\nthe point under the mouse"},
-        {".time", ".time : R\nseconds since the script started (the views using it are animated)"},
+        {".time", ".time : R\nseconds since the script started (the views using it are animated; an @prepare using it runs "
+                  "at every frame)"},
         {".pixel", ".pixel : R\nthe size of a pixel of the view, in the plane (in a tool: of the view clicked)"},
         {".width", ".width : Z\nthe initial width of the window"},
         {".height", ".height : Z\nthe initial height of the window"},
@@ -1603,6 +1609,7 @@ static void adopt_program(Program *p, ViewerRT *vrt, int mode) {
     }
     if (reopened || !same) closed_layout.n = 0;
     if (same && !reopened) layout_by_names(A.prog, &before);
+    video_cancel("the script changed"); /* (it renders the old program) */
     free_viewers();
     if (A.prog) interp_free(&A.interp);
     outs_free();
@@ -1968,10 +1975,8 @@ static void export_size(int v, int scale, int *w, int *h) {
     }
 }
 
-/* save the picture of viewer v, `scale` times the size of its tile */
-static void ask_export(int v, int scale) {
-    A.export_viewer = v;
-    A.export_scale = scale;
+/* where a picture or video of viewer v goes by default: next to the script, "SCRIPT-VIEWER" + suffix */
+static void export_path(int v, const char *suffix, char *path, int cap) {
     char dir[1024];
     if (A.path[0] && !inside_app_bundle(A.path)) {
         snprintf(dir, sizeof dir, "%s", A.path);
@@ -1989,9 +1994,112 @@ static void ask_export(int v, int scale) {
     snprintf(stem, sizeof stem, "%.200s", base);
     char *dot = strrchr(stem, '.');
     if (dot) *dot = 0;
+    snprintf(path, (size_t)cap, "%.700s/%.200s-%.60s%s", dir, stem, A.prog->viewers[v]->name, suffix);
+}
+
+/* save the picture of viewer v, `scale` times the size of its tile */
+static void ask_export(int v, int scale) {
+    A.export_viewer = v;
+    A.export_scale = scale;
     char path[1100];
-    snprintf(path, sizeof path, "%.700s/%.200s-%.60s%s.png", dir, stem, A.prog->viewers[v]->name, scale > 1 ? "-large" : "");
+    export_path(v, scale > 1 ? "-large.png" : ".png", path, sizeof path);
     open_modal(3, path);
+}
+
+/* ---- videos ---------------------------------------------------------------------------------------------------------
+ * Save a video: a dialog (the file, the length, frames per second, the size), then the frames, rendered offscreen
+ * (video.c) a few in each frame of the app (video_work), with a progress dialog that can cancel (video_dialog).  The
+ * video starts at time 0 from the state as it is (the views where they are, the config). */
+
+/* the size of a video of viewer v: `scale` times its size on the screen, within VIDEO_MAX_SIDE, even */
+static void video_size(int v, int scale, int *w, int *h) {
+    export_size(v, scale, w, h);
+    if (*w > VIDEO_MAX_SIDE || *h > VIDEO_MAX_SIDE) {
+        float k = (float)VIDEO_MAX_SIDE / (float)FS_MAX(*w, *h);
+        *w = (int)((float)*w * k);
+        *h = (int)((float)*h * k);
+    }
+    *w = FS_MAX(2, *w & ~1);
+    *h = FS_MAX(2, *h & ~1);
+}
+
+static void ask_video(int v) {
+    A.export_viewer = v;
+    char path[1100];
+    export_path(v, ".mp4", path, sizeof path);
+    open_modal(6, path);
+}
+
+static void video_start(const char *path) {
+    Program *p = A.prog;
+    int v = A.export_viewer;
+    if (!p || v < 0 || v >= p->nviewers) return;
+    int w, h;
+    video_size(v, A.video_scale, &w, &h);
+    int samples = FS_CLAMP((i32)A.state[p->s_aa->slot], 1, 16);
+    char err[512] = "";
+    A.video = video_begin(p, A.state, p->viewers[v], path, w, h, A.video_fps, A.video_seconds, 0, samples, err, sizeof err);
+    if (!A.video) {
+        set_status(true, "Can't save the video: %s", err);
+        return;
+    }
+    A.modal = 7;
+}
+
+/* stop the video being saved (its file is removed); why: for the status line (NULL: canceled) */
+static void video_cancel(const char *why) {
+    if (!A.video) return;
+    video_end(A.video);
+    A.video = NULL;
+    if (A.modal == 7) A.modal = 0;
+    set_status(why != NULL, "The video was not saved%s%s", why ? ": " : " (canceled)", why ? why : "");
+}
+
+/* frames of the video being saved, for about 40 ms (at least one), before the app's frame */
+static void video_work(void) {
+    if (!A.video) return;
+    double t0 = fs_time_seconds();
+    int r;
+    do r = video_step(A.video);
+    while (r == 1 && fs_time_seconds() - t0 < 0.04);
+    free(A.uploaded); /* (the GPU has the video's state now: the views' goes back up at their next render) */
+    A.uploaded = NULL;
+    if (r == 1) return;
+    VideoJob *j = A.video;
+    if (r == 0)
+        set_status(false, "Saved %s (%dx%d, %.4g seconds, %d frames)", j->path, j->w, j->h, (double)j->frames / j->fps,
+                   j->frames);
+    else
+        set_status(true, "Can't save the video: %s", j->err);
+    video_end(j);
+    A.video = NULL;
+    if (A.modal == 7) A.modal = 0;
+}
+
+static void video_dialog(float W, float H) {
+    VideoJob *j = A.video;
+    if (!j) {
+        A.modal = 0;
+        return;
+    }
+    int prev = ui_layer(UI_LAYER_POPUP);
+    ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
+    float pw = FS_MIN(px(560), W - px(40)), ph = px(150);
+    Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
+    ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
+    char t[1200];
+    snprintf(t, sizeof t, "Saving the video %.900s", fs_basename(j->path));
+    ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(18), t, -1, UI_COL_TEXT);
+    snprintf(t, sizeof t, "Frame %d of %d: %dx%d, %d per second, %d sample%s per pixel", j->done + 1, j->frames, j->w, j->h,
+             j->fps, j->samples, j->samples == 1 ? "" : "s");
+    ui_text(UI_FONT_SANS, pr.x + px(18), pr.y + px(46), t, -1, UI_COL_TEXT_DIM);
+    float bw = pr.w - px(36), frac = (float)j->done / (float)FS_MAX(1, j->frames);
+    ui_rrect(pr.x + px(18), pr.y + px(78), bw, px(8), px(4), UI_COL_WIDGET);
+    ui_rrect(pr.x + px(18), pr.y + px(78), FS_MAX(px(8), bw * frac), px(8), px(4), UI_COL_ACCENT);
+    if (ui_button_ex("Cancel##video_cancel", pr.x + pr.w - px(102), pr.y + ph - px(46), px(84), px(30), 0) ||
+        ui_shortcut(UI_KEY_ESCAPE, 0))
+        video_cancel(NULL);
+    ui_layer(prev);
 }
 
 /* render viewer v again, offscreen, and write it to a PNG file */
@@ -2063,7 +2171,10 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
     A.interp.out = &printed;
     A.interp.erased = A.interp.erased_all = false;
     A.interp.erase_tools = 0;
+    ViewsSaved sv; /* (a view of the sphere whose center or radius the tool sets goes there) */
+    views_save(p, A.state, &sv);
     bool ok = t->has_events ? interp_run_tool_event(&A.interp, t, ev, re, im) : interp_run_tool(&A.interp, t, re, im);
+    views_follow(p, &sv, A.state, false);
     if (!ok) set_status(true, "%s: %s", t->display, A.interp.error);
     A.interp.draws = NULL;
     A.interp.out = NULL;
@@ -2747,7 +2858,7 @@ static void ensure_target(int v, int w, int h) {
  * bottom the panes over the views (or beside them) and the keys.  The bars stay when the panes next to them open, so
  * their buttons never move away from the mouse. */
 enum { BI_SEP, BI_SCRIPT, BI_VIEW, BI_TOOL, BI_CONFIG, BI_INFO, BI_FOCUS, BI_ACTION, BI_OVERLAY, BI_HELP };
-enum { ACT_BACK, ACT_FORWARD, ACT_RESET, ACT_COPY, ACT_PASTE, ACT_GRID, ACT_SAVE, ACT_SAVE_LARGE, ACT_HIDE, ACT_COUNT };
+enum { ACT_BACK, ACT_FORWARD, ACT_RESET, ACT_COPY, ACT_PASTE, ACT_GRID, ACT_SAVE, ACT_SAVE_LARGE, ACT_VIDEO, ACT_HIDE, ACT_COUNT };
 typedef struct BarItem {
     int kind;
     int viewer;  /* BI_VIEW, BI_TOOL, BI_FOCUS, BI_ACTION */
@@ -2915,8 +3026,8 @@ static void bar_tool_button(int v, int tool, float x, float y, float b) {
 
 static void bar_action(int v, int k, float x, float y, float b) {
     static const char *icons[ACT_COUNT] = {"arrow_back", "arrow_forward", "home", "content_copy", "content_paste",
-                                           "grid_on", "image", "photo_size_select_large", "visibility_off"};
-    static const char *letters[ACT_COUNT] = {"<", ">", "H", "C", "V", "#", "S", "L", "X"};
+                                           "grid_on", "image", "photo_size_select_large", "movie", "visibility_off"};
+    static const char *letters[ACT_COUNT] = {"<", ">", "H", "C", "V", "#", "S", "L", "M", "X"};
     static const char *names[ACT_COUNT] = {
         "Back: where the view was before the last zoom, pan or reset (" BACK_KEY ", the mouse's back button)",
         "Forward: undo Back (" FORWARD_KEY ")",
@@ -2928,6 +3039,7 @@ static void bar_action(int v, int k, float x, float y, float b) {
         "Axes and grid lines with their values (" MODKEY "+Shift+A)",
         "Save picture: this view at its size on the screen (PNG, without the tools' drawings)",
         "Save it large: this view rendered again at four times the width and height, for print",
+        "Save a video: this view over time, from time 0 (MP4; its length in the dialog)",
         "Hide this view"};
     char id[32], tip[500];
     snprintf(id, sizeof id, "##bar_act%d", k);
@@ -2944,6 +3056,7 @@ static void bar_action(int v, int k, float x, float y, float b) {
         case ACT_GRID: A.vrt[v].grid = !A.vrt[v].grid; break;
         case ACT_SAVE: ask_export(v, 1); break;
         case ACT_SAVE_LARGE: ask_export(v, 4); break;
+        case ACT_VIDEO: ask_video(v); break;
         case ACT_HIDE: hide_view(v); break;
         }
     }
@@ -4432,6 +4545,10 @@ static void modal_dialog(float W, float H) {
         unsaved_dialog(W, H);
         return;
     }
+    if (A.modal == 7) {
+        video_dialog(W, H);
+        return;
+    }
     if (!A.modal) {
         if (A.browse) fs_free_dir(A.browse, A.nbrowse);
         A.browse = NULL;
@@ -4442,14 +4559,15 @@ static void modal_dialog(float W, float H) {
     }
     int prev = ui_layer(UI_LAYER_POPUP);
     ui_panel_ex(0, 0, W, H, UI_RGBA(8, 10, 14, 150), 0);
-    bool saving = A.modal == 1 || A.modal == 3;
-    const char *ext = A.modal == 3 ? ".png" : ".fstream";
+    bool saving = A.modal == 1 || A.modal == 3 || A.modal == 6;
+    const char *ext = A.modal == 3 ? ".png" : A.modal == 6 ? ".mp4" : ".fstream";
     float rh = px(26), pad = px(16);
     float pw = FS_MIN(px(720), W - px(40)), ph = FS_MIN(px(560), H - px(40));
     Rect pr = {(W - pw) / 2, (H - ph) / 2, pw, ph};
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
     ui_text(UI_FONT_SANS, pr.x + pad, pr.y + px(14),
             A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):"
+            : A.modal == 6 ? "Save a video of the view (MP4), from time 0:"
             : A.modal == 4 ? "A new script, from a template (or the welcome example):" : "Open a script:", -1, UI_COL_TEXT);
     char before[1024];
     snprintf(before, sizeof before, "%s", A.modal_buf);
@@ -4511,6 +4629,35 @@ static void modal_dialog(float W, float H) {
         A.browse_scroll = 0;
     }
     Rect lr = {pr.x + pad, y + px(34), pr.w - 2 * pad, pr.y + pr.h - px(56) - (y + px(34))};
+    if (A.modal == 6) { /* a video: its length, frames per second and size, under the list */
+        lr.h -= px(42);
+        float oy = lr.y + lr.h + px(10), ox = pr.x + pad;
+        ui_slider_double("Seconds##video_seconds", ox, oy, px(190), px(28), &A.video_seconds, 1, 600, "%.0f", UI_SLIDER_LOG);
+        A.video_seconds = floor(A.video_seconds + 0.5);
+        ox += px(200);
+        static const int fpss[3] = {24, 30, 60};
+        for (int k = 0; k < 3; k++) {
+            char id[48];
+            snprintf(id, sizeof id, "%d fps##video_fps%d", fpss[k], k);
+            float bw = ui_text_width(UI_FONT_SANS, "60 fps", -1) + px(18);
+            if (ui_button_ex(id, ox, oy, bw, px(28), A.video_fps == fpss[k] ? UI_SELECTED : UI_FLAT)) A.video_fps = fpss[k];
+            ui_tooltip("Frames per second");
+            ox += bw + px(4);
+        }
+        ox += px(8);
+        for (int k = 1; k <= 2; k++) {
+            int vw, vh;
+            video_size(A.export_viewer, k, &vw, &vh);
+            char id[64], shown[32];
+            snprintf(shown, sizeof shown, "%dx%d", vw, vh);
+            snprintf(id, sizeof id, "%s##video_size%d", shown, k);
+            float bw = ui_text_width(UI_FONT_SANS, shown, -1) + px(18);
+            if (ox + bw > pr.x + pr.w - pad) break;
+            if (ui_button_ex(id, ox, oy, bw, px(28), A.video_scale == k ? UI_SELECTED : UI_FLAT)) A.video_scale = k;
+            ui_tooltip(k == 1 ? "The size of the view on the screen" : "Twice the width and height of the view on the screen");
+            ox += bw + px(4);
+        }
+    }
     ui_rrect(lr.x, lr.y, lr.w, lr.h, px(6), UI_RGBA(16, 18, 23, 255));
     ui_rrect_outline(lr.x, lr.y, lr.w, lr.h, px(6), 1, UI_COL_BORDER);
     int rows[4096], nrows = 0; /* entries shown: -1 is "..", then folders and the files of the kind */
@@ -4558,7 +4705,7 @@ static void modal_dialog(float W, float H) {
         UiInteract it = ui_interact(id, lr.x + px(4), ry, lr.w - px(8), rh);
         bool chosen = i >= 0 && !strcmp(A.browse[i].name, name);
         if (it.hovered || chosen) ui_rrect(lr.x + px(4), ry, lr.w - px(8), rh, px(4), chosen ? UI_COL_ACCENT_DIM : UI_COL_WIDGET_HOVER);
-        ui_icon(i < 0 ? "arrow_upward" : is_dir ? "folder" : A.modal == 3 ? "image" : "description", NULL, lr.x + px(10),
+        ui_icon(i < 0 ? "arrow_upward" : is_dir ? "folder" : A.modal == 3 ? "image" : A.modal == 6 ? "movie" : "description", NULL, lr.x + px(10),
                 ry + px(3), rh - px(6), is_dir ? UI_COL_ACCENT : UI_COL_TEXT_DIM);
         ui_label(lr.x + px(14) + rh, ry, lr.w - rh - px(24), rh, label, UI_ALIGN_LEFT, i < 0 ? UI_COL_TEXT_DIM : UI_COL_TEXT);
         if (!it.pressed) continue;
@@ -4582,8 +4729,14 @@ static void modal_dialog(float W, float H) {
     if (!A.browse && !A.browse_recent) ui_label(lr.x, lr.y, lr.w, px(40), "(this folder can't be read)", UI_ALIGN_CENTER, UI_COL_TEXT_DIM);
     /* OK: open or save; a folder is opened in the list instead */
     float by = pr.y + pr.h - px(44);
-    if (A.modal_confirm)
+    if (A.modal_confirm) {
         ui_label(pr.x + pad, by, pr.w - px(230), px(30), "That file exists: OK replaces it.", UI_ALIGN_LEFT, UI_COL_WARNING);
+    } else if (A.modal == 6 && A.prog) {
+        char what[160];
+        int n = (int)floor(A.video_seconds * A.video_fps + 0.5), ns = FS_CLAMP((i32)A.state[A.prog->s_aa->slot], 1, 16);
+        snprintf(what, sizeof what, "%d frames, %d sample%s per pixel (.antialiasing)", n, ns, ns == 1 ? "" : "s");
+        ui_label(pr.x + pad, by, pr.w - px(230), px(30), what, UI_ALIGN_LEFT, UI_COL_TEXT_DIM);
+    }
     bool ok = ui_button_ex("OK##modal_ok", pr.x + pr.w - px(196), by, px(84), px(30), UI_ACCENT);
     bool cancel = ui_button_ex("Cancel##modal_cancel", pr.x + pr.w - px(100), by, px(84), px(30), 0);
     if (r & UI_TEXT_SUBMIT) ok = true;
@@ -4638,6 +4791,8 @@ static void modal_dialog(float W, float H) {
             if (save_file(A.modal_buf) && A.pending) perform_pending(); /* (saved before an open, a new script or quitting) */
         } else if (kind == 4) {
             new_from(A.modal_buf);
+        } else if (kind == 6) {
+            video_start(A.modal_buf);
         } else if (kind == 3) {
             snprintf(A.req_export, sizeof A.req_export, "%s", A.modal_buf);
             A.export_wait = 2;
@@ -4755,14 +4910,16 @@ static void shortcuts(void) {
         A.vrt[tv].grid = !A.vrt[tv].grid;
 }
 
-/* @prepare runs whenever the state changed (not for the mouse, the time, the last click) */
+/* @prepare runs whenever the state changed (not for the mouse, the last click, or the time unless it reads .time: then
+   at every frame, and a view it moves is drawn again at every frame) */
 static void run_prepare(void) {
     Program *p = A.prog;
     if (!p->nprepares) return;
     size_t bytes = sizeof(u32) * (size_t)p->state_words;
     if (A.prepare_snap) {
-        Sym *vol[4] = {p->s_mouse, p->s_time, p->s_last_click, p->s_drag_start};
-        for (int k = 0; k < 4; k++) memcpy(A.prepare_snap + vol[k]->slot, A.state + vol[k]->slot, sizeof(u32) * (size_t)vol[k]->type->size);
+        Sym *vol[4] = {p->s_mouse, p->s_last_click, p->s_drag_start, p->s_time};
+        for (int k = 0; k < (p->prepare_reads_time ? 3 : 4); k++)
+            memcpy(A.prepare_snap + vol[k]->slot, A.state + vol[k]->slot, sizeof(u32) * (size_t)vol[k]->type->size);
         if (memcmp(A.prepare_snap, A.state, bytes) == 0) return;
     } else {
         A.prepare_snap = (u32 *)xmalloc(bytes);
@@ -4850,18 +5007,7 @@ static int aa_samples(const ViewerRT *rt) {
     return FS_CLAMP(n, 1, 16);
 }
 
-/* where the k-th sample of a pixel lies, from its center (k = 0: the center): points of the R2 sequence, which spread
-   evenly over the pixel from the first ones on, in pairs q, -q (samples 1 and 2, 3 and 4...) so that the samples'
-   average stays at the center and the picture doesn't shift as they come in */
-static void aa_offset(int k, float *dx, float *dy) {
-    *dx = *dy = 0;
-    if (k <= 0) return;
-    int j = (k + 1) / 2;
-    double x = 0.5 + j * 0.7548776662466927, y = 0.5 + j * 0.5698402909980532;
-    float s = k % 2 ? 1.0f : -1.0f;
-    *dx = s * (float)(x - floor(x) - 0.5);
-    *dy = s * (float)(y - floor(y) - 0.5);
-}
+/* (where the samples lie in each pixel: aa_offset, in video.c) */
 
 /* does view rt want another sample (its picture is done, at rest, and has fewer than .antialiasing)? */
 static bool aa_wanted(const ViewerRT *rt) {
@@ -5172,6 +5318,7 @@ static void frame(void) {
     }
 
     run_prepare();
+    video_work();
     double t0 = fs_time_seconds();
     bool busy = false;
     if (gfx_frame_begin()) {
@@ -5298,6 +5445,9 @@ int app_run(const char *script_path) {
     A.t0 = fs_time_seconds();
     A.band_rows = 8192;
     A.flood_passes = 64;
+    A.video_seconds = 10;
+    A.video_fps = 30;
+    A.video_scale = 1;
     A.editor_frac = 0.45f;
     A.config_frac = 0.27f;
     A.info_frac = 0.4f;
@@ -5392,10 +5542,13 @@ int app_run(const char *script_path) {
         }
         if (A.prog) frame();
         else frame_editor_only();
-        double wait = viewers_busy() || A.drag != DRAG_NONE ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
+        bool busy = viewers_busy() || A.drag != DRAG_NONE || A.video || (A.prog && A.prog->prepare_reads_time);
+        double wait = busy ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
         if (A.status[0] && fs_time_seconds() < A.status_until) wait = FS_MIN(wait, 0.1);
         platform_poll_timeout(in, wait);
     }
+    video_end(A.video); /* (a video not finished is removed) */
+    A.video = NULL;
     free_viewers();
     if (A.prog) interp_free(&A.interp);
     program_free(A.prog);

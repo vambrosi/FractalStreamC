@@ -64,7 +64,21 @@ for f in $GLFW_SRC; do
   OBJS="$OBJS $obj"
 done
 
-INC="-Ithird_party/vulkan -Ithird_party/glfw/include -Ithird_party/stb"
+# The video encoder and MP4 writer (third_party/minih264, third_party/minimp4: public domain), compiled once like GLFW.
+mkdir -p "$OUT/video"
+if [ "$(cat "$OUT/video/build.txt" 2>/dev/null)" != "$GLFW_BUILD" ]; then
+  rm -f "$OUT"/video/*.o
+  echo "$GLFW_BUILD" > "$OUT/video/build.txt"
+fi
+for f in minih264/minih264e minimp4/minimp4; do
+  obj="$OUT/video/${f#*/}.o"
+  if [ ! -f "$obj" ] || [ "third_party/$f.c" -nt "$obj" ] || [ "third_party/$f.h" -nt "$obj" ]; then
+    $CC -O2 -c "third_party/$f.c" -o "$obj"
+  fi
+  OBJS="$OBJS $obj"
+done
+
+INC="-Ithird_party/vulkan -Ithird_party/glfw/include -Ithird_party/stb -Ithird_party/minih264 -Ithird_party/minimp4"
 WARN="-Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-sign-compare"
 case "$MODE" in
   release|app|windows) FLAGS="-O2 -std=c11 $WARN"; EXE=fractalstreamc ;;

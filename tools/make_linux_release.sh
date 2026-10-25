@@ -36,6 +36,8 @@ cp third_party/glfw/LICENSE.md "$DIR/licenses/GLFW.md"
 cp third_party/vulkan/LICENSE.md "$DIR/licenses/Vulkan-Headers.md"
 cp third_party/fonts/LICENSE-DejaVu.txt "$DIR/licenses/DejaVu-fonts.txt"
 cp third_party/fonts/LICENSE-MaterialIcons.txt "$DIR/licenses/Material-Icons.txt"
+cp third_party/minih264/LICENSE "$DIR/licenses/minih264.txt"
+cp third_party/minimp4/LICENSE "$DIR/licenses/minimp4.txt"
 find "$DIR" -name '.*' -type f -exec rm -f {} +   # (editor and desktop leftovers, e.g. .DS_Store)
 chmod -R u=rwX,go=rX "$DIR"   # (755 for the program and folders, 644 for the rest, whatever the umask)
 
@@ -49,7 +51,7 @@ Run it from this folder:
     ./fractalstreamc                           the script editor, with an example to start from
     ./fractalstreamc "examples/0 - Basics/0 - Mandelbrot set.fstream"
                                                open a script
-    ./fractalstreamc --help                    the command line (checks, renders to PNG files, ...)
+    ./fractalstreamc --help                    the command line (checks, pictures, videos, ...)
 
 In the app, F1 lists the keys and F2 shows the language reference; Ctrl+O opens a script
 (the examples are a click away), Ctrl+N starts a new one from a template.

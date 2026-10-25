@@ -142,6 +142,39 @@ static void initial_center_lo(Program *p, Section *v) {
     lo[1] = fw((float)(im - (double)(float)im));
 }
 
+/* When a script sets a view's center or radius (in @prepare or a tool, or --set): a flat view's center loses its low
+ * part (deep zooms: the script's center is a float; --set keeps the one it found, keep_lo), and a view of the sphere,
+ * which moves by its Möbius map (NAME.mobius), shows `center` +- `radius` as a flat view would (the map starts again
+ * from there; so it does from the start).  views_save before the script runs, views_follow after. */
+#define VIEWS_SAVED 64
+typedef struct ViewsSaved { u32 w[VIEWS_SAVED][3]; } ViewsSaved;
+
+static void view_show_center(Program *p, u32 *state, Section *s) {
+    float r = wf(state[s->radius->slot]) / PROJ_EDGE;
+    float m8[8] = {r, 0, wf(state[s->center->slot]), wf(state[s->center->slot + 1]), 0, 0, 1, 0};
+    for (int k = 0; k < 8; k++) state[s->mobius->slot + k] = fw(m8[k]);
+}
+
+static void views_save(Program *p, const u32 *state, ViewsSaved *sv) {
+    for (int v = 0; v < p->nviewers && v < VIEWS_SAVED; v++) {
+        Section *s = p->viewers[v];
+        if (!s->center) continue;
+        sv->w[v][0] = state[s->center->slot];
+        sv->w[v][1] = state[s->center->slot + 1];
+        sv->w[v][2] = state[s->radius->slot];
+    }
+}
+
+static void views_follow(Program *p, const ViewsSaved *sv, u32 *state, bool keep_lo) {
+    for (int v = 0; v < p->nviewers && v < VIEWS_SAVED; v++) {
+        Section *s = p->viewers[v];
+        if (!s->center) continue;
+        bool center = sv->w[v][0] != state[s->center->slot] || sv->w[v][1] != state[s->center->slot + 1];
+        if (center && s->center_lo && !keep_lo) state[s->center_lo->slot] = state[s->center_lo->slot + 1] = 0;
+        if (s->mobius && (center || sv->w[v][2] != state[s->radius->slot])) view_show_center(p, state, s);
+    }
+}
+
 /* One run of parse + check (+ initial state), with what earlier runs found out about the types of untyped variables
  * (`hints`).  If this run finds a variable that must be wider (p->new_hints) and it isn't the last run, the program is
  * not run (program_load runs the checker again). */
@@ -207,6 +240,8 @@ static Program *program_load_round(const char *source, const char *path, const T
                 break;
             }
         }
+        for (int i = 0; i < p->nprepares && !p->nerrors; i++)
+            if (codegen_section_reads(p, p->prepares[i], p->s_time)) p->prepare_reads_time = true;
         /* @prepare: once for the initial state (then whenever the state changes, see program_prepare; the app and the
            CLI run it again to see what it prints) */
         I.out = NULL;
@@ -219,14 +254,8 @@ static Program *program_load_round(const char *source, const char *path, const T
         if (printed.len) p->load_output = xstrdup(sb_cstr(&printed));
         sb_free(&printed);
         /* projective viewers start with the view that shows `center` +- `radius` */
-        for (int v = 0; v < p->nviewers; v++) {
-            Section *s = p->viewers[v];
-            if (!s->mobius) continue;
-            u32 *m = p->initial_state + s->mobius->slot;
-            float r = wf(p->initial_state[s->radius->slot]) / PROJ_EDGE;
-            float m8[8] = {r, 0, wf(p->initial_state[s->center->slot]), wf(p->initial_state[s->center->slot + 1]), 0, 0, 1, 0};
-            for (int k = 0; k < 8; k++) m[k] = fw(m8[k]);
-        }
+        for (int v = 0; v < p->nviewers; v++)
+            if (p->viewers[v]->mobius) view_show_center(p, p->initial_state, p->viewers[v]);
         for (int v = 0; v < p->nviewers; v++) initial_center_lo(p, p->viewers[v]);
     }
     return p;
@@ -259,6 +288,8 @@ Program *program_load(const char *source, const char *path) {
  * False (message in err) on an error. */
 bool program_prepare_ex(Program *p, u32 *state, StrBuf *out, char *err, int errcap) {
     if (!p->nprepares) return true;
+    ViewsSaved sv;
+    views_save(p, state, &sv);
     Interp I;
     interp_init(&I, p, state);
     I.out = out;
@@ -267,6 +298,7 @@ bool program_prepare_ex(Program *p, u32 *state, StrBuf *out, char *err, int errc
     for (int i = 0; i < p->nprepares && ok; i++) ok = interp_run_section(&I, p->prepares[i]);
     if (!ok && err) snprintf(err, (size_t)errcap, "%s", I.error);
     interp_free(&I);
+    views_follow(p, &sv, state, false);
     return ok;
 }
 

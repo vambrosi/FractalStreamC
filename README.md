@@ -47,7 +47,7 @@ script and the pictures follow. Then go through the examples in order: **Ctrl+O 
 [docs/app.md](docs/app.md) describes the window.
 
 In a terminal, `fractalstreamc script.fstream` opens a script, and `fractalstreamc --help` lists the
-rest (checking scripts, rendering PNG files without a window, running a tool).
+rest (checking scripts, rendering pictures and videos without a window, running a tool).
 
 ## Building
 

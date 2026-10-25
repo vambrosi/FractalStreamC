@@ -1,0 +1,45 @@
+# Moving views: @prepare can set a view's center and
+# radius from .time (it then runs at every frame), and
+# the view moves by itself. Here both views zoom in on
+# c = i, a Misiurewicz point (0 -> i -> -1 + i -> -i ->
+# -1 + i...). Tan Lei's theorem: near such a c, the
+# Mandelbrot set looks like the Julia set of c, more and
+# more alike as you zoom in. Near i, M - i is about
+# u (J - i) with u = 1 + i/2, so the Julia view shows
+# w = i + (z - i)/u. A video of a view: the film icon
+# (right bar), or on the command line
+#   fractalstreamc --video zoom.mp4 --seconds 20 SCRIPT
+# (20 seconds: the zoom in; --viewer julia: the other).
+
+@config
+.title = "Moving views"
+.maxIterations = 500
+.doublePrecision = true   # (sharp at the end of the zoom)
+seconds := 20 in 4..120 "Seconds to zoom in (then out)"
+depth := 4 in 1..5 "How far: the radius goes down to 2/10^depth"
+mandel.center = i
+julia.center = i
+
+@global
+u := 1 + 0.5i
+
+@prepare
+s := (1 - cos(pi .time / seconds)) / 2   # 0, up to 1, back
+mandel.radius = 2 / 10^(depth s)
+julia.radius = mandel.radius
+
+@viewer mandel c "Mandelbrot set near i" "Ctrl + 1"
+z := c          # (from c, not 0: counts as in the Julia set)
+while z not escapes do
+    z = z^2 + c
+end
+color = if .stuck then .black ...
+        else palette("romao", .iterations / 30)
+
+@viewer julia z "Julia set of i" "Ctrl + 2"
+w := i + (z - i) / u
+while w not escapes do
+    w = w^2 + i
+end
+color = if .stuck then .black ...
+        else palette("romao", .iterations / 30)
