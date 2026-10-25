@@ -879,20 +879,30 @@ static Stmt *parse_define(Parser *p, int top_level) {
                 perr(p, on, "expected the name of an output, as in: define f(x) = (u, v) where");
                 return NULL;
             }
-            Sym *s = ARENA_NEW(&p->prog->arena, Sym);
-            s->name = on->str;
-            s->line = on->line;
-            s->col = on->col;
-            s->kind = SYM_LOCAL;
-            s->viewer_index = -1;
+            /* an output named as a parameter is that parameter: it starts from the argument (define orbit(z, c) = z) */
+            Sym *s = NULL;
+            for (int j = 0; j < f->nparams && !s; j++)
+                if (!strcmp(f->params[j]->name, on->str)) s = f->params[j];
             TypeSyntax *ts = NULL;
-            if (accept(p, TK_COLON)) {
-                ts = parse_type(p);
-                if (!ts) return NULL;
+            if (s && at(p, TK_COLON)) {
+                perr(p, cur(p), "the output '%s' is the parameter '%s': give its type in the parameters", s->name, s->name);
+                return NULL;
+            }
+            if (!s) {
+                s = ARENA_NEW(&p->prog->arena, Sym);
+                s->name = on->str;
+                s->line = on->line;
+                s->col = on->col;
+                s->kind = SYM_LOCAL;
+                s->viewer_index = -1;
+                if (accept(p, TK_COLON)) {
+                    ts = parse_type(p);
+                    if (!ts) return NULL;
+                }
+                declare_var_name(p, s->name);
             }
             vec_push(outs, s);
             vec_push(otypes, ts);
-            declare_var_name(p, s->name);
             if (!paren || !accept(p, TK_COMMA)) break;
         }
         if (paren && !expect(p, TK_RPAREN, "to close the list of outputs")) return NULL;

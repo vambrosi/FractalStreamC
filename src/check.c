@@ -884,6 +884,13 @@ static void untyped_output(Program *p, Sym *s, u64 ctx) {
     s->hint_ctx = ctx;
 }
 
+/* output i of f, when it is a parameter (an output named as one, see parse.c): the parameter's index, or -1 */
+static int output_param(const Func *f, int i) {
+    for (int j = 0; j < f->nparams; j++)
+        if (f->outputs[i] == f->params[j]) return j;
+    return -1;
+}
+
 /* The copy of the generic function t for arguments of types at (the existing one, or a new one) */
 static Func *instantiate(Checker *c, Func *t, Type **at, int call_line) {
     for (Func *g = t->instances; g; g = g->next_instance) {
@@ -928,6 +935,11 @@ static Func *instantiate(Checker *c, Func *t, Type **at, int call_line) {
     }
     f->outputs = ARENA_ARRAY(a, Sym *, t->noutputs + 1);
     for (int i = 0; i < t->noutputs; i++) {
+        int j = output_param(t, i);
+        if (j >= 0) { /* (the instance's parameter) */
+            f->outputs[i] = f->params[j];
+            continue;
+        }
         Sym *s = ARENA_NEW(a, Sym);
         *s = *t->outputs[i];
         s->owner = f;
@@ -1915,6 +1927,7 @@ static void resolve_signature(Checker *c, Func *f) {
         if (!f->param_tsyn[i]) f->generic = true;
     }
     for (int i = 0; i < f->noutputs; i++) {
+        if (output_param(f, i) >= 0) continue; /* (typed as a parameter) */
         f->outputs[i]->owner = f;
         if (f->output_tsyn[i]) f->outputs[i]->type = resolve_tsyn(c, f->output_tsyn[i]);
         else if (!f->generic) untyped_output(c->prog, f->outputs[i], 0);
@@ -2349,6 +2362,7 @@ static void check_func(Checker *c, Func *f) {
         vec_push(f->locals, f->params[i]);
     }
     for (int i = 0; i < f->noutputs; i++) {
+        if (output_param(f, i) >= 0) continue;
         vec_push(fscope.syms, f->outputs[i]);
         vec_push(f->locals, f->outputs[i]);
     }

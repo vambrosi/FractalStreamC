@@ -372,6 +372,38 @@ TEST(functions_and_overloads) {
     EXPECT_ERROR("@global\nx := sin(true)\n", "can't be applied");
 }
 
+/* an output named as a parameter is that parameter: it starts from the argument (generic or not, one of several
+   outputs, through derivatives) */
+TEST(output_is_a_parameter) {
+    Program *p = LOAD_OK(
+        "@global\n"
+        "define orbit(z, c) = z where\n"
+        "    for k in 1..3 do\n"
+        "        z = z^2 + c\n"
+        "    end\n"
+        "end\n"
+        "define g(z : C, c : C) = z where\n"
+        "    z = z + 10 c\n"
+        "end\n"
+        "define both(x : R, n : Z) = (x, m : Z) where\n"
+        "    x = 2 x\n"
+        "    m = n + 1\n"
+        "end\n"
+        "a := orbit(1, 1)\n"          /* 1 -> 2 -> 5 -> 26 */
+        "b := orbit(0.5, 0)\n"        /* (another instance: R) */
+        "d := g(1, 2)\n"
+        "(x2, m2) := both(1.5, 4)\n"
+        "dz := derivative t -> orbit(t, 1) at 1\n"); /* 2 z0 2 z1 2 z2 = 2 1 2 2 2 5 */
+    CHECK_NEAR(gnum(p, "a", 0), 26, 1e-6);
+    CHECK_NEAR(gnum(p, "b", 0), 0.00390625, 1e-9);
+    CHECK_NEAR(gnum(p, "d", 0), 21, 1e-6);
+    CHECK_NEAR(gnum(p, "x2", 0), 3, 1e-6);
+    CHECK_NEAR(gnum(p, "m2", 0), 5, 0);
+    CHECK_NEAR(gnum(p, "dz", 0), 80, 1e-4);
+    program_free(p);
+    EXPECT_ERROR("@global\ndefine f(z) = z : R where\n    z = 1\nend\nx := f(1)\n", "give its type in the parameters");
+}
+
 TEST(sections_and_config) {
     Program *p = LOAD_OK(
         "@config\n"
@@ -1647,6 +1679,7 @@ TEST(line_continuations) {
 }
 
 static const TestCase tests_lang[] = {
+    TESTCASE(output_is_a_parameter),
     TESTCASE(views_follow_their_center_and_radius),
     TESTCASE(line_continuations),
     TESTCASE(print_statement),

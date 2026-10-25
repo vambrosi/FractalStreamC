@@ -93,6 +93,25 @@ static const struct { const char *name; const char *src; double max_bad; } cg_sc
      "(a, b) := f(z, 1)\n"
      "c := g(z) + g(1.5) + h(4)\n"
      "color = [0.5 + 0.4 sin(re(a) + im(b)), 0.5 + 0.4 cos(re(c)), 0.5 + 0.4 sin(im(a))]\n", 0.002},
+    {"output_is_a_parameter", /* (define orbit(z, c) = z: the output is the parameter, see parse.c) */
+     "@global\n"
+     "define orbit(z, c) = z where\n"
+     "    for k in 1..12 do\n"
+     "        if |z| > 4 then\n"
+     "            return\n"
+     "        end\n"
+     "        z = z^2 + c\n"
+     "    end\n"
+     "end\n"
+     "define both(x : R, n : Z) = (x, m : Z) where\n"
+     "    x = 2 x\n"
+     "    m = n + 1\n"
+     "end\n"
+     "@viewer v z\n"
+     "w := orbit(z, -0.6 + 0.4i)\n"
+     "dw := derivative t -> orbit(t, -0.6 + 0.4i) at z\n"
+     "(a, m) := both(re(z), 3)\n"
+     "color = [0.5 + 0.4 sin(re(w)), 0.5 + 0.4 cos(log(|dw| + 1)), 0.5 + 0.1 a + 0.01 m]\n", 0.002},
     {"global_lists", /* lists a viewer only reads are read in place in the state buffer; written ones are copied */
      "@global\n"
      "A : List of C up to 300 = []\n"

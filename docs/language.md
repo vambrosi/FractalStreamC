@@ -248,6 +248,8 @@ parameter can still get wider, like a variable declared without a type. Results 
 take the widest type assigned to them. A function nothing calls yet is checked as if called with
 complex numbers (or real numbers, or integers: the first that works), so typos show up at once.
 A parameter with a type converts its argument (`g(x : R)` turns `g(2)` into `g(2.0)`).
+A result with the name of a parameter is that parameter, starting from the argument: with
+`define orbit(z, c) = z where` and a loop doing `z = z^2 + c`, the result is the last `z`.
 
 Functions see the global state (and may change it), their parameters, their results and their own
 variables; not the variables of the section that calls them. Functions with the same name but
