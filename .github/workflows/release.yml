@@ -132,9 +132,12 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Create the release and attach the downloads
+        # The notes: what's new (docs/releases/<tag>.md, if there is one), then how to download. GitHub shows each
+        # line break of a release's text, so every paragraph and list item is one line.
         run: |
           ls -l dist
-          cat > notes.md <<'EOF'
+          if [ -f "docs/releases/$TAG.md" ]; then cat "docs/releases/$TAG.md"; echo; fi > notes.md
+          cat >> notes.md <<'EOF'
           ## Download
 
           | Your computer | File |
@@ -145,17 +148,36 @@ jobs:
 
           Which chip a Mac has: Apple menu > About This Mac.
 
-          **Mac** (macOS 12 or newer): unzip, move FractalStreamC to Applications, and open it. The first time, macOS
-          says it could not verify the app (it is not notarized by Apple): on macOS 15 and newer click Done, then
-          System Settings > Privacy & Security > Open Anyway; on older versions right-click the app > Open > Open.
-          Or install it with one command in Terminal, which avoids the question (it picks the right file for the Mac):
+          ### Mac (macOS 12 or newer)
 
-              curl -fL -o /tmp/FractalStreamC.zip "https://github.com/@REPO@/releases/download/@TAG@/FractalStreamC-macos-$(uname -m).zip" && rm -rf /Applications/FractalStreamC.app && ditto -x -k /tmp/FractalStreamC.zip /Applications && open /Applications/FractalStreamC.app
+          1. Unzip the file and move **FractalStreamC** to Applications.
+          2. Open it. The first time, macOS says it could not verify the app, as it is not notarized by Apple:
+              - on macOS 15 and newer, click **Done**, then **Open Anyway** in System Settings > Privacy & Security;
+              - on older versions, right-click the app and choose **Open**, then **Open** again.
 
-          **Linux**: `tar -xzf FractalStreamC-linux-x86_64.tar.gz`, then run `FractalStreamC-linux-x86_64/fractalstreamc`.
-          It needs a Vulkan driver (Ubuntu, Debian: `sudo apt install libvulkan1 mesa-vulkan-drivers`).
+          Or install it from Terminal, which skips that question (it picks the file for your Mac):
 
-          More: [Download and run](https://github.com/@REPO@#download-and-run).
+          ```sh
+          U=https://github.com/@REPO@/releases/download/@TAG@
+          F=FractalStreamC-macos-$(uname -m).zip
+          curl -fL -o /tmp/$F $U/$F &&
+            rm -rf /Applications/FractalStreamC.app &&
+            ditto -x -k /tmp/$F /Applications &&
+            open /Applications/FractalStreamC.app
+          ```
+
+          ### Linux (64-bit PC)
+
+          1. Unpack the file: `tar -xzf FractalStreamC-linux-x86_64.tar.gz`
+          2. Run `FractalStreamC-linux-x86_64/fractalstreamc`
+
+          It needs a Vulkan driver. On Ubuntu and Debian: `sudo apt install libvulkan1 mesa-vulkan-drivers`.
+
+          ### Windows
+
+          Build it from the source code: [docs/building.md](https://github.com/@REPO@/blob/@TAG@/docs/building.md).
+
+          More in the [README](https://github.com/@REPO@#download).
           EOF
           sed -i -e "s#@REPO@#$GH_REPO#g" -e "s#@TAG@#$TAG#g" notes.md
           case "$TAG" in *-*) PRERELEASE=--prerelease ;; *) PRERELEASE= ;; esac   # (v1.0.0-beta: a pre-release)

@@ -29,10 +29,15 @@ From the [latest release](../../releases/latest):
   `FractalStreamC-macos-x86_64.zip` for Intel. Unzip it and move FractalStreamC to Applications.
   The app isn't notarized, so the first time macOS won't open it: on macOS 15 or newer, click
   **Done**, then **System Settings → Privacy & Security → Open Anyway**; on older versions,
-  right-click the app and choose **Open**. Or install it with this Terminal command, which
-  skips that step:
+  right-click the app and choose **Open**. Or install it with these Terminal commands, which
+  skip that step:
   ```sh
-  curl -fL -o /tmp/FractalStreamC.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStreamC-macos-$(uname -m).zip" && rm -rf /Applications/FractalStreamC.app && ditto -x -k /tmp/FractalStreamC.zip /Applications && open /Applications/FractalStreamC.app
+  U=https://github.com/vambrosi/FractalStreamC/releases/latest/download
+  F=FractalStreamC-macos-$(uname -m).zip
+  curl -fL -o /tmp/$F $U/$F &&
+    rm -rf /Applications/FractalStreamC.app &&
+    ditto -x -k /tmp/$F /Applications &&
+    open /Applications/FractalStreamC.app
   ```
 - **Linux** (x86_64; Ubuntu 22.04, Debian 12, Fedora 36 or newer): unpack
   `FractalStreamC-linux-x86_64.tar.gz` and run `fractalstreamc` in it. It needs a Vulkan driver

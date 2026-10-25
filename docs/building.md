@@ -33,7 +33,12 @@ in "Making a release" below); the README's "Download" has the details.
   question, as files downloaded by `curl` are not marked as coming from the internet (`uname -m` picks
   the file for the Mac; no developer tools needed):
 
-      curl -fL -o /tmp/FractalStreamC.zip "https://github.com/vambrosi/FractalStreamC/releases/latest/download/FractalStreamC-macos-$(uname -m).zip" && rm -rf /Applications/FractalStreamC.app && ditto -x -k /tmp/FractalStreamC.zip /Applications && open /Applications/FractalStreamC.app
+      U=https://github.com/vambrosi/FractalStreamC/releases/latest/download
+      F=FractalStreamC-macos-$(uname -m).zip
+      curl -fL -o /tmp/$F $U/$F &&
+        rm -rf /Applications/FractalStreamC.app &&
+        ditto -x -k /tmp/$F /Applications &&
+        open /Applications/FractalStreamC.app
 
 - **Linux** (x86_64, glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later):
   `tar -xzf FractalStreamC-linux-x86_64.tar.gz`, then run `FractalStreamC-linux-x86_64/fractalstreamc`.
@@ -175,7 +180,9 @@ The shaders written by users are compiled to SPIR-V by FractalStreamC itself.
 A release is the set of downloads above, published on GitHub by the workflow
 `.github/workflows/release.yml` when a version tag is pushed:
 
-1. Set the version in `src/base.h` (`#define FS_VERSION "0.2.0"`) and commit it.
+1. Set the version in `src/base.h` (`#define FS_VERSION "0.2.0"`), write what's new in
+   `docs/releases/v0.2.0.md` (optional), and commit them. GitHub shows every line break of a release's
+   text, so write each paragraph and list item of that file on one line.
 2. Tag that commit `v` + the version, and push both:
 
        git tag v0.2.0
@@ -184,8 +191,11 @@ A release is the set of downloads above, published on GitHub by the workflow
 3. On GitHub, Actions > Release shows the run (about 10 minutes). It builds and tests the Linux
    program in Ubuntu 22.04, builds the Mac app on an Apple silicon Mac (`macos-15`) and on an Intel
    one (`macos-15-intel`), tries each download as a user would (unpacked in another folder), and
-   then creates the release of the tag with the three files. A tag that doesn't match `FS_VERSION` stops
-   it before publishing. A tag with a hyphen (`v0.3.0-beta`) makes a pre-release.
+   then creates the release of the tag with the three files. Its text is `docs/releases/<tag>.md`
+   followed by how to download and install. A tag that doesn't match `FS_VERSION` stops it before
+   publishing. A tag with a hyphen (`v0.3.0-beta`) makes a pre-release.
+4. The release's page (Releases, on the repository's main page) can be edited afterwards: the pencil
+   button changes its text.
 
 To build the downloads without publishing anything: Actions > Release > Run workflow; the files are
 then under that run's Artifacts. The file names don't change between releases, so links ending in
