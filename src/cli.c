@@ -428,8 +428,9 @@ int cli_main(int argc, char **argv) {
                 bytes = ftell(f);
                 fclose(f);
             }
-            printf("wrote %s (%dx%d, %d frames at %d per second, %d sample%s per pixel, %.1f MB, %.1fs)\n", arg, w, h,
-                   j->frames, fps, j->samples, j->samples == 1 ? "" : "s", bytes / 1e6, fs_time_seconds() - t0);
+            printf("wrote %s (%dx%d, %d frame%s at %d per second, %d sample%s per pixel, %.1f MB, %.1fs)\n", arg, w, h,
+                   j->frames, j->frames == 1 ? "" : "s", fps, j->samples, j->samples == 1 ? "" : "s", bytes / 1e6,
+                   fs_time_seconds() - t0);
         }
         video_end(j);
         gfx_shutdown();
