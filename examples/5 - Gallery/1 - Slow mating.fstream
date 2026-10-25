@@ -1,0 +1,193 @@
+# Slow mating (Milnor): the filled Julia sets of z^2 + p
+# and z^2 + q, glued along an equipotential. Between them
+# lie the points that escape, an annulus (gray, lightest
+# along the gluing curve). As the potential of the gluing
+# goes down to 0, the annulus shrinks and the two Julia
+# sets merge into the Julia set of a rational map: their
+# mating, when the pair mates. Basilica and Rabbit here,
+# the historical example (Douady and Hubbard). The view
+# "Slow mating" plays it (the potential goes down from
+# about 3, and back up); "One potential" (Ctrl+2) stops at
+# the potential set in the config. Movies of many pairs,
+# by Arnaud Chéritat:
+# https://www.math.univ-toulouse.fr/~cheritat/MatMovies/
+#
+# How it is drawn (Buff's method): glued at potential
+# eta, z^2 + p and z^2 + q map the sphere to the one
+# glued at 2 eta. With the critical points at 0 and ∞,
+# and the point where the rays of angle 0 meet at 1, that
+# map is f(w) = m(w^2), m the Möbius map with m(0) = a,
+# m(∞) = 1/b and m(1) = 1, where a and 1/b are the
+# critical values p and q (in the sphere glued at
+# 2 eta). A pixel goes through f, then f at 2 eta,
+# 4 eta... up to a potential so high that the sphere is
+# just the two planes (w = z / R and w = R / z,
+# R = exp(eta)), where z^2 + p or z^2 + q colors it.
+# @prepare finds a and b at every potential, from high to
+# low, pulling them back through the maps: Thurston's
+# algorithm along a path (Buff and Chéritat; W. Jung,
+# "The Thurston algorithm for quadratic matings", 2017).
+# The Info pane (Ctrl+I) shows the map at the lowest
+# potential and the orbits of its critical points.
+
+@config
+.title = "Slow mating"
+.maxIterations = 200
+"p and q in the Mandelbrot set. Rabbit -0.1226 + 0.7449i, " +
+"Basilica -1, Airplane -1.7549, Kokopelli -0.1565 + 1.0322i, " +
+"Dendrite i. Not every pair mates: Rabbit with its mirror " +
+"image -0.1226 - 0.7449i pinches, so does Basilica with Airplane."
+p : C = -1                     "p (the Julia set on the left)"
+q : C = -0.122561 + 0.744862i  "q (on the right)"
+seconds := 20 in 4..120 "Seconds from high potential to the mating"
+depth := 24 in 10..40 "Halvings of the potential (slow pairs need more)"
+potential := 0.01 in 1e-10..2 "Potential of the second view"
+movie.radius = 1.6
+still.radius = 1.6
+
+@global
+top := 4.0          # above potential 2^top: the two planes
+steps := 16         # rows per halving of the potential
+# a and b at each row (row m: potential 2^(top - m/steps)),
+# times exp(potential): so they hardly change at high
+# potential, and interpolate well between rows
+A : List of C up to 1000 = []
+B : List of C up to 1000 = []   # (q is at 1/b)
+p0 : C = 1000       # p, q and depth of the rows
+q0 : C = 1000
+d0 := 0
+
+# the map from the sphere glued at eta to the one at 2 eta
+define f(w : P, a, b) = ((a - 1) w^2 + a (b - 1)) / (b (a - 1) w^2 + b - 1)
+
+# the preimage of t under f (with a and b): the square
+# root nearer to prev (the preimage that moves on
+# continuously from the row above)
+define pull(a, b, t, prev) = r where
+    r = sqrt((b - 1) (t - a) / ((a - 1) (1 - t b)))
+    if |r + prev| < |r - prev| then
+        r = -r
+    end
+end
+
+# is c outside the Mandelbrot set?
+define outside(c) = out where
+    z := 0
+    out = false
+    for k in 1..100 do
+        z = z^2 + c
+        if |z| > 2 then
+            out = true
+            break
+        end
+    end
+end
+
+# the color of the point w of the sphere glued at
+# potential 2^s
+define picture(w : P, s : R) = col where
+    g := max((top - s) steps, 0)   # its row (not a whole number)
+    n := floor(g / steps)          # maps up to the planes
+    v : P = w
+    for j in 1..n do
+        h := g - j steps           # the row of 2^(s + j)
+        k := floor(h)
+        e := exp(-(2^(s + j)))
+        a := (A[k + 1] + (h - k) (A[k + 2] - A[k + 1])) e
+        b := (B[k + 1] + (h - k) (B[k + 2] - B[k + 1])) e
+        v = f(v, a, b)
+    end
+    R := exp(2^(s + n))
+    z : C = 0
+    c : C = p
+    left := |v| <= 1
+    if left then                   # in the plane of p
+        z = R complex(v)
+    else                           # in the plane of q
+        z = R complex(1 / v)
+        c = q
+    end
+    while |z| < 1e6 do
+        z = z^2 + c
+    end
+    if .stuck then                 # in a filled Julia set
+        col = if left then rgb(0.84, 0.62, 0.78) ...
+              else rgb(0.92, 0.82, 0.48)
+    else       # t: the potential, 0 at the Julia sets, 1 at the gluing
+        t := log(|z|) / 2^(.iterations + s + n)
+        col = gray(0.62 + 0.3 t)
+    end
+end
+
+@prepare
+if p != p0 or q != q0 or depth != d0 then   # the rows, when needed
+    p0 = p
+    q0 = q
+    d0 = depth
+    clear(A)
+    clear(B)
+    K := depth + 2                # orbit points kept per row
+    S := steps + 1                # rows kept: 2 eta down to eta
+    X : List of C up to 4096 = [] # p's orbit, in the last S rows
+    Y : List of C up to 4096 = [] # q's orbit, seen from ∞
+    cells := S K
+    for k in 1..cells do
+        append(X, 0)
+        append(Y, 0)
+    end
+    rows := steps depth
+    for m in 0..rows do
+        row := (m mod S) K        # where row m goes
+        if m < steps then         # high: the two planes
+            r := exp(-(2^(top - m / steps)))
+            x := p
+            y := q
+            for k in 1..K do
+                X[row + k] = x r
+                Y[row + k] = y r
+                x = x^2 + p
+                y = y^2 + q
+            end
+        else                      # pulled back from 2 eta
+            up := ((m - steps) mod S) K
+            back := ((m - 1) mod S) K
+            for k in 1..K - 1 do
+                X[row + k] = pull(X[up + 1], Y[up + 1], X[up + k + 1], X[back + k])
+                Y[row + k] = pull(Y[up + 1], X[up + 1], Y[up + k + 1], Y[back + k])
+            end
+        end
+        e := exp(2^(top - m / steps))
+        append(A, X[row + 1] e)
+        append(B, Y[row + 1] e)
+    end
+end
+e := exp(-(2^(top - depth)))
+a := A[-1] e                      # the map at the lowest potential:
+b := B[-1] e                      # the mating, if they mate
+o1 : List of P = [0]
+o2 : List of P = [∞]
+for k in 1..4 do
+    append(o1, f(o1[-1], a, b))
+    append(o2, f(o2[-1], a, b))
+end
+print "At potential 2^" + (top - depth) + ", f(w) = " +
+      "(α w^2 + β) / (γ w^2 + δ) with α = " + (a - 1) + ", β = " +
+      a (b - 1) + ", γ = " + b (a - 1) + ", δ = " + (b - 1)
+print "Orbit of 0 (p's critical point): " + o1
+print "Orbit of ∞ (q's critical point): " + o2
+if outside(p) or outside(q) then
+    print "p and q must be in the Mandelbrot set: slow mating " +
+          "glues connected Julia sets"
+end
+
+# the view is turned so that p's critical point (0) is at
+# -1, q's (∞) at 1, and the point where the rays of angle
+# 0 meet (1) at 0
+@viewer movie z : P "Slow mating" projective
+lo := top - depth + 1
+hi := 1.5
+s := hi + (lo - hi) (1 - cos(pi .time / seconds)) / 2
+color = picture((1 + z) / (1 - z), s)
+
+@viewer still z : P "One potential" projective
+color = picture((1 + z) / (1 - z), log2(potential))

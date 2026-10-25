@@ -4,7 +4,7 @@
 # of the basilica with a quadratic polynomial: gray is
 # the basilica's side (orbits into the 2-cycle), light
 # orange the other side. a goes back and forth from a0
-# to a1.
+# to a1. How a mating forms: 5 - Gallery/1 - Slow mating.
 
 @config
 .title = "Matings in Per_2(0)"
