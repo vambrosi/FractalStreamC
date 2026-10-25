@@ -90,11 +90,12 @@ define picture(w : P, s : R) = col where
     n := floor(g / steps)          # maps up to the planes
     k := floor(g)
     h := g - k                     # (between rows k and k + 1)
-    e := exp(-(2^s))               # exp(-potential)
+    x := 2^s                       # the potential
     v : P = w
     for j in 1..n do               # to the sphere at potential 2^(s + j):
         k -= steps                 # its row
-        e = e e
+        x = 2 x                    # (exactly; squaring exp(-x)
+        e := exp(-x)               # doubles its error each time)
         a := (A[k + 1] + h (A[k + 2] - A[k + 1])) e
         b := (B[k + 1] + h (B[k + 2] - B[k + 1])) e
         v = f(v, a, b)
