@@ -74,6 +74,8 @@ typedef struct ViewerRT {
     FloodGpu flood_df;
     u32 center_bits[2]; /* the center when its low part was set (a center set elsewhere drops the low part) */
     int target, tw, th;
+    int lo_target, lo_w, lo_h; /* while the picture changes: a smaller one, drawn whole each time (preview_render) */
+    bool lo_shown;     /* the tile shows that one: the full-size picture isn't done yet */
     u32 *snap;         /* state the image was rendered from */
     bool *used;        /* per global: does the viewer read it? */
     bool animated;
@@ -118,6 +120,11 @@ typedef struct App {
     bool overlay_panes;     /* the panes float over the views, translucent (a setting, kept in settings.txt) */
     int band_rows;
     int flood_passes;       /* flood-fill passes per frame (adapts to the GPU) */
+    int preview_level;      /* changing views are drawn at 2^(-level/2) of their size each way (see preview_render) */
+    int preview_calm;       /* frames in a row in which twice the pixels would have fitted (< 0: wait after a step down) */
+    int preview_age;        /* frames since a changing view was last drawn */
+    int preview_hold;       /* frames to wait after the level changed */
+    double preview_ms;      /* the views' GPU time, smoothed */
     /* the bars at the window's edges, and the panes next to them */
     bool editor_open, config_open;
     float editor_frac, config_frac;
@@ -1209,6 +1216,7 @@ static void free_viewers(void) {
         flood_gpu_destroy(&rt->flood);
         flood_gpu_destroy(&rt->flood_df);
         if (rt->target) gfx_target_destroy(rt->target);
+        if (rt->lo_target) gfx_target_destroy(rt->lo_target);
         free(rt->snap);
         free(rt->used);
         free(rt->show_snap);
@@ -2644,7 +2652,8 @@ static void draw_tile(VisTile *t) {
     ViewerRT *rt = &A.vrt[t->viewer];
     Rect r = t->r;
     ui_push_clip(r.x, r.y, r.w, r.h);
-    if (rt->target) ui_image(rt->target, r.x, r.y, (float)rt->tw, (float)rt->th);
+    if (rt->lo_shown && rt->lo_target) ui_image(rt->lo_target, r.x, r.y, (float)rt->tw, (float)rt->th); /* (stretched) */
+    else if (rt->target) ui_image(rt->target, r.x, r.y, (float)rt->tw, (float)rt->th);
     if (rt->grid) draw_grid(t);
     for (int tool = 0; tool < p->ntools; tool++) draw_items(t, &A.draws[tool]);
     Section *s = p->viewers[t->viewer];
@@ -4879,7 +4888,91 @@ static void render_band(ViewerRT *rt) {
     gfx_frame_render_viewer(rt->target, vpipeline(rt), &vp);
     rt->next_row = vp.y1 >= rt->th ? 0 : vp.y1;
     rt->rows_left -= rows;
-    if (rt->rows_left <= 0) rt->samples = rt->pass + 1;
+    if (rt->rows_left <= 0) {
+        rt->samples = rt->pass + 1;
+        rt->lo_shown = false; /* (the full-size picture is done: the tile shows it) */
+    }
+}
+
+/* ---- changing views --------------------------------------------------------------------------------------------
+ * A view whose picture changes (dragged, zoomed, animated, its state changed) is drawn whole at once, in the frame of
+ * the change, and smaller when the GPU needs it: at 2^(-level/2) of its size each way (level 0: full size), stretched
+ * over its tile.  The level adapts to the GPU time of the views (adapt_preview).  Once the view rests, its full-size
+ * picture is drawn as before (in bands, then antialiased), and the tile shows the smaller one until it is done. */
+#define PREVIEW_MS 14.0f      /* the GPU time the views may take per frame while they change */
+#define PREVIEW_MAX_LEVEL 8   /* 1/16 of the size each way */
+
+static void preview_render(ViewerRT *rt) {
+    /* at most the rows the frame has time for (band_rows adapts to the frame time, see frame) */
+    int level = A.preview_level;
+    while (level < PREVIEW_MAX_LEVEL && (double)rt->th * exp2(-0.5 * level) * exp2(-0.5 * level) > A.band_rows) level++;
+    float k = level > 0 ? exp2f(-0.5f * (float)level) : 1.0f;
+    int w = FS_MAX(1, (int)ceilf((float)rt->tw * k)), h = FS_MAX(1, (int)ceilf((float)rt->th * k));
+    int target = rt->target;
+    if (level > 0) {
+        if (!rt->lo_target || rt->lo_w != w || rt->lo_h != h) {
+            if (rt->lo_target) gfx_target_destroy(rt->lo_target);
+            rt->lo_target = gfx_target_create(w, h);
+            rt->lo_w = w;
+            rt->lo_h = h;
+        }
+        target = rt->lo_target;
+    }
+    if (!target) return;
+    GfxViewerParams vp = {0};
+    vp.width = (float)w;
+    vp.height = (float)h;
+    vp.x0 = 0;
+    vp.x1 = w;
+    vp.y0 = 0;
+    vp.y1 = h;
+    gfx_frame_render_viewer(target, vpipeline(rt), &vp);
+    A.preview_age = 0;
+    if (level > 0) {
+        rt->lo_shown = true;
+    } else { /* (the full-size picture, done) */
+        rt->rows_left = 0;
+        rt->next_row = 0;
+        rt->samples = 1;
+        rt->lo_shown = false;
+    }
+}
+
+/* after a frame: the level of the changing views, from the GPU time of the latest finished frame (two frames back,
+   so only while views changed in the last frames); without GPU timestamps, from the frame's time */
+static void adapt_preview(double frame_ms) {
+    if (A.preview_age++ > 2) return;
+    float gpu = gfx_frame_gpu_ms();
+    double ms = gpu >= 0 ? gpu : frame_ms;
+    A.preview_ms = A.preview_ms > 0 ? 0.6 * A.preview_ms + 0.4 * ms : ms; /* (smoothed: the timings are noisy) */
+    if (A.preview_hold > 0) { /* (after a change, until the timings are of frames drawn at the new level) */
+        A.preview_hold--;
+        return;
+    }
+    bool slow = gpu >= 0 ? A.preview_ms > PREVIEW_MS : A.preview_ms > 2.4 * PREVIEW_MS;
+    bool roomy = gpu >= 0 ? A.preview_ms * 2.4 < PREVIEW_MS : A.preview_ms < 1.3 * PREVIEW_MS;
+    int was = A.preview_level;
+    if (slow && A.preview_level < PREVIEW_MAX_LEVEL) { /* smaller at once */
+        A.preview_level++;
+        A.preview_calm = gpu >= 0 ? -120 : -240;      /* (and then larger only after a while, to not flicker) */
+    } else if (roomy && A.preview_level > 0) {
+        if (++A.preview_calm >= 20) {
+            A.preview_level--;
+            A.preview_calm = 0;
+        }
+    } else if (A.preview_calm > 0) {
+        A.preview_calm = 0;
+    } else {
+        A.preview_calm++;
+    }
+    if (A.preview_level != was) {
+        A.preview_hold = 4;
+        A.preview_ms = 0;
+    }
+    double ms_ = gpu;
+    if (A.preview_level != was && getenv("FS_DEBUG"))
+        fprintf(stderr, "changing views: level %d (%.0f%% of the size each way; views %.1f ms on the GPU, frame %.1f ms)\n",
+                A.preview_level, 100 * exp2(-0.5 * A.preview_level), ms_, frame_ms);
 }
 
 static bool render_viewers(void) {
@@ -4935,12 +5028,15 @@ static bool render_viewers(void) {
             continue;
         }
         if (dirty) {
-            if (!rt->rendered || rt->rows_left == 0) rt->next_row = 0;
-            rt->rows_left = rt->th; /* keep going round from where we are, so every row gets refreshed
-                                       even while the state changes every frame (panning) */
+            rt->next_row = 0;
+            rt->rows_left = rt->th; /* (the full-size picture, once the view rests) */
             rt->rendered = true;
             rt->pass = 0;           /* (a new picture: one sample first) */
             rt->samples = 0;
+            preview_render(rt);     /* the new picture now, whole (smaller while the GPU needs it) */
+            first_work = true;
+            if (rt->rows_left > 0) busy = true;
+            continue;
         }
         if (rt->rows_left <= 0 || rt->pass > 0) continue;
         render_band(rt);
@@ -5085,6 +5181,7 @@ static void frame(void) {
         gfx_frame_end();
     }
     double dt = fs_time_seconds() - t0;
+    adapt_preview(dt * 1000);
     if (busy || dt > 0.06) {
         if (dt > 0.06 && A.band_rows > BAND_ALIGN) A.band_rows /= 2;
         else if (dt < 0.025 && A.band_rows < 8192) A.band_rows *= 2;

@@ -128,7 +128,8 @@ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
     X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetBlendConstants) X(vkCmdPushConstants) X(vkCmdBindDescriptorSets) \
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) \
     X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
-    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdFillBuffer) X(vkCmdCopyBuffer)
+    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdFillBuffer) X(vkCmdCopyBuffer) \
+    X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
 #define GFX_SWAPCHAIN_FUNCS(X) \
     X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) \
     X(vkAcquireNextImageKHR) X(vkQueuePresentKHR)
@@ -333,6 +334,7 @@ typedef struct GfxFrame {
     VkFence fence;             /* signaled when this slot's last submission completed */
     VkSemaphore acquired;      /* swapchain image acquired */
     u64 serial;                /* number of this slot's last submission */
+    bool ts_pending;           /* its submission has timestamps around the views' work (gfx_frame_gpu_ms) */
     VkDescriptorPool dpool;    /* globals descriptor sets; reset at frame begin */
     GfxHostBuffer globals, verts, indices;
     VkDeviceSize globals_used; /* bytes of `globals` used by this frame */
@@ -381,6 +383,10 @@ typedef struct GfxState {
     VkQueue queue;
     u32 qfamily;
     VkDeviceSize storage_align; /* alignment of globals chunks */
+    /* GPU timestamps: two per frame slot, before and after the views' work (none if the queue has no timestamps) */
+    VkQueryPool ts_pool;
+    u64 ts_mask;
+    float frame_gpu_ms;         /* the views' work of the latest finished frame (-1: unknown) */
 
     /* fixed objects */
     VkCommandPool cmdpool;
@@ -998,6 +1004,21 @@ static bool gfx_create_frames(void) {
             !gfx_descriptor_pool(GFX_FRAME_GLOBAL_SETS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, false, &f->dpool))
             return false;
     }
+    /* GPU timestamps, when the queue has them (how long the views take: the app adapts their size while they move) */
+    gx.frame_gpu_ms = -1;
+    u32 nqf = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(gx.phys, &nqf, NULL);
+    VkQueueFamilyProperties *qf = (VkQueueFamilyProperties *)xcalloc(FS_MAX(nqf, 1u), sizeof *qf);
+    vkGetPhysicalDeviceQueueFamilyProperties(gx.phys, &nqf, qf);
+    u32 bits = gx.qfamily < nqf ? qf[gx.qfamily].timestampValidBits : 0;
+    free(qf);
+    if (bits > 0 && gx.props.limits.timestampPeriod > 0 && !gx.ts_pool) {
+        VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qi.queryCount = 2 * GFX_FRAMES;
+        if (vkCreateQueryPool(gx.device, &qi, NULL, &gx.ts_pool) != VK_SUCCESS) gx.ts_pool = VK_NULL_HANDLE;
+        gx.ts_mask = bits >= 64 ? ~(u64)0 : (((u64)1 << bits) - 1);
+    }
     /* The batch: a command buffer and a fence (no swapchain objects, no viewer sets). */
     VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cai.commandPool = gx.cmdpool;
@@ -1378,6 +1399,8 @@ void gfx_shutdown(void) {
             vkDestroyFence(gx.device, f->fence, NULL);
             vkDestroySemaphore(gx.device, f->acquired, NULL);
         }
+        if (gx.ts_pool) vkDestroyQueryPool(gx.device, gx.ts_pool, NULL);
+        gx.ts_pool = VK_NULL_HANDLE;
         gfx_hostbuf_free(&gx.sync_globals);
         gfx_hostbuf_free(&gx.sync_verts);
         gfx_hostbuf_free(&gx.sync_indices);
@@ -1416,6 +1439,8 @@ void gfx_shutdown(void) {
 const char *gfx_device_name(void) { return gx.device_name; }
 bool gfx_has_float_controls(void) { return gx.float_controls; }
 int gfx_max_image_size(void) { return gx.device ? (int)gx.props.limits.maxImageDimension2D : 0; }
+
+float gfx_frame_gpu_ms(void) { return gx.device && gx.ts_pool ? gx.frame_gpu_ms : -1; }
 const char *gfx_fatal_error(void) { return gx.fatal[0] ? gx.fatal : NULL; }
 int gfx_validation_errors(void) { return gfx_validation_ever ? gfx_validation_error_total : -1; }
 
@@ -2066,6 +2091,15 @@ bool gfx_frame_begin(void) {
     }
     gx.completed = FS_MAX(gx.completed, f->serial);
     gfx_collect_garbage();
+    if (f->ts_pending) { /* (its submission is done: the fence was waited for) */
+        u64 t[2];
+        if (vkGetQueryPoolResults(gx.device, gx.ts_pool, 2 * (u32)gx.frame, 2, sizeof t, t, sizeof(u64),
+                                  VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            u64 d = (t[1] - t[0]) & gx.ts_mask;
+            gx.frame_gpu_ms = (float)((double)d * gx.props.limits.timestampPeriod * 1e-6);
+        }
+        f->ts_pending = false;
+    }
 
     VkResult r = vkAcquireNextImageKHR(gx.device, gx.swapchain, UINT64_MAX, f->acquired, VK_NULL_HANDLE,
                                        &gx.image_index);
@@ -2084,6 +2118,10 @@ bool gfx_frame_begin(void) {
         return false;
     }
     gfx_rec_reset(f);
+    if (gx.ts_pool) {
+        vkCmdResetQueryPool(f->cmd, gx.ts_pool, 2 * (u32)gx.frame, 2);
+        vkCmdWriteTimestamp(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, gx.ts_pool, 2 * (u32)gx.frame);
+    }
     gx.recording = true;
     gx.drawn = false;
     return true;
@@ -2105,6 +2143,10 @@ void gfx_frame_draw(const GfxDrawList *dl, const float clear_rgb[3]) {
     if (!gx.recording) { gfx_warn("gfx_frame_draw outside gfx_frame_begin/end"); return; }
     if (gx.drawn) { gfx_warn("gfx_frame_draw called twice in one frame; ignored"); return; }
     GfxFrame *f = &gx.frames[gx.frame];
+    if (gx.ts_pool) { /* (the views' work ends here: the rest is the window's drawing) */
+        vkCmdWriteTimestamp(f->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gx.ts_pool, 2 * (u32)gx.frame + 1);
+        f->ts_pending = true;
+    }
     /* This slot's buffers are free: its previous submission was waited for in begin. */
     bool have = gfx_upload_drawlist(dl, &f->verts, &f->indices);
     VkClearValue clear = clear_rgb ? gfx_clear_color(clear_rgb[0], clear_rgb[1], clear_rgb[2], 1.0f)

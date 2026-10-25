@@ -96,6 +96,8 @@ void gfx_shutdown(void);
 const char *gfx_device_name(void);   /* "" before gfx_init */
 bool gfx_has_float_controls(void);    /* shaders can ask for IEEE floats (SPV_KHR_float_controls SignedZeroInfNanPreserve) */
 int gfx_max_image_size(void);        /* largest target / render width or height */
+float gfx_frame_gpu_ms(void);       /* GPU time of the views' work (renders, fills) of the latest finished frame,
+                                       in ms; -1 when the GPU doesn't tell (no timestamps) */
 const char *gfx_fatal_error(void);   /* NULL while healthy */
 /* Validation messages of severity "error" seen so far (across init/shutdown);
    -1 when the validation layer is not active. */
