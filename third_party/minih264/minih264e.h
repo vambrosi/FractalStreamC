@@ -5199,8 +5199,8 @@ static void h264e_copy_8x8_neon(pix_t *d, int d_stride, const pix_t *s)
 
 static void h264e_copy_16x16_neon(pix_t *d, int d_stride, const pix_t *s, int s_stride)
 {
-    assert(!((unsigned)d & 7));
-    assert(!((unsigned)s & 7));
+    assert(!((uintptr_t)d & 7)); /* (FractalStreamC: uintptr_t, not unsigned: 64-bit pointers) */
+    assert(!((uintptr_t)s & 7));
     vst1q_u8(d, vld1q_u8(s)); s += s_stride; d += d_stride;
     vst1q_u8(d, vld1q_u8(s)); s += s_stride; d += d_stride;
     vst1q_u8(d, vld1q_u8(s)); s += s_stride; d += d_stride;
@@ -5597,14 +5597,16 @@ static int quantize_neon(quant_t *q, int mode, const uint16_t *qdat, int zmask)
 
                 {
 // vtbl4_u8 is marked unavailable for iOS arm64, use wider versions there.
-#if defined(__APPLE__) && defined(__aarch64__) &&  defined(__apple_build_version__)
+// FractalStreamC: on every arm64 compiler, with vqtbl2_u8 (the AArch64 lookup in two 16-byte registers; there is
+// no vtbl2q_u8, which Apple's clang rejects)
+#if defined(__aarch64__) || defined(_M_ARM64)
                 uint8x16x2_t vlut;
                 vlut.val[0] = vreinterpretq_u8_s16(vcombine_s16(d22, d23));
                 vlut.val[1] = vreinterpretq_u8_s16(vcombine_s16(d24, d25));
-                vst1_s16(q->qv + 0, d4 = vreinterpret_s16_u8(vtbl2q_u8(vlut, vget_low_u8(q8))));
-                vst1_s16(q->qv + 4, d5 = vreinterpret_s16_u8(vtbl2q_u8(vlut, vget_high_u8(q8))));
-                vst1_s16(q->qv + 8, d6 = vreinterpret_s16_u8(vtbl2q_u8(vlut, vget_low_u8(q9))));
-                vst1_s16(q->qv +12, d7 = vreinterpret_s16_u8(vtbl2q_u8(vlut, vget_high_u8(q9))));
+                vst1_s16(q->qv + 0, d4 = vreinterpret_s16_u8(vqtbl2_u8(vlut, vget_low_u8(q8))));
+                vst1_s16(q->qv + 4, d5 = vreinterpret_s16_u8(vqtbl2_u8(vlut, vget_high_u8(q8))));
+                vst1_s16(q->qv + 8, d6 = vreinterpret_s16_u8(vqtbl2_u8(vlut, vget_low_u8(q9))));
+                vst1_s16(q->qv +12, d7 = vreinterpret_s16_u8(vqtbl2_u8(vlut, vget_high_u8(q9))));
 #else
                 uint8x8x4_t vlut;
                 vlut.val[0] = vreinterpret_u8_s16(d22);
@@ -5692,8 +5694,8 @@ static void h264e_transform_add_neon(pix_t *out, int out_stride, const pix_t *pr
     int crow = side;
     int ccol = crow;
 
-    assert(!((unsigned)out % 4));
-    assert(!((unsigned)pred % 4));
+    assert(!((uintptr_t)out % 4)); /* (FractalStreamC: as above) */
+    assert(!((uintptr_t)pred % 4));
     assert(!(out_stride % 4));
     do
     {
