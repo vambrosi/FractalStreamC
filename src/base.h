@@ -37,7 +37,7 @@ typedef uint64_t u64;
 typedef float f32;
 typedef double f64;
 
-#define FS_VERSION "0.1.0"
+#define FS_VERSION "0.2.0"
 
 #define ARRAY_COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 #define FS_MIN(a, b) ((a) < (b) ? (a) : (b))
