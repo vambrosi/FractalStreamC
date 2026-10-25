@@ -44,6 +44,8 @@ static void return_if(Gen *g, u32 bad);
 static u32 real_const(Gen *g, double v);
 static void mark_expr(Gen *g, Expr *e);
 static u32 proj_scale(Gen *g, u32 v);
+static u32 from_buffer(Gen *g, Type *t, u32 v);
+static Sym *root_sym(Expr *e);
 
 /* ---- types ---------------------------------------------------------------- */
 static u32 ty(Gen *g, Type *t) {
@@ -555,9 +557,18 @@ static u32 g_clamp_index(Gen *g, u32 k, u32 lo, u32 hi) {
     return op2(g, SpvOpISub, g->tint, c, ci(g, 1));
 }
 
-/* pointer to an lvalue; *sc receives its storage class */
+/* the type of a value of type t stored with storage class sc: in the state buffer (Uniform) its own layout (bty) */
+static u32 sc_ty(Gen *g, u32 sc, Type *t) { return sc == SpvSCUniform ? bty(g, t) : ty(g, t); }
+
+/* pointer to an lvalue; *sc receives its storage class (Uniform: a list read in place in the state buffer, whose
+   items are then loaded with sc_ty and converted with from_buffer) */
 static u32 lv_ptr(Gen *g, Expr *e, u32 *sc) {
     if (e->kind == E_NAME || e->kind == E_INTERNAL || e->kind == E_MEMBER) {
+        if (e->sym->in_buffer) {
+            *sc = SpvSCUniform;
+            u32 idx = ci(g, e->sym->gindex);
+            return g_access(g, ptr(g, SpvSCUniform, bty(g, e->sym->type)), g->state_var, &idx, 1);
+        }
         *sc = sym_sc(e->sym);
         return e->sym->spv_var;
     }
@@ -568,7 +579,7 @@ static u32 lv_ptr(Gen *g, Expr *e, u32 *sc) {
     switch (bt->kind) {
     case T_VEC: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->n));
-        return g_access(g, ptr(g, *sc, ty(g, bt->elem)), base, &i, 1);
+        return g_access(g, ptr(g, *sc, sc_ty(g, *sc, bt->elem)), base, &i, 1);
     }
     case T_COMPLEX: case T_QUAT: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->kind == T_COMPLEX ? 2 : 4));
@@ -579,7 +590,7 @@ static u32 lv_ptr(Gen *g, Expr *e, u32 *sc) {
         u32 len = load(g, g->tint, g_access(g, ptr(g, *sc, g->tint), base, &z, 1));
         u32 hi = ext2(g, g->tint, GLSLSMax, len, ci(g, 1));
         u32 idx[2] = {ci(g, 1), g_clamp_index(g, k, ci(g, 1), hi)};
-        return g_access(g, ptr(g, *sc, ty(g, bt->elem)), base, idx, 2);
+        return g_access(g, ptr(g, *sc, sc_ty(g, *sc, bt->elem)), base, idx, 2);
     }
     default: return base;
     }
@@ -587,9 +598,17 @@ static u32 lv_ptr(Gen *g, Expr *e, u32 *sc) {
 
 static bool is_lvalue_expr(Expr *e) {
     if (e->kind == E_NAME || e->kind == E_INTERNAL || e->kind == E_MEMBER)
-        return e->sym && e->sym->kind != SYM_CONST && e->sym->spv_var != 0;
+        return e->sym && e->sym->kind != SYM_CONST && (e->sym->spv_var != 0 || e->sym->in_buffer);
     if (e->kind == E_INDEX) return is_lvalue_expr(e->a);
     return false;
+}
+
+/* the number of items of list expression e (without loading the whole list when it is a variable) */
+static u32 list_len(Gen *g, Expr *e) {
+    if (!is_lvalue_expr(e)) return extract(g, g->tint, gen_expr(g, e), 0);
+    u32 sc, z = ci(g, 0);
+    u32 base = lv_ptr(g, e, &sc);
+    return load(g, g->tint, g_access(g, ptr(g, sc, g->tint), base, &z, 1));
 }
 
 static u32 gen_index(Gen *g, Expr *e) {
@@ -612,7 +631,9 @@ static u32 gen_index(Gen *g, Expr *e) {
     switch (bt->kind) {
     case T_VEC: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->n));
-        return load(g, ty(g, bt->elem), g_access(g, ptr(g, sc, ty(g, bt->elem)), base, &i, 1));
+        u32 et = sc_ty(g, sc, bt->elem);
+        u32 x = load(g, et, g_access(g, ptr(g, sc, et), base, &i, 1));
+        return sc == SpvSCUniform ? from_buffer(g, bt->elem, x) : x;
     }
     case T_COMPLEX: case T_QUAT: {
         u32 i = g_clamp_index(g, k, ci(g, 1), ci(g, bt->kind == T_COMPLEX ? 2 : 4));
@@ -624,7 +645,9 @@ static u32 gen_index(Gen *g, Expr *e) {
         u32 len = load(g, g->tint, g_access(g, ptr(g, sc, g->tint), base, &z, 1));
         u32 hi = ext2(g, g->tint, GLSLSMax, len, ci(g, 1));
         u32 idx[2] = {ci(g, 1), g_clamp_index(g, k, ci(g, 1), hi)};
-        u32 v = load(g, ty(g, bt->elem), g_access(g, ptr(g, sc, ty(g, bt->elem)), base, idx, 2));
+        u32 bt_elem = sc_ty(g, sc, bt->elem);
+        u32 v = load(g, bt_elem, g_access(g, ptr(g, sc, bt_elem), base, idx, 2));
+        if (sc == SpvSCUniform) v = from_buffer(g, bt->elem, v);
         u32 nonempty = op2(g, SpvOpSGreaterThan, g->tbool, len, ci(g, 0));
         u32 et = ty(g, bt->elem);
         if (g->df && bt->elem->kind == T_REAL) return sel2(g, nonempty, v, cnull(g, bt->elem));
@@ -821,7 +844,7 @@ static u32 gen_intrinsic(Gen *g, Expr *e) {
     if (id == I_LENGTH) {
         Type *t = e->args[0]->type;
         if (t->kind == T_VEC) return ci(g, t->n);
-        return extract(g, g->tint, gen_expr(g, e->args[0]), 0);
+        return list_len(g, e->args[0]);
     }
     if (id == I_DOT) {
         Type *t = e->args[0]->type, *el = t->elem;
@@ -1008,6 +1031,10 @@ static u32 gen_expr(Gen *g, Expr *e) {
     case E_NAME: case E_INTERNAL: case E_MEMBER: {
         Sym *s = e->sym;
         if (s->kind == SYM_CONST) return const_value(g, s->type, s->cval);
+        if (s->in_buffer) { /* the whole list (for a call, say): converted from the buffer's layout */
+            u32 sc;
+            return from_buffer(g, s->type, load(g, bty(g, s->type), lv_ptr(g, e, &sc)));
+        }
         return load(g, ty(g, s->type), s->spv_var);
     }
     case E_CONVERT: {
@@ -1030,9 +1057,9 @@ static u32 gen_expr(Gen *g, Expr *e) {
     case E_POWI: return gen_powi(g, e->type, gen_expr(g, e->a), e->ival);
     case E_ABS: {
         Type *t = e->a->type;
+        if (t->kind == T_LIST) return list_len(g, e->a);
         u32 a = gen_expr(g, e->a);
         if (t->kind == T_INT) return ext1(g, g->tint, GLSLSAbs, a);
-        if (t->kind == T_LIST) return extract(g, g->tint, a, 0);
         if (g->df) return t->kind == T_REAL ? df_abs(g, a) : df_sqrt(g, norm2_g(g, t, a));
         if (t->kind == T_REAL) return ext1(g, g->tfloat, GLSLFAbs, a);
         return ext1(g, g->tfloat, GLSLSqrt, norm2_g(g, t, a));
@@ -1327,14 +1354,21 @@ static void gen_stmt(Gen *g, Stmt *s) {
     }
     case S_FOREACH: {
         Type *ct = s->from->type;
-        u32 coll = local_var(g, ct);
-        store(g, coll, gen_expr(g, s->from));
+        /* a list read in place in the state buffer is not changed by the loop: no copy */
+        Sym *rs = root_sym(s->from);
+        u32 coll, csc = SpvSCFunction;
+        if (ct->kind == T_LIST && rs && rs->in_buffer && is_lvalue_expr(s->from)) {
+            coll = lv_ptr(g, s->from, &csc);
+        } else {
+            coll = local_var(g, ct);
+            store(g, coll, gen_expr(g, s->from));
+        }
         u32 len;
         if (ct->kind == T_VEC) {
             len = ci(g, ct->n);
         } else {
             u32 z = ci(g, 0);
-            len = load(g, g->tint, g_access(g, ptr(g, SpvSCFunction, g->tint), coll, &z, 1));
+            len = load(g, g->tint, g_access(g, ptr(g, csc, g->tint), coll, &z, 1));
         }
         u32 jv = local_var_id(g, g->tint);
         store(g, jv, ci(g, 0));
@@ -1349,15 +1383,16 @@ static void gen_stmt(Gen *g, Stmt *s) {
         spv_branch_cond(&g->s, go, body, L.merge);
         label(g, body);
         store(g, L.cnt, op2(g, SpvOpIAdd, g->tint, n, ci(g, 1)));
-        u32 et = ty(g, ct->elem);
+        u32 et = sc_ty(g, csc, ct->elem);
         u32 ep;
         if (ct->kind == T_VEC) {
-            ep = g_access(g, ptr(g, SpvSCFunction, et), coll, &j, 1);
+            ep = g_access(g, ptr(g, csc, et), coll, &j, 1);
         } else {
             u32 idx[2] = {ci(g, 1), j};
-            ep = g_access(g, ptr(g, SpvSCFunction, et), coll, idx, 2);
+            ep = g_access(g, ptr(g, csc, et), coll, idx, 2);
         }
-        store(g, s->sym->spv_var, load(g, et, ep));
+        u32 item = load(g, et, ep);
+        store(g, s->sym->spv_var, csc == SpvSCUniform ? from_buffer(g, ct->elem, item) : item);
         store(g, jv, op2(g, SpvOpIAdd, g->tint, j, ci(g, 1)));
         loop_body(g, &L, &s->body);
         label(g, L.cont);
@@ -1393,10 +1428,20 @@ static void mark_func(Gen *g, Func *f) {
         mark_block(g, &f->body);
     }
 }
+/* the variable an lvalue (x, x[k], x[k][j]...) belongs to */
+static Sym *root_sym(Expr *e) {
+    while (e && e->kind == E_INDEX) e = e->a;
+    return e && (e->kind == E_NAME || e->kind == E_INTERNAL || e->kind == E_MEMBER) ? e->sym : NULL;
+}
+static void mark_written(Expr *e) {
+    Sym *s = root_sym(e);
+    if (s) s->written = true;
+}
 static void mark_expr(Gen *g, Expr *e) {
     if (!e) return;
     if (e->sym) e->sym->used = true;
     if (e->kind == E_CALL && e->fn) mark_func(g, e->fn);
+    if (e->kind == E_CALL && (e->intrinsic == I_APPEND || e->intrinsic == I_CLEAR) && e->nargs > 0) mark_written(e->args[0]);
     mark_expr(g, e->a);
     mark_expr(g, e->b);
     for (int i = 0; i < e->nargs; i++) mark_expr(g, e->args[i]);
@@ -1404,6 +1449,8 @@ static void mark_expr(Gen *g, Expr *e) {
 static void mark_block(Gen *g, Block *b) {
     for (int i = 0; i < b->n; i++) {
         Stmt *s = b->stmts[i];
+        if (s->target) mark_written(s->target);
+        for (int k = 0; k < s->ntargets; k++) mark_written(s->targets[k]);
         mark_expr(g, s->target);
         mark_expr(g, s->value);
         mark_expr(g, s->from);
@@ -1465,7 +1512,7 @@ static void reset_ids(Program *p) {
     }
     for (int i = 0; i < p->globals.len; i++) {
         p->globals.data[i]->spv_var = 0;
-        p->globals.data[i]->used = false;
+        p->globals.data[i]->used = p->globals.data[i]->written = p->globals.data[i]->in_buffer = false;
     }
     p->s_stuck->spv_var = p->s_iterations->spv_var = 0;
 }
@@ -2000,10 +2047,17 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
         g->pixel_var = spv_global_var(s, ptr(g, SpvSCPrivate, g->tint), SpvSCPrivate, ci(g, 0));
     }
 
-    /* Private copies of the used globals and the per-run internals */
+    /* Private copies of the used globals and the per-run internals.  A list the viewer only reads stays in the
+       state buffer and is read in place (lv_ptr): copying all its items, for every pixel, can cost more than the
+       viewer itself (lists of hundreds of items spill out of the GPU's registers). */
     for (int i = 0; i < p->globals.len; i++) {
         Sym *gs = p->globals.data[i];
         if (!gs->used) continue;
+        if (gs->type->kind == T_LIST && !gs->written && !g->df) {
+            gs->in_buffer = true;
+            gs->gindex = i;
+            continue;
+        }
         gs->spv_var = spv_global_var(s, ptr(g, SpvSCPrivate, ty(g, gs->type)), SpvSCPrivate, 0);
         spv_name_safe(s, gs->spv_var, "g_", gs->name);
     }
@@ -2028,7 +2082,7 @@ static u32 *codegen_viewer_impl(Program *p, Section *v, bool compute, bool df, u
     if (compute) flood_prologue(g, g->pc_var, gid_var, &fx, &fy, &fw_, &fh_);
     for (int i = 0; i < p->globals.len; i++) {
         Sym *gs = p->globals.data[i];
-        if (!gs->used) continue;
+        if (!gs->used || gs->in_buffer) continue;
         u32 idx = ci(g, i);
         u32 bp = g_access(g, ptr(g, SpvSCUniform, bty(g, gs->type)), g->state_var, &idx, 1);
         store(g, gs->spv_var, from_buffer(g, gs->type, load(g, bty(g, gs->type), bp)));

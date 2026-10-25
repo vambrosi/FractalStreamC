@@ -227,6 +227,9 @@ struct Sym {
     const char *doc;   /* short description (internals) */
     u32 spv_var;       /* codegen: variable id for the current module */
     bool used;         /* referenced by the section being compiled (codegen) */
+    bool written;      /* assigned (or appended to, cleared) by the section being compiled (codegen) */
+    bool in_buffer;    /* codegen: a list the viewer only reads, read in place from the state buffer (member gindex) */
+    int gindex;
 };
 typedef VEC(Sym *) SymVec;
 
