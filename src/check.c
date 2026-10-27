@@ -378,8 +378,13 @@ static void setup_internals(Checker *c) {
     p->s_max_iter = add_internal(c, "maxIterations", t_int, SYM_GLOBAL, "iteration limit of every loop");
     p->s_epsilon = add_internal(c, "epsilon", t_real, SYM_GLOBAL, "tolerance of == on R and C, and of `vanishes`");
     p->s_escape = add_internal(c, "escapeRadius", t_real, SYM_GLOBAL, "z escapes means |z| > .escapeRadius");
-    p->s_time = add_internal(c, "time", t_real, SYM_GLOBAL, "seconds since the script started");
-    p->s_time->readonly = true;
+    p->s_time = add_internal(c, "time", t_real, SYM_GLOBAL,
+                             "the time in seconds: it runs from 0 when the script starts, and stops while paused");
+    p->s_time->readonly = true;   /* (except in tools: see check_assign_target) */
+    p->s_playing = add_internal(c, "playing", t_bool, SYM_GLOBAL, "true while .time runs (and in videos), false while paused");
+    p->s_playing->readonly = true;
+    p->s_duration = add_internal(c, "duration", t_real, SYM_GLOBAL,
+                                 "the length of the animation in seconds: .time loops over it (0, the default: no length)");
     p->s_last_click = add_internal(c, "lastClick", t_complex, SYM_GLOBAL, "point of the last click or drag");
     p->s_mouse = add_internal(c, "mouse", t_complex, SYM_GLOBAL, "point under the mouse");
     p->s_mouse->readonly = true;
@@ -1501,7 +1506,11 @@ static void chk_config_extras(Checker *c, Stmt *s, Sym *sym, bool declared) {
 static void check_assign_target(Checker *c, Expr *t) {
     Sym *s = t->sym;
     if (!s) return;
-    if (s->readonly || s->kind == SYM_CONST) ERR(c, t, "%s%s can't be changed", s->is_internal ? "." : "", s->name);
+    bool tool = c->sec && c->sec->kind == SEC_TOOL && !c->fn;
+    if (s == c->prog->s_time && !tool) /* (a tool setting .time moves the clock there) */
+        ERR(c, t, ".time can't be changed here; a tool can set it (the clock goes there)");
+    else if ((s->readonly && s != c->prog->s_time) || s->kind == SYM_CONST)
+        ERR(c, t, "%s%s can't be changed", s->is_internal ? "." : "", s->name);
     else if (s->kind == SYM_EXEC) ERR(c, t, ".%s is set by loops and can't be assigned", s->name);
 }
 

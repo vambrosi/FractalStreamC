@@ -335,6 +335,7 @@ typedef struct Program {
     int nerrors;
     /* internals with fixed meaning */
     Sym *s_max_iter, *s_epsilon, *s_escape, *s_time, *s_last_click, *s_mouse, *s_width, *s_height, *s_drag_start;
+    Sym *s_playing, *s_duration; /* .playing (the clock runs), .duration (the animation's length, 0: none) */
     Sym *s_stuck, *s_iterations, *s_pixel;
     Sym *s_double;          /* .doublePrecision: deep zooms in double-single precision (the app and the CLI read it) */
     Sym *s_aa;              /* .antialiasing: samples per pixel of a view at rest (the app reads it) */

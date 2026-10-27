@@ -1070,6 +1070,7 @@ void state_set_defaults(Program *p, u32 *state) {
     memset(state, 0, sizeof(u32) * (size_t)p->state_words);
     state[p->s_max_iter->slot] = 1000;
     state[p->s_aa->slot] = 8;
+    state[p->s_playing->slot] = 1; /* (the clock runs from the start) */
     state[p->s_epsilon->slot] = fw(1e-6f);
     state[p->s_escape->slot] = fw(2.0f);
     state[p->s_width->slot] = 1024;

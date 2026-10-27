@@ -466,7 +466,7 @@ TEST(errors) {
     EXPECT_ERROR("color = .nothing\n", "unknown internal");
     EXPECT_ERROR("color = 1 + true\n", "can't use '+'");
     EXPECT_ERROR("draw point at 0\n", "only be used in tools");
-    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\n.time = 2\n", "can't be changed");
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\n.mouse = 2\n", "can't be changed");
     EXPECT_ERROR("break\n", "inside a loop");
     EXPECT_ERROR("x := 1\nx\n", "does nothing");
     EXPECT_ERROR("@viewer a z\ncolor = .red\n@viewer a w\ncolor = .red\n", "already a viewer");
@@ -1520,6 +1520,52 @@ TEST(prepare_sections) {
     program_free(p);
 }
 
+/* .time, .playing and .duration: the time starts at 0 and plays, a script can give the animation a length, and only
+   tools can set the time (the app's clock goes there) */
+TEST(time_internals) {
+    Program *p = LOAD_OK(
+        "@config\n"
+        "secs := 6\n"
+        "@prepare\n"
+        ".duration = 2 secs\n"
+        "q := if .playing then 1 else 2\n"
+        "@viewer v z\n"
+        "color = gray(fract(.time))\n"
+        "@tool \"Go\" button\n"
+        ".time = 3.5\n");
+    if (!p->nerrors) {
+        CHECK(wf(p->initial_state[p->s_time->slot]) == 0);
+        CHECK(p->initial_state[p->s_playing->slot] == 1);
+        CHECK(wf(p->initial_state[p->s_duration->slot]) == 12);
+        u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+        memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+        Interp I;
+        interp_init(&I, p, state);
+        CHECK(interp_run_tool(&I, p->tools[0], 0, 0));
+        CHECK(wf(state[p->s_time->slot]) == 3.5f);
+        interp_free(&I);
+        free(state);
+    }
+    program_free(p);
+    p = LOAD_OK("@viewer v z\ncolor = .red\n"); /* (no length by default) */
+    CHECK(wf(p->initial_state[p->s_duration->slot]) == 0);
+    program_free(p);
+    EXPECT_ERROR("@prepare\n.time = 2\n@viewer v z\ncolor = .red\n", "a tool can set it");
+    EXPECT_ERROR("@viewer v z\n.time = 2\ncolor = .red\n", "a tool can set it");
+    EXPECT_ERROR("@global\nt0 := 1\n.time = t0\n@viewer v z\ncolor = .red\n", "a tool can set it");
+    EXPECT_ERROR("@global\n"
+                 "define f(x) = y where\n"
+                 "    y = x\n"
+                 "    .time = x\n"
+                 "end\n"
+                 "@viewer v z\n"
+                 "color = .red\n"
+                 "@tool \"T\"\n"
+                 "q := f(1)\n",
+                 "a tool can set it"); /* (a function could run anywhere) */
+    EXPECT_ERROR("@viewer v z\ncolor = .red\n@tool \"T\"\n.playing = false\n", ".playing can't be changed");
+}
+
 /* when @prepare (or a tool, or --set) changes a view's center or radius: a view of the sphere shows them (its Möbius
    map starts again from there); a flat view's center drops its low part (deep zooms) */
 TEST(views_follow_their_center_and_radius) {
@@ -1684,6 +1730,7 @@ static const TestCase tests_lang[] = {
     TESTCASE(line_continuations),
     TESTCASE(print_statement),
     TESTCASE(prepare_sections),
+    TESTCASE(time_internals),
     TESTCASE(list_capacity_and_negative_indices),
     TESTCASE(functions_without_results),
     TESTCASE(draw_text),

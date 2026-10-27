@@ -136,8 +136,44 @@ TEST(script_video) {
     GT_NO_VALIDATION_ERRORS();
 }
 
+/* a video loops over .duration, and plays (.playing is true) even when the app it starts from is paused */
+TEST(video_loops_and_plays) {
+    GT_REQUIRE();
+    Program *p = LOAD_OK(
+        "@prepare\n"
+        ".duration = 1\n"
+        "plane.center = .time\n"
+        "plane.radius = if .playing then 1 else 3\n"
+        "@viewer plane z\n"
+        "color = [fract(re(z)), 0.5, 0.5]\n");
+    const char *path = "build/test_video3.mp4";
+    char err[512] = "";
+    u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
+    memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    state[p->s_playing->slot] = 0; /* (as in a paused app) */
+    VideoJob *j = video_begin(p, state, p->viewers[0], path, 32, 24, 4, 1.0, 0.5, 1, err, sizeof err);
+    CHECK_MSG(j != NULL, "%s", err);
+    if (!j) return;
+    CHECK(j->state[p->s_playing->slot] == 1);
+    CHECK_NEAR(wf(j->state[p->viewers[0]->radius->slot]), 1, 0);
+    const double want[4] = {0.5, 0.75, 0, 0.25}; /* (from 0.5: 1.0 is 0 again) */
+    for (int k = 0; k < 4; k++) {
+        int r = video_step(j);
+        CHECK_MSG(r == (k < 3 ? 1 : 0), "frame %d: %d %s", k, r, j->err);
+        CHECK_NEAR(wf(j->state[p->viewers[0]->center->slot]), want[k], 1e-6);
+        if (r != 1) break;
+    }
+    video_end(j);
+    check_mp4(path, 32, 24, 4, 1.0);
+    remove(path);
+    free(state);
+    program_free(p);
+    GT_NO_VALIDATION_ERRORS();
+}
+
 static const TestCase tests_video[] = {
     TESTCASE(file_boxes),
     TESTCASE(colors),
     TESTCASE(script_video),
+    TESTCASE(video_loops_and_plays),
 };

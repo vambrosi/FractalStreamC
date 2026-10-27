@@ -19,7 +19,8 @@ static const char *cli_usage =
     "                       --set .time=T: the picture at time T)\n"
     "  fractalstreamc --video OUT.mp4 [options] SCRIPT\n"
     "                                      a video of a viewer (H.264, MP4) over time: frame k shows .time = FROM + k / FPS\n"
-    "      --seconds S      length (default 10)        --from T   time of the first frame (default 0)\n"
+    "      --seconds S      length (default: the script's .duration, or 10)\n"
+    "      --from T         time of the first frame (default 0)\n"
     "      --fps N          frames per second (default 30)\n"
     "      --samples N      samples per pixel, 1 to 16 (default: the script's .antialiasing)\n"
     "      --viewer, --size (default 1280x720, even numbers), --set: as for --render\n"
@@ -251,7 +252,7 @@ int cli_main(int argc, char **argv) {
 #endif
     const char *mode = NULL, *arg = NULL, *script = NULL, *viewer = NULL, *tool = NULL, *at = NULL, *event = NULL;
     int w = 512, h = 512, fps = 30, samples = 0;
-    bool cpu = false, sized = false;
+    bool cpu = false, sized = false, timed = false;
     double seconds = 10, from = 0;
     const char *sets[32];
     int nsets = 0;
@@ -273,7 +274,7 @@ int cli_main(int argc, char **argv) {
                 fprintf(stderr, "error: %s expects a number of seconds\n", a);
                 return 2;
             }
-            if (!strcmp(a, "--seconds")) seconds = x;
+            if (!strcmp(a, "--seconds")) seconds = x, timed = true;
             else from = x;
             continue;
         }
@@ -322,14 +323,28 @@ int cli_main(int argc, char **argv) {
     }
     u32 *state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(state, p->initial_state, sizeof(u32) * (size_t)p->state_words);
+    bool still = !strcmp(mode, "--render") || !strcmp(mode, "--tool"); /* (a moment: the clock stands still) */
+    if (still) state[p->s_playing->slot] = 0;
     ViewsSaved sv; /* (a view of the sphere whose center or radius is set goes there) */
     views_save(p, state, &sv);
     for (int i = 0; i < nsets; i++)
         if (!cli_set_global(p, state, sets[i])) { rc = 2; goto done; }
     views_follow(p, &sv, state, true);
-    if (nsets) { /* the state changed: @prepare runs again */
-        char perr_[256];
-        if (!program_prepare(p, state, perr_, sizeof perr_)) { fprintf(stderr, "error: in @prepare: %s\n", perr_); rc = 1; goto done; }
+    char perr_[256];
+    if ((nsets || still) && !program_prepare(p, state, perr_, sizeof perr_)) { /* the state changed: @prepare runs again */
+        fprintf(stderr, "error: in @prepare: %s\n", perr_);
+        rc = 1;
+        goto done;
+    }
+    /* the time loops over .duration, as in the app (and @prepare sees the time it loops to) */
+    double dur = wf(state[p->s_duration->slot]), tm = wf(state[p->s_time->slot]);
+    if (dur > 0 && dur < 1e9 && (tm < 0 || tm >= dur)) {
+        state[p->s_time->slot] = fw((float)fmod(fmod(tm, dur) + dur, dur));
+        if (p->prepare_reads_time && !program_prepare(p, state, perr_, sizeof perr_)) {
+            fprintf(stderr, "error: in @prepare: %s\n", perr_);
+            rc = 1;
+            goto done;
+        }
     }
 
     if (!strcmp(mode, "--check")) {
@@ -397,6 +412,8 @@ int cli_main(int argc, char **argv) {
             w = 1280;
             h = 720;
         }
+        double d = wf(state[p->s_duration->slot]);
+        if (!timed && d > 0 && d <= 36000) seconds = d; /* (the animation's length, if the script gives one) */
         if ((w | h) & 1 || w > VIDEO_MAX_SIDE || h > VIDEO_MAX_SIDE) {
             fprintf(stderr, "error: a video is at most %dx%d, and its sides are even numbers\n", VIDEO_MAX_SIDE, VIDEO_MAX_SIDE);
             rc = 2;

@@ -196,9 +196,10 @@ static int video_pipeline(Program *p, Section *v, bool df, char *err, int errcap
 
 static void video_end(VideoJob *j);
 
-/* A video of viewer v of program p: `seconds` long from time t0, w x h (even; at most VIDEO_MAX_SIDE), fps frames per
-   second, `samples` samples per pixel (1 to 16; views that follow a solution from pixel to pixel get one), the rest
-   of the state as in `state`.  The GPU must be initialized.  NULL (and err) if it can't start. */
+/* A video of viewer v of program p: `seconds` long from time t0 (looping over .duration if the state has one), w x h
+   (even; at most VIDEO_MAX_SIDE), fps frames per second, `samples` samples per pixel (1 to 16; views that follow a
+   solution from pixel to pixel get one), the rest of the state as in `state`, with .playing true.  The GPU must be
+   initialized.  NULL (and err) if it can't start. */
 static VideoJob *video_begin(Program *p, const u32 *state, Section *v, const char *path, int w, int h, int fps,
                              double seconds, double t0, int samples, char *err, int errcap) {
     int frames = (int)floor(seconds * fps + 0.5);
@@ -218,6 +219,15 @@ static VideoJob *video_begin(Program *p, const u32 *state, Section *v, const cha
     snprintf(j->path, sizeof j->path, "%s", path);
     j->state = (u32 *)xmalloc(sizeof(u32) * (size_t)p->state_words);
     memcpy(j->state, state, sizeof(u32) * (size_t)p->state_words);
+    if (!j->state[p->s_playing->slot]) { /* (from a paused app: a video plays, and @prepare may care) */
+        j->state[p->s_playing->slot] = 1;
+        char perr[256];
+        if (!program_prepare(p, j->state, perr, sizeof perr)) {
+            snprintf(err, (size_t)errcap, "@prepare: %.200s", perr);
+            video_end(j);
+            return NULL;
+        }
+    }
     j->rgba = (u8 *)xmalloc((size_t)w * h * 4);
     bool ok = v->flood || ((j->pipe = video_pipeline(p, v, false, err, errcap)) > 0 && (j->target = gfx_target_create(w, h)) > 0);
     if (ok && !v->flood && !j->target) {
@@ -238,8 +248,10 @@ static int video_step(VideoJob *j) {
     if (!j->file) return -1;
     Program *p = j->p;
     Section *v = j->v;
-    double t = j->t0 + (double)j->done / j->fps;
+    double t = j->t0 + (double)j->done / j->fps, d = wf(j->state[p->s_duration->slot]);
+    if (d > 0 && d < 1e9) t = fmod(fmod(t, d) + d, d); /* (the time loops over .duration, as in the app) */
     j->state[p->s_time->slot] = fw((float)t);
+    j->state[p->s_playing->slot] = 1;  /* (a video plays) */
     char *err = j->err;
     int errcap = (int)sizeof j->err;
     bool ok = !p->prepare_reads_time || program_prepare(p, j->state, err, errcap); /* (it may move the view) */
