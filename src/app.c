@@ -148,7 +148,7 @@ typedef struct App {
     char req_export[1024];  /* save a picture there */
     int export_viewer, export_scale, export_wait;
     VideoJob *video;        /* a video being saved (Save a video: video_work, video_dialog) */
-    double video_seconds;   /* the choices in its dialog */
+    double video_seconds, video_from; /* the choices in its dialog */
     int video_fps, video_scale;
     /* overlays */
     bool ref_open;          /* the language reference (refdoc.c) */
@@ -197,12 +197,24 @@ typedef struct App {
     bool status_err;
     double status_until;
     double t0;
+    /* the clock of .time (see clock_update): it stops while paused, and runs at clock_speed; it waits while the time
+       bar's time is held with the mouse (clock_held) */
+    bool clock_paused, clock_held;
+    double clock_t, clock_wall, clock_speed;
+    bool uses_time;         /* the script reads .time or .playing (or has a .duration): the time bar shows */
+    bool space_down, space_panned; /* Space held: a tap plays or pauses, unless a drag panned meanwhile */
     UiInput in;
 } App;
 
 static App A;
 
 static void video_cancel(const char *why);
+static void clock_update(void);
+static double clock_duration(void);
+static void clock_seek(double t);
+static void clock_step(int frames);
+static void clock_play(bool play);
+static bool script_uses_time(Program *p, const ViewerRT *vrt);
 
 static const char *welcome_script =
     "# Welcome to FractalStreamC!\n"
@@ -1277,7 +1289,8 @@ static const char *const completion_words[] = {
     "click", "hover", "show", "hide", "button", "append", "clear", "line", "point", "circle", "disk", "text", "radius",
     "color", "width", "List", "Integer", "Real", "Complex", "Quaternion", "Projective", "Boolean", "Bool", "Color", "up"};
 static const char *const completion_internals[] = {
-    ".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".lastClick", ".mouse", ".dragStart",
+    ".maxIterations", ".epsilon", ".escapeRadius", ".doublePrecision", ".time", ".playing", ".duration", ".lastClick",
+    ".mouse", ".dragStart",
     ".width", ".height", ".title", ".stuck", ".iterations", ".pixel", ".panning", ".hover", ".keep", ".antialiasing",
     ".violet", ".red",
     ".green", ".blue", ".black", ".white", ".gray", ".grey", ".yellow", ".cyan", ".magenta", ".orange", ".purple",
@@ -1339,8 +1352,11 @@ static const char *hover_info(void *user, const char *word) {
         {".lastClick", ".lastClick : C\nthe point of the last click or drag"},
         {".dragStart", ".dragStart : C\nwhere the mouse button went down (tools: on drag, on release)"},
         {".mouse", ".mouse : C\nthe point under the mouse"},
-        {".time", ".time : R\nseconds since the script started (the views using it are animated; an @prepare using it runs "
-                  "at every frame)"},
+        {".time", ".time : R\nthe time in seconds, from 0 when the script starts; it stops while paused (Space, the time bar). "
+                  "The views using it are animated; an @prepare using it runs at every frame; a tool may set it"},
+        {".playing", ".playing : Bool\ntrue while .time runs (and in videos), false while it is paused"},
+        {".duration", ".duration : R\nthe length of the animation in seconds: .time loops over it, the time bar scrubs it, "
+                      "and videos last that long (0, the default: no length)"},
         {".pixel", ".pixel : R\nthe size of a pixel of the view, in the plane (in a tool: of the view clicked)"},
         {".width", ".width : Z\nthe initial width of the window"},
         {".height", ".height : Z\nthe initial height of the window"},
@@ -1620,6 +1636,16 @@ static void adopt_program(Program *p, ViewerRT *vrt, int mode) {
     A.state = state;
     A.uploaded = NULL;
     A.vrt = vrt;
+    /* the clock: kept when the script runs again (a paused moment stays while it is edited); another script starts
+       from 0, playing */
+    if (!same) {
+        A.clock_t = 0;
+        A.clock_paused = false;
+        A.clock_speed = 1;
+    }
+    A.clock_wall = fs_time_seconds();
+    A.uses_time = script_uses_time(p, vrt);
+    clock_update();
     /* the layout follows the views (the ones gone close, the others stay where they are), or starts afresh */
     if (same && !reopened) {
         if (layout_follow(remap, old_n, p->nviewers)) {
@@ -2007,9 +2033,10 @@ static void ask_export(int v, int scale) {
 }
 
 /* ---- videos ---------------------------------------------------------------------------------------------------------
- * Save a video: a dialog (the file, the length, frames per second, the size), then the frames, rendered offscreen
- * (video.c) a few in each frame of the app (video_work), with a progress dialog that can cancel (video_dialog).  The
- * video starts at time 0 from the state as it is (the views where they are, the config). */
+ * Save a video: a dialog (the file, from when, how long, frames per second, the size), then the frames, rendered
+ * offscreen (video.c) a few in each frame of the app (video_work), with a progress dialog that can cancel
+ * (video_dialog).  The video starts from the paused moment (or time 0), with the state as it is (the views where they
+ * are, the config), and plays: .playing is true in it. */
 
 /* the size of a video of viewer v: `scale` times its size on the screen, within VIDEO_MAX_SIDE, even */
 static void video_size(int v, int scale, int *w, int *h) {
@@ -2025,6 +2052,10 @@ static void video_size(int v, int scale, int *w, int *h) {
 
 static void ask_video(int v) {
     A.export_viewer = v;
+    clock_update();
+    A.video_from = A.clock_paused ? A.clock_t : 0; /* (from the paused moment; else from the start) */
+    double d = clock_duration();
+    if (d > 0) A.video_seconds = d;               /* (the whole animation) */
     char path[1100];
     export_path(v, ".mp4", path, sizeof path);
     open_modal(6, path);
@@ -2038,7 +2069,8 @@ static void video_start(const char *path) {
     video_size(v, A.video_scale, &w, &h);
     int samples = FS_CLAMP((i32)A.state[p->s_aa->slot], 1, 16);
     char err[512] = "";
-    A.video = video_begin(p, A.state, p->viewers[v], path, w, h, A.video_fps, A.video_seconds, 0, samples, err, sizeof err);
+    A.video = video_begin(p, A.state, p->viewers[v], path, w, h, A.video_fps, A.video_seconds, A.video_from, samples, err,
+                          sizeof err);
     if (!A.video) {
         set_status(true, "Can't save the video: %s", err);
         return;
@@ -2173,8 +2205,10 @@ static void run_tool(int tool, int viewer, int ev, float re, float im) {
     A.interp.erase_tools = 0;
     ViewsSaved sv; /* (a view of the sphere whose center or radius the tool sets goes there) */
     views_save(p, A.state, &sv);
+    u32 time_before = A.state[p->s_time->slot];
     bool ok = t->has_events ? interp_run_tool_event(&A.interp, t, ev, re, im) : interp_run_tool(&A.interp, t, re, im);
     views_follow(p, &sv, A.state, false);
+    if (A.state[p->s_time->slot] != time_before) clock_seek(wf(A.state[p->s_time->slot])); /* (a tool set .time) */
     if (!ok) set_status(true, "%s: %s", t->display, A.interp.error);
     A.interp.draws = NULL;
     A.interp.out = NULL;
@@ -2516,6 +2550,7 @@ static void viewer_interaction(void) {
     int button = in->mouse_pressed[0] ? 0 : in->mouse_pressed[1] ? 1 : in->mouse_pressed[2] ? 2 : -1;
     platform_set_cursor(rt->tool == TOOL_PAN || space ? UI_CURSOR_HAND : UI_CURSOR_CROSSHAIR);
     if (button < 0) return;
+    if (space) A.space_panned = true; /* (Space + drag: a pan, not a play / pause) */
     A.focus_viewer = v;
     A.drag_viewer = v;
     A.press_x = A.last_mx = mx;
@@ -3039,7 +3074,7 @@ static void bar_action(int v, int k, float x, float y, float b) {
         "Axes and grid lines with their values (" MODKEY "+Shift+A)",
         "Save picture: this view at its size on the screen (PNG, without the tools' drawings)",
         "Save it large: this view rendered again at four times the width and height, for print",
-        "Save a video: this view over time, from time 0 (MP4; its length in the dialog)",
+        "Save a video: this view over time (MP4; from when, and how long, in the dialog)",
         "Hide this view"};
     char id[32], tip[500];
     snprintf(id, sizeof id, "##bar_act%d", k);
@@ -4372,6 +4407,8 @@ static void help_overlay(float W, float H) {
         {"Alt+Left, Alt+Right", "back / forward: where the view was (also " MODKEY "+[ and " MODKEY "+])"},
         {MODKEY "+Shift+C, " MODKEY "+Shift+V", "copy / paste the location of the view (center and radius)"},
         {MODKEY "+Shift+A", "axes and grid lines with their values"},
+        {"Space", "play / pause the time (a tap; Space + drag pans)"},
+        {"Left, Right", "the time: a frame back / forward (Shift: a second)"},
 #if FS_OS_MACOS
         {"F11, Cmd+Ctrl+F", "full screen"},
 #else
@@ -4567,7 +4604,7 @@ static void modal_dialog(float W, float H) {
     ui_panel_ex(pr.x, pr.y, pr.w, pr.h, UI_RGBA(24, 27, 33, 250), px(10));
     ui_text(UI_FONT_SANS, pr.x + pad, pr.y + px(14),
             A.modal == 1 ? "Save the script as:" : A.modal == 3 ? "Save the picture as (PNG):"
-            : A.modal == 6 ? "Save a video of the view (MP4), from time 0:"
+            : A.modal == 6 ? "Save a video of the view (MP4):"
             : A.modal == 4 ? "A new script, from a template (or the welcome example):" : "Open a script:", -1, UI_COL_TEXT);
     char before[1024];
     snprintf(before, sizeof before, "%s", A.modal_buf);
@@ -4629,12 +4666,20 @@ static void modal_dialog(float W, float H) {
         A.browse_scroll = 0;
     }
     Rect lr = {pr.x + pad, y + px(34), pr.w - 2 * pad, pr.y + pr.h - px(56) - (y + px(34))};
-    if (A.modal == 6) { /* a video: its length, frames per second and size, under the list */
-        lr.h -= px(42);
+    if (A.modal == 6) { /* a video: from when, how long, frames per second and size, under the list */
+        lr.h -= px(76);
         float oy = lr.y + lr.h + px(10), ox = pr.x + pad;
-        ui_slider_double("Seconds##video_seconds", ox, oy, px(190), px(28), &A.video_seconds, 1, 600, "%.0f", UI_SLIDER_LOG);
-        A.video_seconds = floor(A.video_seconds + 0.5);
-        ox += px(200);
+        ui_drag_double("From##video_from", ox, oy, px(150), px(28), &A.video_from, 0.05, 0, 1e6, "%.2f s");
+        ui_tooltip("The time of the first frame: drag sideways, or double-click to type it (the paused time, if paused)");
+        ox += px(160);
+        if (ui_slider_double("Seconds##video_seconds", ox, oy, px(220), px(28), &A.video_seconds, 0.1, 3600, "%.4g",
+                             UI_SLIDER_LOG) &&
+            ui_active_id() == ui_id("Seconds##video_seconds")) /* (dragged: to a tenth; a typed length stays) */
+            A.video_seconds = FS_MAX(0.1, floor(A.video_seconds * 10 + 0.5) / 10);
+        ui_tooltip("The length of the video (the script's .duration, if it has one): drag along the bar, or "
+                   "double-click to type it");
+        oy += px(34);
+        ox = pr.x + pad;
         static const int fpss[3] = {24, 30, 60};
         for (int k = 0; k < 3; k++) {
             char id[48];
@@ -4813,7 +4858,7 @@ static void status_line(float W, float H) {
     float a = (float)FS_MIN(1.0, (A.status_until - now) / 0.5);
     float tw = FS_MIN(ui_text_width(UI_FONT_SANS, A.status, -1) + px(24), W - px(20));
     float th = ui_font_line_height(UI_FONT_SANS) + px(12);
-    Rect r = {A.free.x + px(10), H - th - px(10), tw, th};
+    Rect r = {A.free.x + px(10), A.free.y + A.free.h - th - px(10), tw, th}; /* (above the time bar) */
     ui_rrect(r.x, r.y, r.w, r.h, px(6), ui_alpha(A.status_err ? UI_RGBA(80, 24, 28, 235) : UI_RGBA(28, 32, 40, 235), a));
     ui_push_clip(r.x, r.y, r.w, r.h);
     ui_text(UI_FONT_SANS, r.x + px(12), r.y + px(6), A.status, -1, ui_alpha(UI_COL_TEXT, a));
@@ -4898,6 +4943,18 @@ static void shortcuts(void) {
             if (tool_in_viewer(t, A.vis[i].viewer)) v = A.vis[i].viewer;
         if (v >= 0) select_tool(v, t);
     }
+    /* the time: a tap on Space plays or pauses (see time_keys; Space held while dragging pans instead), Left and Right
+       step a frame (Shift: a second) */
+    if (A.uses_time) {
+        if (ui_shortcut(UI_KEY_SPACE, 0)) {
+            A.space_down = true;
+            A.space_panned = A.drag != DRAG_NONE; /* (a drag that began in this frame) */
+        }
+        if (ui_shortcut_repeat(UI_KEY_LEFT, 0)) clock_step(-1);
+        if (ui_shortcut_repeat(UI_KEY_RIGHT, 0)) clock_step(1);
+        if (ui_shortcut_repeat(UI_KEY_LEFT, UI_MOD_SHIFT)) clock_seek(A.clock_t - 1);
+        if (ui_shortcut_repeat(UI_KEY_RIGHT, UI_MOD_SHIFT)) clock_seek(A.clock_t + 1);
+    }
     if (tv >= 0 && ui_shortcut(UI_KEY_H, 0)) select_tool(tv, TOOL_PAN);
     if (tv >= 0 && ui_shortcut(UI_KEY_P, 0) && p->viewers[tv]->picked) select_tool(tv, TOOL_PICK);
     if (tv >= 0 && ui_shortcut(UI_KEY_SLASH, UI_MOD_SHIFT)) select_tool(tv, TOOL_INSPECT);
@@ -4910,8 +4967,141 @@ static void shortcuts(void) {
         A.vrt[tv].grid = !A.vrt[tv].grid;
 }
 
+/* ---- the clock: .time ---------------------------------------------------------------------------------------------
+ * .time runs from 0 when the app starts, at clock_speed, and stops while paused; seeking sets it (the time bar, Space,
+ * the arrow keys, a tool that sets .time). With .duration > 0 it loops over [0, .duration). Running the script again
+ * keeps the clock, so a paused moment stays while the script is edited. .playing says whether it runs. */
+static double clock_duration(void) {
+    double d = A.prog ? wf(A.state[A.prog->s_duration->slot]) : 0;
+    return d > 0 && d < 1e9 ? d : 0;
+}
+
+static double clock_wrap(double t) {
+    double d = clock_duration();
+    if (d > 0) {
+        t = fmod(t, d);
+        if (t < 0) t += d;
+    }
+    return FS_MAX(t, 0.0);
+}
+
+/* (each frame, and before the clock changes) */
+static void clock_update(void) {
+    double now = fs_time_seconds();
+    if (!A.clock_paused && !A.clock_held) A.clock_t += (now - A.clock_wall) * A.clock_speed;
+    A.clock_wall = now;
+    A.clock_t = clock_wrap(A.clock_t);
+    if (!A.prog) return;
+    A.state[A.prog->s_time->slot] = fw((float)A.clock_t);
+    A.state[A.prog->s_playing->slot] = !A.clock_paused;
+}
+
+static void clock_seek(double t) {
+    clock_update();
+    A.clock_t = clock_wrap(t);
+    clock_update();
+}
+
+static void clock_play(bool play) {
+    clock_update();
+    A.clock_paused = !play;
+    clock_update();
+}
+
+/* (a frame back or forward, in frames of the video dialog's rate; pauses) */
+static void clock_step(int frames) {
+    clock_play(false);
+    double dt = 1.0 / FS_MAX(A.video_fps, 1);
+    clock_seek(floor(A.clock_t / dt + 0.5) * dt + frames * dt);
+}
+
+/* does the clock run (not paused, not held)? */
+static bool clock_running(void) { return !A.clock_paused && !A.clock_held; }
+
+/* is the view animated now: it reads .time, and the clock runs */
+static bool view_animated(const ViewerRT *rt) { return rt->animated && clock_running(); }
+
+/* does the script read .time or .playing (or give the animation a length)? Then the time bar shows. (Tools that read
+   them don't count: they run when used.) */
+static bool script_uses_time(Program *p, const ViewerRT *vrt) {
+    if (p->prepare_reads_time || wf(p->initial_state[p->s_duration->slot]) > 0) return true;
+    for (int i = 0; i < p->nprepares; i++)
+        if (codegen_section_reads(p, p->prepares[i], p->s_playing)) return true;
+    for (int v = 0; v < p->nviewers; v++)
+        for (int i = 0; vrt[v].used && i < p->globals.len; i++)
+            if (vrt[v].used[i] && (p->globals.data[i] == p->s_time || p->globals.data[i] == p->s_playing)) return true;
+    return false;
+}
+
+/* Space released after a tap (see shortcuts): play or pause */
+static void time_keys(void) {
+    if (!A.space_down || A.in.key_down[UI_KEY_SPACE]) return;
+    A.space_down = false;
+    if (!A.space_panned && !A.modal && A.uses_time) clock_play(A.clock_paused);
+}
+
+/* ---- the time bar: under the views, when the script uses .time ------------------------------------------------- */
+static float time_bar_h(void) { return A.uses_time ? px(38) : 0; }
+
+static void time_bar(float H) {
+    if (!A.uses_time || !A.prog) {
+        A.clock_held = false;
+        return;
+    }
+    Rect r = {A.free.x, H - time_bar_h(), A.free.w, time_bar_h()};
+    int prev = ui_layer(UI_LAYER_PANEL);
+    ui_panel_ex(r.x, r.y, r.w, r.h, UI_COL_PANEL, 0);
+    ui_rect(r.x, r.y, r.w, px(1), UI_COL_BORDER);
+    float b = px(30), y = r.y + floorf((r.h - b) / 2), x = r.x + px(8);
+    if (ui_icon_button_ex("##time_start", "skip_previous", "|<", x, y, b, UI_FLAT)) clock_seek(0);
+    ui_tooltip("Back to time 0");
+    x += b + px(2);
+    bool paused = A.clock_paused;
+    if (ui_icon_button_ex("##time_play", paused ? "play_arrow" : "pause", paused ? ">" : "||", x, y, b, UI_FLAT))
+        clock_play(paused);
+    ui_tooltip(paused ? "Play (Space)" : "Pause (Space); Left, Right: a frame back, forward");
+    x += b + px(8);
+    /* the speed: a click goes faster, Shift + click slower */
+    static const double speeds[] = {0.25, 0.5, 1, 2, 4};
+    char sp[32];
+    snprintf(sp, sizeof sp, "%g\xc3\x97##time_speed", A.clock_speed); /* (×) */
+    float sw = ui_text_width(UI_FONT_SANS, "0.25\xc3\x97", -1) + px(16);
+    float tx = x, tw = r.x + r.w - px(8) - sw - px(6) - tx; /* the time, between the buttons and the speed */
+    if (ui_button_ex(sp, r.x + r.w - px(8) - sw, y, sw, b, UI_FLAT)) {
+        int k = 2;
+        for (int i = 0; i < ARRAY_COUNT(speeds); i++)
+            if (speeds[i] == A.clock_speed) k = i;
+        k += A.in.mods & UI_MOD_SHIFT ? -1 : 1;
+        clock_update();
+        A.clock_speed = speeds[(k + ARRAY_COUNT(speeds)) % ARRAY_COUNT(speeds)];
+    }
+    ui_tooltip("The speed of the time (a click: faster; Shift + click: slower)");
+    if (tw > px(60)) {
+        double d = clock_duration(), t = A.clock_t;
+        bool changed;
+        if (d > 0) { /* a scrubber over the animation */
+            char fmt[64];
+            snprintf(fmt, sizeof fmt, "%%.2f / %.6g s", d);
+            changed = ui_slider_double("##time_scrub", tx, y, tw, b, &t, 0, d, fmt, 0);
+            ui_tooltip("The time: drag along the bar, or double-click to type it");
+        } else {
+            changed = ui_drag_double("Time##time_drag", tx, y, FS_MIN(tw, px(220)), b, &t, 0.02, 0, 1e9, "%.2f s");
+            ui_tooltip("The time: drag sideways (Shift: slower), or double-click to type it");
+        }
+        if (changed) clock_seek(t);
+    }
+    /* (held with the mouse, the time stays where the mouse puts it: the clock waits) */
+    u32 act = ui_active_id();
+    bool held = act && (act == ui_id("##time_scrub") || act == ui_id("Time##time_drag"));
+    if (held != A.clock_held) {
+        clock_update();
+        A.clock_held = held;
+    }
+    ui_layer(prev);
+}
+
 /* @prepare runs whenever the state changed (not for the mouse, the last click, or the time unless it reads .time: then
-   at every frame, and a view it moves is drawn again at every frame) */
+   at every frame while the time runs, and a view it moves is drawn again at every frame) */
 static void run_prepare(void) {
     Program *p = A.prog;
     if (!p->nprepares) return;
@@ -4999,10 +5189,10 @@ static bool viewer_dirty(int v) {
  * A view is drawn first with one sample per pixel, at the pixel's center. Once that picture is done and nothing
  * changes, it is drawn again, whole, with the sample moved inside each pixel, and blended in as a running average
  * (the k-th sample with weight 1/k), up to .antialiasing samples. Any change starts again from one sample, so moving a
- * view costs nothing more; the extra passes only run in frames without first passes to do. Animated views, and views
- * that follow a solution from pixel to pixel (flood), keep one sample. */
+ * view costs nothing more; the extra passes only run in frames without first passes to do. Animated views (while the
+ * clock runs), and views that follow a solution from pixel to pixel (flood), keep one sample. */
 static int aa_samples(const ViewerRT *rt) {
-    if (rt->animated || rt->is_flood) return 1;
+    if (view_animated(rt) || rt->is_flood) return 1;
     int n = (i32)A.state[A.prog->s_aa->slot];
     return FS_CLAMP(n, 1, 16);
 }
@@ -5208,7 +5398,7 @@ static bool render_viewers(void) {
 static bool viewers_busy(void) {
     for (int i = 0; A.prog && i < A.nvis; i++) {
         ViewerRT *rt = &A.vrt[A.vis[i].viewer];
-        if (rt->animated || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(vflood(rt))) || aa_wanted(rt))
+        if (view_animated(rt) || rt->rows_left > 0 || (rt->is_flood && !flood_gpu_done(vflood(rt))) || aa_wanted(rt))
             return true;
     }
     return false;
@@ -5230,8 +5420,9 @@ static void layout_panes(float W, float H) {
     A.editor_r = (Rect){bar, 0, ew, H};
     A.config_r = (Rect){W - bar - cw, 0, cw, H};
     A.rbar_r = (Rect){W - bar, 0, bar, H};
-    A.free = (Rect){bar + ew, 0, FS_MAX(W - 2 * bar - ew - cw, 1.0f), H};
-    A.area = overlay_on() ? (Rect){bar, 0, FS_MAX(W - 2 * bar, 1.0f), H} : A.free;
+    float vh = FS_MAX(H - time_bar_h(), 1.0f); /* (the time bar under the views, see time_bar) */
+    A.free = (Rect){bar + ew, 0, FS_MAX(W - 2 * bar - ew - cw, 1.0f), vh};
+    A.area = overlay_on() ? (Rect){bar, 0, FS_MAX(W - 2 * bar, 1.0f), vh} : A.free;
 }
 
 /* the tiles on screen (A.vis): the tree's, then the floating views; each with the part of it no pane covers */
@@ -5288,8 +5479,7 @@ static void frame(void) {
     for (int i = 0; i < A.nvis; i++) ensure_target(A.vis[i].viewer, (int)A.vis[i].r.w, (int)A.vis[i].r.h);
 
     /* time */
-    float t = (float)(fs_time_seconds() - A.t0);
-    A.state[p->s_time->slot] = fw(t);
+    clock_update();
 
     frame_ui(W, H);
     const GfxDrawList *dl = ui_end_frame();
@@ -5377,11 +5567,13 @@ static void frame_ui(float W, float H) {
     editor_pane(H);
     right_pane(W, H);
     bars();
+    time_bar(H);
     help_overlay(W, H);
     refdoc_ui(W, H, &A.ref_open);
     modal_dialog(W, H);
     status_line(W, H);
     if (!A.modal) shortcuts();
+    time_keys();
 }
 
 /* nothing could be loaded yet: only the editor (full width) */
@@ -5443,6 +5635,8 @@ static void startup_error(const char *fmt, ...) {
 int app_run(const char *script_path) {
     memset(&A, 0, sizeof A);
     A.t0 = fs_time_seconds();
+    A.clock_wall = A.t0;
+    A.clock_speed = 1;
     A.band_rows = 8192;
     A.flood_passes = 64;
     A.video_seconds = 10;
@@ -5542,7 +5736,7 @@ int app_run(const char *script_path) {
         }
         if (A.prog) frame();
         else frame_editor_only();
-        bool busy = viewers_busy() || A.drag != DRAG_NONE || A.video || (A.prog && A.prog->prepare_reads_time);
+        bool busy = viewers_busy() || A.drag != DRAG_NONE || A.video || (A.prog && A.prog->prepare_reads_time && clock_running());
         double wait = busy ? 0.0 : FS_MIN(ui_redraw_in(), 0.5);
         if (A.status[0] && fs_time_seconds() < A.status_until) wait = FS_MIN(wait, 0.1);
         platform_poll_timeout(in, wait);

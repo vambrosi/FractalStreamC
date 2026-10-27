@@ -324,9 +324,69 @@ TEST(app_antialiasing) {
     A.state[p->s_aa->slot] = 8;
     rt->animated = true;              /* animated views keep one sample */
     CHECK(!aa_wanted(rt) && aa_samples(rt) == 1);
+    A.clock_paused = true;            /* (while the time runs: paused, they get them all) */
+    CHECK(aa_wanted(rt) && aa_samples(rt) == 8);
+    A.clock_paused = false;
+    A.clock_held = true;              /* (so with the time held in the time bar) */
+    CHECK(aa_wanted(rt));
+    A.clock_held = false;
     rt->animated = false;
     rt->is_flood = true;              /* so do views that follow a solution */
     CHECK(!aa_wanted(rt));
+    app_test_end();
+}
+
+/* the clock of .time: it runs at its speed, waits while paused or held, seeks and steps, and loops over .duration */
+TEST(app_clock) {
+    Program *p = load_src("@config\nsecs := 4\n@prepare\n.duration = secs\n@viewer v z\ncolor = gray(fract(.time))\n");
+    CHECK(!p->nerrors);
+    if (p->nerrors) { program_free(p); return; }
+    app_test_begin(p);
+    A.clock_speed = 1;
+    A.video_fps = 30;
+    A.clock_wall = fs_time_seconds();
+    clock_update();
+    CHECK(clock_duration() == 4 && A.state[p->s_playing->slot] == 1);
+    A.clock_wall -= 1; /* a second goes by */
+    clock_update();
+    CHECK_NEAR(A.clock_t, 1, 0.05);
+    CHECK(wf(A.state[p->s_time->slot]) == (float)A.clock_t);
+    clock_play(false); /* paused: the time stays */
+    double t = A.clock_t;
+    A.clock_wall -= 1;
+    clock_update();
+    CHECK(A.clock_t == t && A.state[p->s_playing->slot] == 0);
+    clock_seek(5.5); /* it loops over .duration */
+    CHECK_NEAR(A.clock_t, 1.5, 1e-9);
+    clock_seek(-0.5);
+    CHECK_NEAR(A.clock_t, 3.5, 1e-9);
+    CHECK_NEAR(wf(A.state[p->s_time->slot]), 3.5, 0);
+    clock_step(1); /* a frame on, at the video dialog's 30 per second */
+    CHECK_NEAR(A.clock_t, 3.5 + 1 / 30.0, 1e-9);
+    clock_step(-2);
+    CHECK_NEAR(A.clock_t, 3.5 - 1 / 30.0, 1e-9);
+    clock_seek(0.01); /* (steps land on frames) */
+    clock_step(1);
+    CHECK_NEAR(A.clock_t, 1 / 30.0, 1e-9);
+    clock_play(true); /* twice as fast */
+    A.clock_speed = 2;
+    t = A.clock_t;
+    A.clock_wall -= 0.25;
+    clock_update();
+    CHECK_NEAR(A.clock_t, t + 0.5, 0.05);
+    CHECK(A.state[p->s_playing->slot] == 1);
+    A.clock_held = true; /* held with the mouse: the clock waits, still playing */
+    t = A.clock_t;
+    A.clock_wall -= 1;
+    clock_update();
+    CHECK(A.clock_t == t && A.state[p->s_playing->slot] == 1);
+    A.clock_held = false;
+    clock_play(false);
+    A.state[p->s_duration->slot] = fw(0); /* no length: no loop, and not before 0 */
+    clock_seek(100);
+    CHECK_NEAR(A.clock_t, 100, 1e-9);
+    clock_seek(-3);
+    CHECK(A.clock_t == 0);
     app_test_end();
 }
 
@@ -1300,6 +1360,118 @@ TEST(app_overlay_setting) {
 #endif
 }
 
+/* ---- the time bar ------------------------------------------------------------------------------------------------ */
+static void app_test_tap_space(void) {
+    tu_key(UI_KEY_SPACE, 0);
+    T.key_down[UI_KEY_SPACE] = true;
+    app_test_ui_frame();
+    T.key_down[UI_KEY_SPACE] = false;
+    app_test_ui_frame();
+}
+
+/* a click at x on the time bar */
+static void app_test_time_click(float x) {
+    tu_move(x, 600 - time_bar_h() / 2);
+    app_test_ui_frame();
+    tu_press(0, 1);
+    app_test_ui_frame();
+    tu_release(0);
+    app_test_ui_frame();
+}
+
+/* the time bar shows when the script uses the time; a tap on Space pauses and plays (Space + drag pans instead), Left
+   and Right step, its buttons go back to 0 and play; a tool can set the time; the script run again keeps the time,
+   another one starts at 0 */
+TEST(app_time_bar) {
+    app_test_start();
+    CHECK(app_test_load(APP_TEST_VIEW("va"), LOAD_OPEN));
+    app_test_ui_frame();
+    CHECK(!A.uses_time && time_bar_h() == 0 && A.free.h == 600);
+    app_test_tap_space(); /* (nothing to pause) */
+    CHECK(!A.clock_paused);
+    const char *anim = "@viewer va z\ncolor = gray(fract(.time))\n@tool \"Go\" button\n.time = 2.5\n";
+    CHECK(app_test_load(anim, LOAD_OPEN));
+    A.video_fps = 30;
+    app_test_ui_frame();
+    CHECK(A.uses_time && time_bar_h() > 0 && A.free.h == 600 - time_bar_h());
+    CHECK(view_animated(&A.vrt[0]));
+    app_test_tap_space();
+    CHECK(A.clock_paused && A.state[A.prog->s_playing->slot] == 0 && !view_animated(&A.vrt[0]));
+    clock_seek(1);
+    tu_key(UI_KEY_RIGHT, 0);
+    app_test_ui_frame();
+    CHECK_NEAR(A.clock_t, 1 + 1 / 30.0, 1e-9);
+    tu_key(UI_KEY_LEFT, UI_MOD_SHIFT); /* (a second) */
+    app_test_ui_frame();
+    T.mods = 0;
+    CHECK_NEAR(A.clock_t, 1 / 30.0, 1e-9);
+    /* Space held while dragging the view: a pan, the time stays paused */
+    float vx = A.vis[0].r.x + A.vis[0].r.w / 2, vy = A.vis[0].r.y + A.vis[0].r.h / 2;
+    ViewPlace pl0 = view_place(0);
+    tu_move(vx, vy);
+    tu_key(UI_KEY_SPACE, 0);
+    T.key_down[UI_KEY_SPACE] = true;
+    app_test_ui_frame();
+    tu_press(0, 1);
+    app_test_ui_frame();
+    tu_move(vx + 40, vy);
+    app_test_ui_frame();
+    tu_release(0);
+    app_test_ui_frame();
+    T.key_down[UI_KEY_SPACE] = false;
+    app_test_ui_frame();
+    ViewPlace pl1 = view_place(0);
+    CHECK(!same_place(&pl0, &pl1) && A.clock_paused);
+    /* the bar's buttons: play, then back to 0 */
+    float b = px(30), x0 = A.free.x + px(8);
+    app_test_time_click(x0 + b + px(2) + b / 2);
+    CHECK(!A.clock_paused && view_animated(&A.vrt[0]));
+    clock_seek(3);
+    app_test_time_click(x0 + b / 2);
+    CHECK(A.clock_t < 0.5);
+    /* the speed: a click goes faster, Shift + click slower */
+    float sw = ui_text_width(UI_FONT_SANS, "0.25\xc3\x97", -1) + px(16), sx = A.free.x + A.free.w - px(8) - sw;
+    app_test_time_click(sx + sw / 2);
+    CHECK(A.clock_speed == 2);
+    T.mods = UI_MOD_SHIFT;
+    app_test_time_click(sx + sw / 2);
+    app_test_time_click(sx + sw / 2);
+    T.mods = 0;
+    CHECK(A.clock_speed == 0.5);
+    A.clock_speed = 1;
+    /* a tool sets the time: the clock goes there */
+    clock_play(false);
+    run_tool(0, 0, TOOL_EV_CLICK, 0, 0);
+    CHECK_NEAR(A.clock_t, 2.5, 1e-6);
+    /* the same script again: the paused time stays; another script: from 0, playing */
+    CHECK(app_test_load(anim, LOAD_RUN));
+    CHECK(A.clock_paused && fabs(A.clock_t - 2.5) < 1e-6 && wf(A.state[A.prog->s_time->slot]) == 2.5f);
+    CHECK(app_test_load(anim, LOAD_OPEN));
+    CHECK(!A.clock_paused && A.clock_t < 0.5);
+    /* with a .duration, the time is a scrubber: held, the time follows the mouse and the clock waits */
+    CHECK(app_test_load("@config\n.duration = 10\n@viewer va z\ncolor = gray(fract(.time))\n", LOAD_OPEN));
+    app_test_ui_frame();
+    float tx = x0 + 2 * b + px(10), tw = sx - px(6) - tx, ty = 600 - time_bar_h() / 2;
+    tu_move(tx + tw / 4, ty);
+    app_test_ui_frame();
+    tu_press(0, 1);
+    app_test_ui_frame();
+    CHECK(A.clock_held && !clock_running());
+    CHECK_NEAR(A.clock_t, 2.5, 0.05);
+    tu_move(tx + tw / 2, ty);
+    app_test_ui_frame();
+    CHECK_NEAR(A.clock_t, 5, 0.05);
+    tu_release(0);
+    app_test_ui_frame();
+    CHECK(!A.clock_held && clock_running());
+    /* a script that only gives the animation a length, or reads .playing in @prepare, has the bar too */
+    CHECK(app_test_load("@config\n.duration = 3\n" APP_TEST_VIEW("va"), LOAD_OPEN));
+    CHECK(A.uses_time);
+    CHECK(app_test_load("@prepare\nq := if .playing then 1 else 2\n" APP_TEST_VIEW("va"), LOAD_OPEN));
+    CHECK(A.uses_time);
+    app_test_stop();
+}
+
 static const TestCase tests_app[] = {
     TESTCASE(app_script_center_keeps_its_digits),
     TESTCASE(app_view_history),
@@ -1307,6 +1479,7 @@ static const TestCase tests_app[] = {
     TESTCASE(app_write_values_into_script),
     TESTCASE(app_folder_listing),
     TESTCASE(app_antialiasing),
+    TESTCASE(app_clock),
     TESTCASE(app_examples_load),
     TESTCASE(app_examples_cover_the_language),
     TESTCASE(app_recent_files),
@@ -1323,4 +1496,5 @@ static const TestCase tests_app[] = {
     TESTCASE(app_overlay_panes),
     TESTCASE(app_pane_edges_follow_the_mouse),
     TESTCASE(app_overlay_setting),
+    TESTCASE(app_time_bar),
 };

@@ -27,6 +27,7 @@ u := 1 + 0.5i
 s := (1 - cos(pi .time / seconds)) / 2   # 0, up to 1, back
 mandel.radius = 2 / 10^(depth s)
 julia.radius = mandel.radius
+.duration = 2 seconds                    # (in, and back out)
 
 @viewer mandel c "Mandelbrot set near i" "Ctrl + 1"
 z := c          # (from c, not 0: counts as in the Julia set)

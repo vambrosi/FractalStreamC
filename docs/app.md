@@ -24,10 +24,16 @@ Cmd instead of Ctrl on a Mac. F1 lists every key.
   8; 1: off).
 - **Changing views** (dragged, zoomed, animated) are drawn whole in every frame, with fewer pixels
   when the GPU can't keep up, and sharp again once they rest.
-- **Videos.** The film button saves a video of the view (MP4): from time 0, as long as the dialog
-  says, each frame antialiased. Views that use `.time`, or that `@prepare` moves with it, change from
-  frame to frame. Without a window: `fractalstreamc --video zoom.mp4 --seconds 20 SCRIPT` (also
-  `--from`, `--fps`, `--size`, `--viewer`, `--samples`, `--set`; see `--help`).
+- **Time.** A script that uses `.time` gets a bar under the views: back to 0, play / pause, the
+  time, and its speed (a click: faster; Shift + click: slower). Drag the time, or double-click it
+  to type one; when the script sets `.duration`, it is a scrubber over the animation. Space plays
+  and pauses (a tap; Space + drag still pans), Left / Right step a frame, Shift + Left / Right a
+  second. Paused views get sharp and antialiased, and running the script again keeps the moment.
+- **Videos.** The film button saves a video of the view (MP4): from the paused moment (or 0), as
+  long as `.duration` (or as the dialog says), each frame antialiased. Views that use `.time`, or
+  that `@prepare` moves with it, change from frame to frame. Without a window:
+  `fractalstreamc --video zoom.mp4 --seconds 20 SCRIPT` (also `--from`, `--fps`, `--size`,
+  `--viewer`, `--samples`, `--set`; see `--help`).
 - **Deep zooms** (radius below about 1e-4) get blocky: turn on `.doublePrecision` (in the note on the
   view, or in the config) for double-single precision, sharp to about 1e-12. It is slower.
 - **Config.** Values changed in the config pane, or by tools, get a dot and survive running the script

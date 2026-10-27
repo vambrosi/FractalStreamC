@@ -42,8 +42,9 @@ end
   for values the viewers need that are computed once from the state instead of at every pixel,
   such as a fixed point that depends on a parameter. It can change globals; keep it quick, or
   guard it with an `if` that checks whether its inputs changed. If it reads `.time`, it runs at
-  every frame: setting `NAME.center` and `NAME.radius` from `.time` moves a view by itself, in the
-  app and in videos (a zoom: `examples/4 - More/4 - Moving views.fstream`).
+  every frame while the time runs: setting `NAME.center` and `NAME.radius` from `.time` moves a
+  view by itself, in the app and in videos (a zoom: `examples/4 - More/4 - Moving views.fstream`;
+  see *Time*).
 - In a viewer, `VAR` is the point of the current pixel (complex). The viewer sets `color`
   (it starts black). `return` ends the viewer early.
 - Every viewer `NAME` with variable `VAR` adds three state variables: `.VAR` (the last point picked
@@ -374,10 +375,39 @@ with their definitions, and `fractalstreamc --builtins` prints them.
 | `.lastClick` | C | point of the last click or drag (in the viewer it happened in) |
 | `.dragStart` | C | where the mouse button went down (for tools: `on drag`, `on release`) |
 | `.mouse` | C | point under the mouse |
-| `.time` | R | seconds since the script started (viewers using it are animated, an `@prepare` using it runs at every frame); in a video, the time of the frame |
+| `.time` | R | the time in seconds, from 0 when the script starts; it stops while paused (viewers using it are animated, an `@prepare` using it runs at every frame); in a video, the time of the frame. Only tools can set it (see *Time*) |
+| `.playing` | Bool | true while the time runs, and in videos; false while it is paused, and in pictures (`--render`) |
+| `.duration` | R | the length of the animation in seconds (default 0: none): `.time` loops over it, and videos last that long |
 | `.pixel` | R | size of a pixel of the viewer, in the plane (in a tool: of the viewer clicked) |
 | `.width`, `.height`, `.title` | Z, Z, text | initial window size and title (set them in `@config`) |
 | `.VAR`, `NAME.center`, `NAME.radius` | | per viewer, see Sections |
+
+### Time
+
+`.time` runs from 0 when the script starts. A viewer that reads it is drawn again at every frame,
+and an `@prepare` that reads it runs at every frame (it can move the views). Space, or the bar under
+the views, pauses and plays the time; the bar and the Left and Right keys move it (see the app's
+docs). Running the script again keeps the time, so a paused moment stays while you edit.
+
+```
+@config
+seconds := 20 in 4..120 "Seconds of the movie"
+
+@prepare
+.duration = seconds          # .time loops from 0 to seconds
+
+@viewer julia z "Julia set"
+c := 0.7885 cis(2 pi .time / seconds)
+limit := if .playing then 100 else 1000   # quick while it runs
+...
+```
+
+- `.duration` gives the animation a length: `.time` loops from 0 to it, the time bar can scrub
+  through it, and videos last that long. It is a state variable: set it in `@config`, `@global`
+  or (when it depends on the config) `@prepare`.
+- `.playing` is true while the time runs: a viewer can draw a quick picture then, and a finer
+  one when paused. Videos play (it is true in them); pictures don't.
+- A tool can set `.time`, and nothing else can: the clock goes there, still playing or paused.
 
 ## Tools
 

@@ -7,8 +7,9 @@
 # mating, when the pair mates. Basilica and Rabbit here,
 # the historical example (Douady and Hubbard). The view
 # "Slow mating" plays it (the potential goes down from
-# about 3, and back up); "One potential" (Ctrl+2) stops at
-# the potential set in the config. Movies of many pairs,
+# about 3, and back up; Space pauses, the bar under the
+# views moves through it); "One potential" (Ctrl+2) stops
+# at the potential set in the config. Movies of many pairs,
 # by Arnaud Chéritat:
 # https://www.math.univ-toulouse.fr/~cheritat/MatMovies/
 #
@@ -164,6 +165,7 @@ if p != p0 or q != q0 or depth != d0 then   # the rows, when needed
         append(B, Y[row + 1] e)
     end
 end
+.duration = 2 seconds             # the movie: down and back up
 e := exp(-(2^(top - depth)))
 a := A[-1] e                      # the map at the lowest potential:
 b := B[-1] e                      # the mating, if they mate

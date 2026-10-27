@@ -1,17 +1,28 @@
-# .time: the seconds since the script started. A view
-# that uses it is drawn again and again. Here the Julia
-# set of z^2 + c, with c going around a circle.
+# .time: the time in seconds. A view that uses it is
+# drawn again and again. Here the Julia set of z^2 + c,
+# with c going around a circle. Space (or the bar under
+# the views) pauses and plays; Left and Right step a
+# frame; dragging the time moves through it. .duration
+# makes the time loop: here once around the circle.
+# .playing is true while the time runs: the picture
+# takes fewer iterations then, and more when paused.
 
 @config
 .title = "Animation"
-.maxIterations = 200
+.maxIterations = 1000
 speed := 0.3 in 0.05..2 "Speed"
 julia.radius = 1.6
 
+@prepare
+.duration = 2 pi / speed            # (one turn of c)
+
 @viewer julia z "Julia set"
 c := 0.7885 cis(speed .time)
-while z not escapes do
+limit := if .playing then 100 else 1000
+n := 0
+while z not escapes and n < limit do
     z = z^2 + c
+    n += 1
 end
-color = if .stuck then .black ...
-        else palette("romao", .iterations / 30)
+color = if n == limit then .black ...
+        else palette("romao", n / 30)
