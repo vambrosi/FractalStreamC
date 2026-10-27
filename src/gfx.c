@@ -838,9 +838,10 @@ static bool gfx_render_pass(VkFormat format, VkAttachmentLoadOp load, VkImageLay
     return gfx_vk(vkCreateRenderPass(gx.device, &ci, NULL, out), "vkCreateRenderPass");
 }
 
-/* Viewer pipeline (ui = false: full-screen triangle; blended by the constant alpha, set per render: 1 replaces the
-   pixels, w < 1 mixes w of the new picture into the old one, see GfxViewerParams.blend) or 2D pipeline (ui = true:
-   GfxVertex input, alpha blending). Viewport and scissor are dynamic (and the blend constants of viewers). */
+/* Viewer pipeline (ui = false: full-screen triangle; blended by the constant color (w, w, w, w), set per render: 1
+   replaces the pixels, w < 1 mixes w of the new picture into the old one, see GfxViewerParams.blend) or 2D pipeline
+   (ui = true: GfxVertex input, alpha blending). Viewport and scissor are dynamic (and the blend constants of
+   viewers). */
 static bool gfx_pipeline(VkShaderModule vs, VkShaderModule fs, bool ui, VkRenderPass rp, VkPipeline *out) {
     VkPipelineShaderStageCreateInfo st[2];
     memset(st, 0, sizeof st);
@@ -885,8 +886,10 @@ static bool gfx_pipeline(VkShaderModule vs, VkShaderModule fs, bool ui, VkRender
         cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     } else {
-        cb.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;      /* src*w + dst*(1-w), w the constant alpha */
-        cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        /* src*w + dst*(1-w), w in every component of the blend constants: the constant color, not its alpha
+           (the portability subset may lack constant alpha factors for colors: constantAlphaColorBlendFactors) */
+        cb.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
+        cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
         cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;                 /* (alpha stays the shader's: 1) */
         cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     }
@@ -1946,7 +1949,7 @@ static void gfx_record_viewer(VkCommandBuffer cmd, const GfxTexture *t, const Gf
     vkCmdSetScissor(cmd, 0, 1, &area);
     float pc[4] = { p->width, p->height, p->offset_x, p->offset_y };
     vkCmdPushConstants(cmd, gx.viewer_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
-    float bc[4] = { 0, 0, 0, w };
+    float bc[4] = { w, w, w, w };
     vkCmdSetBlendConstants(cmd, bc);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gx.viewer_layout, 0, 1, &globals, 0, NULL);
     vkCmdDraw(cmd, 3, 1, 0, 0);
