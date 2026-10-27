@@ -12,3 +12,6 @@ Changes (search for "FractalStreamC" in `minih264e.h`):
   same as the SSE2 code's (checked on Linux arm64, GCC and clang).
 - The alignment asserts of two NEON functions cast pointers to `uintptr_t`, not `unsigned`
   (warnings on 64-bit ARM).
+- On macOS the byte order comes from the compiler (`__BYTE_ORDER__`). It came from `BYTE_ORDER`
+  and `BIG_ENDIAN`, which nothing defined there on Apple silicon, so the encoder took the Mac for
+  a big-endian machine and wrote frames that the MP4 writer rejected.

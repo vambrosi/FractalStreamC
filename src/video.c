@@ -143,8 +143,13 @@ static bool video_file_add(VideoFile *vf, const u8 *rgba, char *err, int errcap)
         snprintf(err, (size_t)errcap, "the video encoder failed at frame %d", vf->frames + 1);
         return false;
     }
-    if (mp4_h26x_write_nal(&vf->wr, coded, size, (unsigned)(90000 / vf->fps)) != MP4E_STATUS_OK || vf->write_failed) {
+    int st = mp4_h26x_write_nal(&vf->wr, coded, size, (unsigned)(90000 / vf->fps));
+    if (vf->write_failed || st == MP4E_STATUS_FILE_WRITE_ERROR) {
         snprintf(err, (size_t)errcap, "can't write frame %d of the video (is the disk full?)", vf->frames + 1);
+        return false;
+    }
+    if (st != MP4E_STATUS_OK) { /* (what the encoder made isn't H.264 the writer can read: a bug) */
+        snprintf(err, (size_t)errcap, "the MP4 writer rejected frame %d of the video (error %d)", vf->frames + 1, st);
         return false;
     }
     vf->frames++;

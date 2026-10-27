@@ -371,8 +371,10 @@ void H264E_set_vbv_state(
 #include <endian.h>
 #elif defined(__APPLE__)
 #include <libkern/OSByteOrder.h>
-#define __BYTE_ORDER BYTE_ORDER
-#define __BIG_ENDIAN BIG_ENDIAN
+/* FractalStreamC: the compiler's byte order. BYTE_ORDER and BIG_ENDIAN were undefined here on arm64 (on x86_64,
+   <emmintrin.h> brings them, through <stdlib.h>), so the test below was 0 == 0: a big-endian bitstream, unreadable */
+#define __BYTE_ORDER __BYTE_ORDER__
+#define __BIG_ENDIAN __ORDER_BIG_ENDIAN__
 #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__DragonFly__)
 #include <sys/endian.h>
 #else
