@@ -1112,8 +1112,8 @@ UiInteract ui_interact_id(u32 id, float x, float y, float w, float h) {
         ui.active_seen = true;
         r.press_x = ui.press_x;
         r.press_y = ui.press_y;
-        r.dx = in->mouse_x - ui.prev_mx;
-        r.dy = in->mouse_y - ui.prev_my;
+        r.dx = r.pressed ? 0 : in->mouse_x - ui.prev_mx; /* (a move just before the press is not a drag) */
+        r.dy = r.pressed ? 0 : in->mouse_y - ui.prev_my;
         if (in->mouse_down[0]) {
             r.held = true;
             r.held_time = (float)(in->time - ui.press_time);
